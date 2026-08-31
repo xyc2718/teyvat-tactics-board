@@ -39,6 +39,45 @@ describe('App shell', () => {
     expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
   })
 
+  it('zooms the board view locally without changing the tactic document', () => {
+    const document = useTacticStore.getState().document
+    const { container } = render(<App />)
+    const boardShell = screen.getByLabelText('20 乘 14 格战术球场')
+
+    expect(boardShell).toHaveAttribute('data-board-zoom', '100')
+    expect(screen.getByRole('button', { name: '重置球场缩放为 100%' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '放大球场' }))
+    expect(boardShell).toHaveAttribute('data-board-zoom', '125')
+    expect(container.querySelector('.board-zoom-surface')).toHaveStyle({ width: '125%', height: '125%' })
+    expect(screen.getByRole('button', { name: '重置球场缩放为 100%' })).toHaveTextContent('125%')
+    expect(useTacticStore.getState().document).toBe(document)
+    expect(useTacticStore.getState().past).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '重置球场缩放为 100%' }))
+    expect(boardShell).toHaveAttribute('data-board-zoom', '100')
+  })
+
+  it('does not cover the desktop workspace with a small-screen blocker', () => {
+    render(<App />)
+    expect(screen.queryByText('第一版专为电脑端设计，请使用更宽的浏览器窗口。')).not.toBeInTheDocument()
+  })
+
+  it('keeps tactical coordinates accurate after enlarging the board', () => {
+    render(<App />)
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 41, button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: '放大球场' }))
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board, 1340, 930)
+    fireEvent.pointerDown(board, { clientX: 545, clientY: 465, pointerId: 42, button: 0 })
+
+    const q = useTacticStore.getState().document.actions.at(-1)
+    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-water' })
+    if (q?.type === 'qMove') expect(q.path.at(-1)).toEqual({ x: 8, y: 7 })
+  })
+
   it('uses the projected carrier for the possession button even when an imported flag is stale', () => {
     const document = createDefaultDocument()
     const carrier = document.initialScene.players.find((player) => player.id === 'red-fire')!
@@ -752,7 +791,7 @@ describe('App shell', () => {
   })
 })
 
-function mockBoardRect(board: HTMLElement) {
+function mockBoardRect(board: HTMLElement, width = 1072, height = 744) {
   Object.defineProperty(board, 'getBoundingClientRect', {
     configurable: true,
     value: () => ({
@@ -760,10 +799,10 @@ function mockBoardRect(board: HTMLElement) {
       y: 0,
       left: 0,
       top: 0,
-      right: 1072,
-      bottom: 744,
-      width: 1072,
-      height: 744,
+      right: width,
+      bottom: height,
+      width,
+      height,
       toJSON: () => ({}),
     }),
   })

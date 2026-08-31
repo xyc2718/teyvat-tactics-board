@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
 import { anchorPassPathToPlayer } from '../domain/model/passPath'
@@ -26,6 +26,9 @@ import { toolLabels } from '../ui/labels'
 
 const SCALE = 50
 const VIEW_PADDING = { x: 36, y: 22 }
+const BOARD_ZOOM_MIN = 0.5
+const BOARD_ZOOM_MAX = 2
+const BOARD_ZOOM_STEP = 0.25
 
 function toSvg(point: Vec2) {
   return { x: point.x * SCALE, y: point.y * SCALE }
@@ -59,7 +62,9 @@ type DragState =
 
 export function TacticsBoard() {
   const svgRef = useRef<SVGSVGElement>(null)
+  const boardViewportRef = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<DragState>(null)
+  const [boardZoom, setBoardZoom] = useState(1)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
   const isPlaying = useTacticStore((state) => state.isPlaying)
@@ -108,6 +113,23 @@ export function TacticsBoard() {
   const selectedStaticArrow = selection?.kind === 'staticArrow'
     ? document.staticMoveArrows.find((arrow) => arrow.id === selection.id)
     : undefined
+
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => {
+      const viewport = boardViewportRef.current
+      if (!viewport) return
+      viewport.scrollLeft = Math.max(0, (viewport.scrollWidth - viewport.clientWidth) / 2)
+      viewport.scrollTop = Math.max(0, (viewport.scrollHeight - viewport.clientHeight) / 2)
+    })
+    return () => cancelAnimationFrame(frameId)
+  }, [boardZoom])
+
+  function changeBoardZoom(direction: -1 | 1) {
+    setBoardZoom((current) => Math.max(
+      BOARD_ZOOM_MIN,
+      Math.min(BOARD_ZOOM_MAX, Number((current + direction * BOARD_ZOOM_STEP).toFixed(2))),
+    ))
+  }
   function clientToLogicalPoint(clientX: number, clientY: number): Vec2 {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect) return { x: 0, y: 0 }
@@ -404,22 +426,38 @@ export function TacticsBoard() {
   const ballPosition = drag?.kind === 'entity' && (drag.id === 'ball' || drag.id === frame.ball.carrierId)
     ? drag.point
     : frame.ball.position
+  const zoomPercent = Math.round(boardZoom * 100)
+  const zoomSurfacePercent = Math.max(1, boardZoom) * 100
+  const boardRenderPercent = Math.min(1, boardZoom) * 100
 
   return (
-    <div className="board-shell" aria-label={`${rules.field.width} 乘 ${rules.field.height} 格战术球场`}>
-      <svg
-        ref={svgRef}
-        className={`tactics-board tool-${tool}`}
-        viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`}
-        style={{ aspectRatio: `${view.width} / ${view.height}` }}
-        role="application"
-        aria-label="战术编辑球场"
-        onPointerDown={onBoardPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerCancel}
-        onLostPointerCapture={onLostPointerCapture}
-      >
+    <div
+      className="board-shell"
+      aria-label={`${rules.field.width} 乘 ${rules.field.height} 格战术球场`}
+      data-board-zoom={zoomPercent}
+    >
+      <div ref={boardViewportRef} className="board-viewport">
+        <div
+          className="board-zoom-surface"
+          style={{ width: `${zoomSurfacePercent}%`, height: `${zoomSurfacePercent}%` }}
+        >
+          <svg
+            ref={svgRef}
+            className={`tactics-board tool-${tool}`}
+            viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`}
+            style={{
+              aspectRatio: `${view.width} / ${view.height}`,
+              width: `${boardRenderPercent}%`,
+              maxHeight: `${boardRenderPercent}%`,
+            }}
+            role="application"
+            aria-label="战术编辑球场"
+            onPointerDown={onBoardPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
+            onLostPointerCapture={onLostPointerCapture}
+          >
         <defs>
           <linearGradient id="pitchGradient" x1="0" x2="1">
             <stop offset="0" stopColor="#4f9368" />
@@ -658,7 +696,33 @@ export function TacticsBoard() {
         {boardMode === 'basic' && selectedStaticArrow && <g className="static-arrows-layer selected-static-arrow-layer">
           {renderStaticArrow(selectedStaticArrow, true)}
         </g>}
-      </svg>
+          </svg>
+        </div>
+      </div>
+      <div className="board-zoom-controls" role="group" aria-label="球场缩放">
+        <button
+          type="button"
+          onClick={() => changeBoardZoom(-1)}
+          disabled={boardZoom <= BOARD_ZOOM_MIN}
+          aria-label="缩小球场"
+          title="缩小球场"
+        >−</button>
+        <button
+          type="button"
+          className="board-zoom-value"
+          onClick={() => setBoardZoom(1)}
+          disabled={boardZoom === 1}
+          aria-label="重置球场缩放为 100%"
+          title="重置为 100%"
+        >{zoomPercent}%</button>
+        <button
+          type="button"
+          onClick={() => changeBoardZoom(1)}
+          disabled={boardZoom >= BOARD_ZOOM_MAX}
+          aria-label="放大球场"
+          title="放大球场"
+        >＋</button>
+      </div>
       {tool !== 'select' && <div className="board-workflow-guide" role="status">
         <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
         <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
