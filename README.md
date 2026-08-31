@@ -53,3 +53,9 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+## 开源协议
+
+本项目以 [GNU General Public License v3.0](./LICENSE) 发布，SPDX 标识为 `GPL-3.0-only`。
+
+Copyright © 2026 xyc.

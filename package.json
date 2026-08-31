@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "author": "xyc",
+  "license": "GPL-3.0-only",
   "homepage": "https://xyc2718.github.io/teyvat-tactics-board/",
   "repository": {
     "type": "git",
