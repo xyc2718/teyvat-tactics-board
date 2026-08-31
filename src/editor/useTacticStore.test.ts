@@ -181,7 +181,7 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().moveEntity('blue-water', { x: 7, y: 4 })
     const current = useTacticStore.getState().document
     expect(current.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 7, y: 4 })
-    expect(current.stepMarkers.find((step) => step.id === later.id)?.snapshot.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 5 })
+    expect(current.stepMarkers.find((step) => step.id === later.id)?.snapshot.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 7 })
     expect(current.actions).toHaveLength(0)
   })
 
@@ -219,7 +219,7 @@ describe('tactic store timeline edits', () => {
   it('snaps paused time to action joints while playback may remain continuous', () => {
     const document = useTacticStore.getState().document
     document.actions.push(
-      { id: 'snap-move', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] },
+      { id: 'snap-move', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] },
       { id: 'snap-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 3 },
     )
     useTacticStore.setState({ document })
@@ -234,40 +234,40 @@ describe('tactic store timeline edits', () => {
   it('chains run, wait, and Q and reconnects both sides when the wait-start joint moves', () => {
     const document = useTacticStore.getState().document
     document.actions.push(
-      { id: 'joint-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] },
+      { id: 'joint-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] },
       { id: 'joint-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 1 },
-      { id: 'joint-q', type: 'qMove', actorId: 'blue-fire', startTime: 3, duration: 0, path: [{ x: 5.5, y: 2.7 }, { x: 7.5, y: 2.7 }] },
+      { id: 'joint-q', type: 'qMove', actorId: 'blue-fire', startTime: 3, duration: 0, path: [{ x: 5.5, y: 4.7 }, { x: 7.5, y: 4.7 }] },
     )
     useTacticStore.setState({ document, currentTime: 2, past: [], future: [] })
 
-    useTacticStore.getState().moveEntity('blue-fire', { x: 6.5, y: 2.7 })
+    useTacticStore.getState().moveEntity('blue-fire', { x: 6.5, y: 4.7 })
     const actions = useTacticStore.getState().document.actions
     const move = actions.find((action) => action.id === 'joint-run')
     const wait = actions.find((action) => action.id === 'joint-wait')
     const q = actions.find((action) => action.id === 'joint-q')
-    expect(move).toMatchObject({ type: 'move', duration: 3, path: [{ x: 3.5, y: 2.7 }, { x: 6.5, y: 2.7 }] })
+    expect(move).toMatchObject({ type: 'move', duration: 3, path: [{ x: 3.5, y: 4.7 }, { x: 6.5, y: 4.7 }] })
     expect(wait).toMatchObject({ type: 'wait', startTime: 3, duration: 1 })
     expect(q).toMatchObject({ type: 'qMove', startTime: 4 })
-    if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 2.7 })
+    if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 4.7 })
     expect(useTacticStore.getState().currentTime).toBe(3)
   })
 
   it('does not let a player drag rewrite a route between timeline joints', () => {
     const document = useTacticStore.getState().document
-    document.actions.push({ id: 'locked-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    document.actions.push({ id: 'locked-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] })
     useTacticStore.setState({ document, currentTime: 1, past: [], future: [] })
 
     useTacticStore.getState().moveEntity('blue-fire', { x: 8, y: 4 })
 
     expect(useTacticStore.getState().document.actions.find((action) => action.id === 'locked-run')).toMatchObject({
-      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
     })
     expect(useTacticStore.getState().notice).toContain('开始或结束节点')
   })
 
   it('adds an editable wait after the selected player locomotion chain', () => {
     const document = useTacticStore.getState().document
-    document.actions.push({ id: 'before-wait', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    document.actions.push({ id: 'before-wait', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] })
     useTacticStore.setState({ document, selection: { kind: 'player', id: 'blue-fire' } })
 
     useTacticStore.getState().setTool('wait')
@@ -283,7 +283,7 @@ describe('tactic store timeline edits', () => {
 
   it('switches a run between straight and adjustable curved projection', () => {
     const document = useTacticStore.getState().document
-    document.actions.push({ id: 'curved-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    document.actions.push({ id: 'curved-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] })
     useTacticStore.setState({ document, currentTime: 2 })
 
     useTacticStore.getState().setMovePathMode('curved-run', 'curve')
@@ -293,7 +293,7 @@ describe('tactic store timeline edits', () => {
     expect(move.curveControl).toBeDefined()
     expect(move.duration).toBeGreaterThan(2)
     expect(useTacticStore.getState().currentTime).toBe(move.duration)
-    expect(projectFrame(useTacticStore.getState().document, move.duration / 2).players.find((player) => player.id === 'blue-fire')?.position.y).toBeGreaterThan(2.7)
+    expect(projectFrame(useTacticStore.getState().document, move.duration / 2).players.find((player) => player.id === 'blue-fire')?.position.y).toBeGreaterThan(4.7)
 
     useTacticStore.getState().setMovePathMode('curved-run', 'straight')
     move = useTacticStore.getState().document.actions.find((action) => action.id === 'curved-run')
@@ -309,13 +309,62 @@ describe('tactic store timeline edits', () => {
 
     useTacticStore.getState().chooseActorForTool('blue-fire')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
-    useTacticStore.getState().createAction('blue-fire', { x: 7, y: 2.7 })
+    useTacticStore.getState().createAction('blue-fire', { x: 7, y: 4.7 })
 
     const state = useTacticStore.getState()
     expect(state.document.actions).toHaveLength(1)
     expect(state.document.actions[0]).toMatchObject({ type: 'qMove', actorId: 'blue-fire' })
     expect(state.tool).toBe('select')
     expect(state.selection).toEqual({ kind: 'player', id: 'blue-fire' })
+  })
+
+  it('continues Q from a move endpoint selected as the tool actor', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'endpoint-run',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+    })
+    useTacticStore.setState({ document, tool: 'qMove', currentTime: 0, selection: null, past: [], future: [] })
+
+    useTacticStore.getState().chooseActionEndpointForTool('endpoint-run')
+    expect(useTacticStore.getState()).toMatchObject({
+      currentTime: 2,
+      selection: { kind: 'player', id: 'blue-fire' },
+      tool: 'qMove',
+    })
+
+    useTacticStore.getState().createAction('blue-fire', { x: 7.5, y: 4.7 })
+    const q = useTacticStore.getState().document.actions.find((action) => action.type === 'qMove')
+    expect(q).toMatchObject({
+      actorId: 'blue-fire',
+      startTime: 2,
+      path: [{ x: 5.5, y: 4.7 }, { x: 7.5, y: 4.7 }],
+    })
+  })
+
+  it('uses a selected move action endpoint when the run tool is activated', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'selected-endpoint-run',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+    })
+    useTacticStore.setState({ document, selection: { kind: 'action', id: 'selected-endpoint-run' }, currentTime: 0 })
+
+    useTacticStore.getState().setTool('move')
+
+    expect(useTacticStore.getState()).toMatchObject({
+      currentTime: 2,
+      selection: { kind: 'player', id: 'blue-fire' },
+      tool: 'move',
+    })
   })
 
   it('supports player-first Q creation without losing the chosen actor', () => {
@@ -359,7 +408,7 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({
       type: 'eZone',
       actorId: 'blue-ice',
-      center: { x: 3.5, y: 7.3 },
+      center: { x: 3.5, y: 9.3 },
     })
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-ice' })
@@ -438,19 +487,19 @@ describe('tactic store timeline edits', () => {
     const document = useTacticStore.getState().document
     document.actions.push({
       id: 'pre-shot-move', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 1,
-      path: [{ x: 3.5, y: 2.7 }, { x: 17, y: 5 }],
+      path: [{ x: 3.5, y: 4.7 }, { x: 17, y: 7 }],
     })
     useTacticStore.setState({ document, currentTime: 1 })
     useTacticStore.getState().createShot('blue-fire')
     let shot = useTacticStore.getState().document.actions.at(-1)
     expect(shot).toMatchObject({ type: 'shoot', actorId: 'blue-fire', startTime: 1, charge: 'yellow' })
-    if (shot?.type === 'shoot') expect(shot.path).toEqual([{ x: 17, y: 5 }, { x: 20, y: 5 }])
+    if (shot?.type === 'shoot') expect(shot.path).toEqual([{ x: 17, y: 7 }, { x: 20, y: 7 }])
     expect(useTacticStore.getState()).toMatchObject({ tool: 'select', selection: { kind: 'player', id: 'blue-fire' } })
 
     useTacticStore.setState({ currentTime: 0 })
     useTacticStore.getState().createShot('red-water')
     shot = useTacticStore.getState().document.actions.at(-1)
-    if (shot?.type === 'shoot') expect(shot.path.at(-1)).toEqual({ x: 0, y: 5 })
+    if (shot?.type === 'shoot') expect(shot.path.at(-1)).toEqual({ x: 0, y: 7 })
   })
 
   it('creates immediately for player-first shooting and ignores legacy point creation while shooting', () => {
@@ -497,8 +546,8 @@ describe('tactic store timeline edits', () => {
   })
 
   it.each([
-    ['blue-water', { x: 8, y: 5 }, { x: 10, y: 5 }, 7],
-    ['blue-fire', { x: 5.8, y: 2.7 }, { x: 8, y: 2.7 }, 9],
+    ['blue-water', { x: 8, y: 7 }, { x: 10, y: 7 }, 7],
+    ['blue-fire', { x: 5.8, y: 4.7 }, { x: 8, y: 4.7 }, 9],
   ] as const)('auto-schedules consecutive instant Q actions on the %s cooldown', (actorId, firstTarget, secondTarget, cooldown) => {
     useTacticStore.getState().select({ kind: 'player', id: actorId })
     useTacticStore.getState().setTool('qMove')
@@ -514,11 +563,11 @@ describe('tactic store timeline edits', () => {
   it('combines cooldown and move conflicts before projecting the next Q origin', () => {
     useTacticStore.getState().select({ kind: 'player', id: 'blue-ice' })
     useTacticStore.getState().setTool('qMove')
-    useTacticStore.getState().createAction('blue-ice', { x: 6.5, y: 7.3 })
+    useTacticStore.getState().createAction('blue-ice', { x: 6.5, y: 9.3 })
     useTacticStore.getState().setTool('move')
-    useTacticStore.getState().createAction('blue-ice', { x: 14.5, y: 7.3 })
+    useTacticStore.getState().createAction('blue-ice', { x: 14.5, y: 9.3 })
     useTacticStore.getState().setTool('qMove')
-    useTacticStore.getState().createAction('blue-ice', { x: 17.5, y: 7.3 })
+    useTacticStore.getState().createAction('blue-ice', { x: 17.5, y: 9.3 })
 
     const actions = useTacticStore.getState().document.actions
     const move = actions.find((action) => action.type === 'move')

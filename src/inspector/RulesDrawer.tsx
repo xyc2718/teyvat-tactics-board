@@ -35,7 +35,7 @@ export function RulesDrawer() {
 
         <div className="drawer-body">
           {tab === 'parameters' ? <>
-            <RuleSection title="球场与基础移动" description="球场固定为 20 × 10 逻辑格。">
+            <RuleSection title="球场与基础移动" description="球场固定为 20 × 14 逻辑格。">
               <RuleInput label="基础移速" value={rules.field.baseMoveSpeed} suffix="格/s" onChange={(value) => updateField('baseMoveSpeed', value)} />
               <RuleInput label="小禁区半径" value={rules.field.smallPenaltyRadius} suffix="格" onChange={(value) => updateField('smallPenaltyRadius', value)} />
               <RuleInput label="大禁区半径" value={rules.field.largePenaltyRadius} suffix="格" onChange={(value) => updateField('largePenaltyRadius', value)} />

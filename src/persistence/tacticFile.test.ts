@@ -3,6 +3,57 @@ import { createDefaultDocument } from '../domain/model/createDocument'
 import { parseTactic, serializeTactic } from './tacticFile'
 
 describe('tactic file boundary', () => {
+  it('creates a centered 20 by 14 default field', () => {
+    const document = createDefaultDocument()
+    expect(document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-2', field: { width: 20, height: 14 } })
+    expect(document.initialScene.players.find((player) => player.id === 'blue-water')?.position.y).toBe(7)
+    expect(document.initialScene.ball.position.y).toBe(7)
+  })
+
+  it('migrates an untouched legacy 20 by 10 field by translating every saved Y coordinate', () => {
+    const legacy = createDefaultDocument()
+    legacy.rulesSnapshot.version = 'teyvat-mvp-1'
+    legacy.rulesSnapshot.field.height = 10
+    const shiftSceneBack = (scene: typeof legacy.initialScene) => {
+      scene.players.forEach((player) => { player.position.y -= 2 })
+      scene.ball.position.y -= 2
+    }
+    shiftSceneBack(legacy.initialScene)
+    legacy.stepMarkers.forEach((step) => shiftSceneBack(step.snapshot))
+    legacy.staticMoveArrows.push({ id: 'legacy-arrow', playerId: 'blue-fire', target: { x: 6, y: 6 } })
+    legacy.actions.push({
+      id: 'legacy-curve',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 4 }],
+      curveControl: { x: 4.5, y: 2 },
+    })
+
+    const result = parseTactic(serializeTactic(legacy))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-2', field: { width: 20, height: 14 } })
+    expect(result.document.initialScene.players.find((player) => player.id === 'blue-water')?.position.y).toBe(7)
+    expect(result.document.staticMoveArrows[0]?.target.y).toBe(8)
+    expect(result.document.actions[0]).toMatchObject({
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 6 }],
+      curveControl: { x: 4.5, y: 4 },
+    })
+  })
+
+  it('keeps a non-default legacy field height unchanged', () => {
+    const custom = createDefaultDocument()
+    custom.rulesSnapshot.version = 'teyvat-mvp-1'
+    custom.rulesSnapshot.field.height = 12
+
+    const result = parseTactic(serializeTactic(custom))
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-1', field: { height: 12 } })
+  })
+
   it('round-trips a V1 document with its rule snapshot', () => {
     const source = createDefaultDocument()
     source.meta.title = '冻射演示'

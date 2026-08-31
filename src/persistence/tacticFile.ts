@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
+import { defaultRules } from '../domain/rules/defaultRules'
 
 export const MAX_TACTIC_FILE_BYTES = 2 * 1024 * 1024
 export const DRAFT_STORAGE_KEY = 'teyvat-tactics-board:draft:v1'
@@ -144,7 +145,7 @@ const rulesSchema = z.object({
   version: z.string().min(1).max(80),
   field: z.object({
     width: z.literal(20),
-    height: z.literal(10),
+    height: positive.max(100),
     baseMoveSpeed: positive,
     smallPenaltyRadius: positive,
     largePenaltyRadius: positive,
@@ -242,6 +243,37 @@ function sanitizeDocument(document: TacticDocumentV1): TacticDocumentV1 {
   }
   for (const modifier of clean.rulesSnapshot.modifiers) modifier.label = sanitize(modifier.label)
   return clean
+}
+
+function migrateLegacyFieldGeometry(document: TacticDocumentV1): TacticDocumentV1 {
+  const legacyHeight = 10
+  const isLegacyDefaultField = document.rulesSnapshot.version === 'teyvat-mvp-1'
+    && document.rulesSnapshot.field.width === defaultRules.field.width
+    && document.rulesSnapshot.field.height === legacyHeight
+  if (!isLegacyDefaultField) return document
+
+  const migrated = structuredClone(document)
+  const yOffset = (defaultRules.field.height - legacyHeight) / 2
+  const shiftPoint = (point: { x: number; y: number }) => {
+    point.y += yOffset
+  }
+  const shiftScene = (scene: TacticDocumentV1['initialScene']) => {
+    scene.players.forEach((player) => shiftPoint(player.position))
+    shiftPoint(scene.ball.position)
+  }
+
+  migrated.rulesSnapshot.version = defaultRules.version
+  migrated.rulesSnapshot.field.height = defaultRules.field.height
+  shiftScene(migrated.initialScene)
+  migrated.stepMarkers.forEach((step) => shiftScene(step.snapshot))
+  migrated.staticMoveArrows.forEach((arrow) => shiftPoint(arrow.target))
+  migrated.actions.forEach((action) => {
+    if ('path' in action) action.path.forEach(shiftPoint)
+    if (action.type === 'move' && action.curveControl) shiftPoint(action.curveControl)
+    if (action.type === 'possession') shiftPoint(action.position)
+    if (action.type === 'eZone') shiftPoint(action.center)
+  })
+  return migrated
 }
 
 function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
@@ -350,10 +382,10 @@ export function parseTactic(text: string): ParseResult {
         error: `文件结构无效：${issue?.path.join('.') || '根节点'} ${issue?.message ?? ''}`.trim(),
       }
     }
-    const document = result.data as TacticDocumentV1
+    const document = migrateLegacyFieldGeometry(sanitizeDocument(result.data as TacticDocumentV1))
     const integrityError = validateDocumentIntegrity(document)
     if (integrityError) return { ok: false, error: `文件结构无效：${integrityError}` }
-    return { ok: true, document: sanitizeDocument(document) }
+    return { ok: true, document }
   } catch {
     return { ok: false, error: '无法解析 JSON 文件。' }
   }

@@ -28,8 +28,10 @@ describe('App shell', () => {
   })
 
   it('renders a usable 3v3 board with simple tools first', () => {
-    render(<App />)
-    expect(screen.getByRole('application', { name: '战术编辑球场' })).toBeInTheDocument()
+    const { container } = render(<App />)
+    expect(screen.getByRole('application', { name: '战术编辑球场' })).toHaveAttribute('viewBox', '-36 -22 1072 744')
+    expect(screen.getByLabelText('20 乘 14 格战术球场')).toBeInTheDocument()
+    expect(container.querySelector('.pitch')).toHaveAttribute('height', '700')
     expect(screen.getAllByRole('button', { name: /蓝方/ })).toHaveLength(6)
     expect(screen.getByRole('button', { name: '跑动' })).toBeInTheDocument()
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
@@ -161,6 +163,30 @@ describe('App shell', () => {
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
     expect(container.querySelector('.board-workflow-guide')).not.toBeInTheDocument()
+  })
+
+  it('lets a tool-first Q choose an existing move endpoint as its actor node', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'clickable-run-end',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0, selection: { kind: 'player', id: 'blue-fire' } })
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: '从跑动终点续接Q 位移' }), { button: 0, pointerId: 31 })
+
+    expect(useTacticStore.getState()).toMatchObject({
+      currentTime: 2,
+      selection: { kind: 'player', id: 'blue-fire' },
+      tool: 'qMove',
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
   })
 
   it('saves a cooldown-delayed Q from the projected final origin without a virtual arrow', () => {
@@ -460,15 +486,15 @@ describe('App shell', () => {
     const handle = screen.getByRole('slider', { name: '调整蓝方 1面向' })
     const initialPosition = { ...useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')!.position }
 
-    fireEvent.pointerDown(handle, { pointerId: 17, button: 0, clientX: 350, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 17, clientX: 311, clientY: 322 })
+    fireEvent.pointerDown(handle, { pointerId: 17, button: 0, clientX: 350, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 17, clientX: 311, clientY: 422 })
 
     expect(handle).toHaveAttribute('aria-valuenow', '90')
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(0)
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual(initialPosition)
     expect(useTacticStore.getState().past).toHaveLength(0)
 
-    fireEvent.pointerUp(board, { pointerId: 17, clientX: 311, clientY: 322 })
+    fireEvent.pointerUp(board, { pointerId: 17, clientX: 311, clientY: 422 })
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(90)
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual(initialPosition)
     expect(useTacticStore.getState().past).toHaveLength(1)
@@ -485,18 +511,18 @@ describe('App shell', () => {
     mockBoardRect(board)
     const handle = screen.getByRole('slider', { name: '调整蓝方 1面向' })
 
-    fireEvent.pointerDown(handle, { pointerId: 23, button: 0, clientX: 350, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 23, clientX: 361, clientY: 271.5 })
+    fireEvent.pointerDown(handle, { pointerId: 23, button: 0, clientX: 350, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 23, clientX: 361, clientY: 371.5 })
     expect(handle).toHaveAttribute('aria-valuenow', '359')
     fireEvent.pointerCancel(board, { pointerId: 23 })
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(0)
     expect(useTacticStore.getState().past).toHaveLength(0)
 
     const playerToken = screen.getByRole('button', { name: /蓝方 1，水灵/ })
-    fireEvent.pointerDown(playerToken, { pointerId: 24, button: 0, clientX: 311, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 24, clientX: 361, clientY: 272 })
-    fireEvent.pointerUp(board, { pointerId: 24, clientX: 361, clientY: 272 })
-    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 5 })
+    fireEvent.pointerDown(playerToken, { pointerId: 24, button: 0, clientX: 311, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 24, clientX: 361, clientY: 372 })
+    fireEvent.pointerUp(board, { pointerId: 24, clientX: 361, clientY: 372 })
+    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 7 })
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(0)
   })
 
@@ -507,18 +533,18 @@ describe('App shell', () => {
     const carrier = screen.getByRole('button', { name: /蓝方 1，水灵/ })
     const ball = container.querySelector('.ball-token')
 
-    expect(carrier).toHaveAttribute('transform', 'translate(275 250)')
-    expect(ball).toHaveAttribute('transform', 'translate(275 250)')
-    fireEvent.pointerDown(carrier, { pointerId: 25, button: 0, clientX: 311, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 25, clientX: 361, clientY: 272 })
-    expect(carrier).toHaveAttribute('transform', 'translate(325 250)')
-    expect(ball).toHaveAttribute('transform', 'translate(325 250)')
-    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 5 })
+    expect(carrier).toHaveAttribute('transform', 'translate(275 350)')
+    expect(ball).toHaveAttribute('transform', 'translate(275 350)')
+    fireEvent.pointerDown(carrier, { pointerId: 25, button: 0, clientX: 311, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 25, clientX: 361, clientY: 372 })
+    expect(carrier).toHaveAttribute('transform', 'translate(325 350)')
+    expect(ball).toHaveAttribute('transform', 'translate(325 350)')
+    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 7 })
 
-    fireEvent.pointerUp(board, { pointerId: 25, clientX: 361, clientY: 272 })
-    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 5 })
-    expect(useTacticStore.getState().document.initialScene.ball.position).toEqual({ x: 6.5, y: 5 })
-    expect(ball).toHaveAttribute('transform', 'translate(325 250)')
+    fireEvent.pointerUp(board, { pointerId: 25, clientX: 361, clientY: 372 })
+    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 7 })
+    expect(useTacticStore.getState().document.initialScene.ball.position).toEqual({ x: 6.5, y: 7 })
+    expect(ball).toHaveAttribute('transform', 'translate(325 350)')
   })
 
   it('clears a facing preview when pointer capture is lost and ignores non-primary pointer starts', () => {
@@ -528,18 +554,18 @@ describe('App shell', () => {
     mockBoardRect(board)
     const handle = screen.getByRole('slider', { name: '调整蓝方 1面向' })
 
-    fireEvent.pointerDown(handle, { pointerId: 31, button: 0, clientX: 350, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 31, clientX: 311, clientY: 322 })
+    fireEvent.pointerDown(handle, { pointerId: 31, button: 0, clientX: 350, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 31, clientX: 311, clientY: 422 })
     expect(handle).toHaveAttribute('aria-valuenow', '90')
     fireEvent.lostPointerCapture(board, { pointerId: 31 })
     expect(handle).toHaveAttribute('aria-valuenow', '0')
-    fireEvent.pointerUp(board, { pointerId: 31, clientX: 311, clientY: 322 })
+    fireEvent.pointerUp(board, { pointerId: 31, clientX: 311, clientY: 422 })
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(0)
     expect(useTacticStore.getState().past).toHaveLength(0)
 
-    fireEvent.pointerDown(handle, { pointerId: 32, button: 2, clientX: 350, clientY: 272 })
-    fireEvent.pointerMove(board, { pointerId: 32, clientX: 311, clientY: 322 })
-    fireEvent.pointerUp(board, { pointerId: 32, clientX: 311, clientY: 322 })
+    fireEvent.pointerDown(handle, { pointerId: 32, button: 2, clientX: 350, clientY: 372 })
+    fireEvent.pointerMove(board, { pointerId: 32, clientX: 311, clientY: 422 })
+    fireEvent.pointerUp(board, { pointerId: 32, clientX: 311, clientY: 422 })
     expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.facing).toBe(0)
     expect(useTacticStore.getState().past).toHaveLength(0)
   })
@@ -548,16 +574,16 @@ describe('App shell', () => {
     const document = useTacticStore.getState().document
     document.actions.push({
       id: 'projected-handle-move', type: 'move', actorId: 'blue-water', startTime: 0, duration: 2,
-      path: [{ x: 5.5, y: 5 }, { x: 7.5, y: 5 }],
+      path: [{ x: 5.5, y: 7 }, { x: 7.5, y: 7 }],
     })
     useTacticStore.setState({ document, currentTime: 1, selection: { kind: 'player', id: 'blue-water' } })
     render(<App />)
     const handle = screen.getByRole('slider', { name: '调整蓝方 1面向' })
 
-    expect(handle).toHaveAttribute('transform', 'translate(364 250)')
+    expect(handle).toHaveAttribute('transform', 'translate(364 350)')
     fireEvent.keyDown(handle, { key: 'ArrowRight' })
     expect(handle).toHaveAttribute('aria-valuenow', '1')
-    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 5 })
+    expect(useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 7 })
     expect(useTacticStore.getState().document.actions).toHaveLength(1)
     expect(useTacticStore.getState().past).toHaveLength(1)
 
@@ -575,7 +601,7 @@ describe('App shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '射门' }))
     let shots = useTacticStore.getState().document.actions.filter((action) => action.type === 'shoot')
     expect(shots).toHaveLength(1)
-    expect(shots[0]?.path).toEqual([{ x: 5.5, y: 5 }, { x: 20, y: 5 }])
+    expect(shots[0]?.path).toEqual([{ x: 5.5, y: 7 }, { x: 20, y: 7 }])
     expect(useTacticStore.getState()).toMatchObject({ tool: 'select', selection: { kind: 'player', id: 'blue-water' } })
 
     fireEvent.keyDown(window, { key: 's' })
@@ -612,18 +638,18 @@ describe('App shell', () => {
     const shot = useTacticStore.getState().document.actions[0]
     expect(useTacticStore.getState().document.actions).toHaveLength(1)
     expect(shot).toMatchObject({ type: 'shoot', actorId: 'red-water' })
-    if (shot?.type === 'shoot') expect(shot.path.at(-1)).toEqual({ x: 0, y: 5 })
+    if (shot?.type === 'shoot') expect(shot.path.at(-1)).toEqual({ x: 0, y: 7 })
     expect(useTacticStore.getState()).toMatchObject({ tool: 'select', selection: { kind: 'player', id: 'red-water' }, notice: null })
     expect(container.querySelector('.tool-preview-layer')).not.toBeInTheDocument()
   })
 
   it('shows only the shared earliest shot pressure on the board and exposes no shot path handles', () => {
     const document = createDefaultDocument()
-    document.initialScene.players.find((player) => player.id === 'blue-water')!.position = { x: 17, y: 5 }
-    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 18.5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'blue-water')!.position = { x: 17, y: 7 }
+    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 18.5, y: 7 }
     document.actions.push({
       id: 'pressure-shot', type: 'shoot', actorId: 'blue-water', charge: 'yellow', startTime: 0, duration: 0.4,
-      path: [{ x: 17, y: 5 }, { x: 20, y: 5 }],
+      path: [{ x: 17, y: 7 }, { x: 20, y: 7 }],
     })
     useTacticStore.setState({ document, selection: { kind: 'action', id: 'pressure-shot' } })
     const { container } = render(<App />)
@@ -705,9 +731,9 @@ function mockBoardRect(board: HTMLElement) {
       left: 0,
       top: 0,
       right: 1072,
-      bottom: 544,
+      bottom: 744,
       width: 1072,
-      height: 544,
+      height: 744,
       toJSON: () => ({}),
     }),
   })

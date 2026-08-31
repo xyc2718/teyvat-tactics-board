@@ -15,7 +15,7 @@ import type {
 } from '../domain/model/types'
 import { cloneDefaultRules } from '../domain/rules/defaultRules'
 import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
-import { movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
+import { actionEndTime, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
 import { projectFrame } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
@@ -53,6 +53,7 @@ interface TacticStore extends HistoryState {
   setTool: (tool: ToolId) => void
   setBoardMode: (mode: BoardMode) => void
   chooseActorForTool: (playerId: string) => void
+  chooseActionEndpointForTool: (actionId: string) => void
   cancelTool: () => void
   setCurrentTime: (time: number) => void
   setPlaying: (playing: boolean) => void
@@ -313,6 +314,18 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       set({ notice: '基础模式只提供球员选择和移动箭头。' })
       return
     }
+    if (
+      current.boardMode === 'simulation'
+      && (tool === 'move' || tool === 'qMove')
+      && current.selection?.kind === 'action'
+    ) {
+      const selectedAction = current.document.actions.find((action) => action.id === current.selection?.id)
+      if (selectedAction?.type === 'move' || selectedAction?.type === 'qMove') {
+        set({ tool, isPlaying: false })
+        get().chooseActionEndpointForTool(selectedAction.id)
+        return
+      }
+    }
     if (tool === 'shoot' && current.selection?.kind === 'player') {
       const frame = projectFrame(current.document, current.currentTime)
       const shooter = frame.players.find((player) => player.id === current.selection?.id)
@@ -405,6 +418,27 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       return { selection: { kind: 'player' as const, id: player.id }, notice: null }
     })
   },
+  chooseActionEndpointForTool: (actionId) => set((state) => {
+    if (state.boardMode !== 'simulation' || (state.tool !== 'move' && state.tool !== 'qMove')) {
+      return { notice: '动作端点只用于续接跑动或 Q 位移。' }
+    }
+    const action = state.document.actions.find((candidate) => candidate.id === actionId)
+    if (!action || (action.type !== 'move' && action.type !== 'qMove')) {
+      return { notice: '请选择跑动或 Q 位移的终点。' }
+    }
+    const currentTime = actionEndTime(action)
+    const frame = projectFrame(state.document, currentTime)
+    const actor = frame.players.find((player) => player.id === action.actorId)
+    if (!actor || !isToolActorEligible(state.tool, actor, frame, state.document.rulesSnapshot)) {
+      return { notice: '该动作终点无法继续执行当前动作。' }
+    }
+    return {
+      currentTime,
+      selection: { kind: 'player' as const, id: actor.id },
+      isPlaying: false,
+      notice: null,
+    }
+  }),
   cancelTool: () => set((state) => ({
     tool: 'select',
     selection: state.selection?.kind === 'player' ? state.selection : null,

@@ -25,7 +25,7 @@ import {
 import { toolLabels } from '../ui/labels'
 
 const SCALE = 50
-const VIEW = { x: -36, y: -22, width: 1072, height: 544 }
+const VIEW_PADDING = { x: 36, y: 22 }
 
 function toSvg(point: Vec2) {
   return { x: point.x * SCALE, y: point.y * SCALE }
@@ -68,6 +68,7 @@ export function TacticsBoard() {
   const boardMode = useTacticStore((state) => state.boardMode)
   const select = useTacticStore((state) => state.select)
   const chooseActor = useTacticStore((state) => state.chooseActorForTool)
+  const chooseActionEndpoint = useTacticStore((state) => state.chooseActionEndpointForTool)
   const setNotice = useTacticStore((state) => state.setNotice)
   const moveEntity = useTacticStore((state) => state.moveEntity)
   const setPlayerFacing = useTacticStore((state) => state.setPlayerFacing)
@@ -82,6 +83,16 @@ export function TacticsBoard() {
     [boardMode, document, currentTime],
   )
   const rules = document.rulesSnapshot
+  const fieldWidth = rules.field.width * SCALE
+  const fieldHeight = rules.field.height * SCALE
+  const fieldCenterX = fieldWidth / 2
+  const fieldCenterY = fieldHeight / 2
+  const view = {
+    x: -VIEW_PADDING.x,
+    y: -VIEW_PADDING.y,
+    width: fieldWidth + VIEW_PADDING.x * 2,
+    height: fieldHeight + VIEW_PADDING.y * 2,
+  }
 
   const selectedPlayer = selection?.kind === 'player'
     ? frame.players.find((player) => player.id === selection.id)
@@ -100,8 +111,8 @@ export function TacticsBoard() {
   function clientToLogicalPoint(clientX: number, clientY: number): Vec2 {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect) return { x: 0, y: 0 }
-    const svgX = VIEW.x + ((clientX - rect.left) / rect.width) * VIEW.width
-    const svgY = VIEW.y + ((clientY - rect.top) / rect.height) * VIEW.height
+    const svgX = view.x + ((clientX - rect.left) / rect.width) * view.width
+    const svgY = view.y + ((clientY - rect.top) / rect.height) * view.height
     return { x: svgX / SCALE, y: svgY / SCALE }
   }
 
@@ -247,6 +258,7 @@ export function TacticsBoard() {
       ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
       : null
     const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? resolvedMovePath(moveAction) : path
+    const renderedEnd = renderedPath.at(-1)
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
     if (!elevated && !(isPlaying ? isCurrent : atJoint)) return null
@@ -279,6 +291,34 @@ export function TacticsBoard() {
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel action={action} evaluation={shotPressure} />}
+        {!isPlaying
+          && (tool === 'move' || tool === 'qMove')
+          && (action.type === 'move' || action.type === 'qMove')
+          && renderedEnd
+          && <circle
+            cx={renderedEnd.x * SCALE}
+            cy={renderedEnd.y * SCALE}
+            r="12"
+            className="action-chain-endpoint"
+            pointerEvents="all"
+            role="button"
+            tabIndex={0}
+            aria-label={`从${action.type === 'qMove' ? 'Q 位移' : '跑动'}终点续接${tool === 'qMove' ? 'Q 位移' : '跑动'}`}
+            data-action-endpoint={action.id}
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              chooseActionEndpoint(action.id)
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              event.stopPropagation()
+              chooseActionEndpoint(action.id)
+            }}
+          >
+            <title>从这里续接{tool === 'qMove' ? 'Q 位移' : '跑动'}</title>
+          </circle>}
         {elevated && action.type !== 'shoot' && path.map((point, index) => (
           <circle
             key={`${action.id}-handle-${index}`}
@@ -365,11 +405,12 @@ export function TacticsBoard() {
     : frame.ball.position
 
   return (
-    <div className="board-shell" aria-label="20 乘 10 格战术球场">
+    <div className="board-shell" aria-label={`${rules.field.width} 乘 ${rules.field.height} 格战术球场`}>
       <svg
         ref={svgRef}
         className={`tactics-board tool-${tool}`}
-        viewBox={`${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`}
+        viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`}
+        style={{ aspectRatio: `${view.width} / ${view.height}` }}
         role="application"
         aria-label="战术编辑球场"
         onPointerDown={onBoardPointerDown}
@@ -405,29 +446,29 @@ export function TacticsBoard() {
           <marker id="arrow-basic-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
             <path d="M0,0 L8,4 L0,8 Z" fill="#ff795f" />
           </marker>
-          <clipPath id="pitchClip"><rect x="0" y="0" width="1000" height="500" rx="15" /></clipPath>
+          <clipPath id="pitchClip"><rect x="0" y="0" width={fieldWidth} height={fieldHeight} rx="15" /></clipPath>
         </defs>
 
-        <rect className="pitch" x="0" y="0" width="1000" height="500" rx="15" fill="url(#pitchGradient)" />
+        <rect className="pitch" x="0" y="0" width={fieldWidth} height={fieldHeight} rx="15" fill="url(#pitchGradient)" />
         <g clipPath="url(#pitchClip)">
-          {Array.from({ length: 20 }, (_, index) => (
-            <rect key={`stripe-${index}`} x={index * SCALE} y="0" width={SCALE} height="500" className={index % 2 ? 'pitch-stripe alt' : 'pitch-stripe'} />
+          {Array.from({ length: Math.ceil(rules.field.width) }, (_, index) => (
+            <rect key={`stripe-${index}`} x={index * SCALE} y="0" width={SCALE} height={fieldHeight} className={index % 2 ? 'pitch-stripe alt' : 'pitch-stripe'} />
           ))}
-          {Array.from({ length: 21 }, (_, index) => <line key={`vx-${index}`} x1={index * SCALE} x2={index * SCALE} y1="0" y2="500" className="grid-line" />)}
-          {Array.from({ length: 11 }, (_, index) => <line key={`hy-${index}`} x1="0" x2="1000" y1={index * SCALE} y2={index * SCALE} className="grid-line" />)}
-          <circle cx="0" cy="250" r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer blue-zone" />
-          <circle cx="0" cy="250" r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner blue-zone" />
-          <circle cx="1000" cy="250" r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer red-zone" />
-          <circle cx="1000" cy="250" r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner red-zone" />
+          {Array.from({ length: Math.floor(rules.field.width) + 1 }, (_, index) => <line key={`vx-${index}`} x1={index * SCALE} x2={index * SCALE} y1="0" y2={fieldHeight} className="grid-line" />)}
+          {Array.from({ length: Math.floor(rules.field.height) + 1 }, (_, index) => <line key={`hy-${index}`} x1="0" x2={fieldWidth} y1={index * SCALE} y2={index * SCALE} className="grid-line" />)}
+          <circle cx="0" cy={fieldCenterY} r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer blue-zone" />
+          <circle cx="0" cy={fieldCenterY} r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner blue-zone" />
+          <circle cx={fieldWidth} cy={fieldCenterY} r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer red-zone" />
+          <circle cx={fieldWidth} cy={fieldCenterY} r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner red-zone" />
         </g>
-        <rect x="0" y="0" width="1000" height="500" rx="15" className="pitch-border" />
-        <line x1="500" x2="500" y1="0" y2="500" className="field-mark" />
-        <circle cx="500" cy="250" r="65" className="field-mark fill-none" />
-        <circle cx="500" cy="250" r="4" className="center-dot" />
-        <path d="M0 205 H-24 V295 H0" className="goal-frame goal-blue" />
-        <path d="M1000 205 H1024 V295 H1000" className="goal-frame goal-red" />
+        <rect x="0" y="0" width={fieldWidth} height={fieldHeight} rx="15" className="pitch-border" />
+        <line x1={fieldCenterX} x2={fieldCenterX} y1="0" y2={fieldHeight} className="field-mark" />
+        <circle cx={fieldCenterX} cy={fieldCenterY} r="65" className="field-mark fill-none" />
+        <circle cx={fieldCenterX} cy={fieldCenterY} r="4" className="center-dot" />
+        <path d={`M0 ${fieldCenterY - 45} H-24 V${fieldCenterY + 45} H0`} className="goal-frame goal-blue" />
+        <path d={`M${fieldWidth} ${fieldCenterY - 45} H${fieldWidth + 24} V${fieldCenterY + 45} H${fieldWidth}`} className="goal-frame goal-red" />
         <text x="12" y="20" className="field-label">蓝方球门</text>
-        <text x="988" y="20" textAnchor="end" className="field-label">红方球门</text>
+        <text x={fieldWidth - 12} y="20" textAnchor="end" className="field-label">红方球门</text>
 
         {boardMode === 'simulation' && (document.view.analysis || tool === 'attack') && selectedPlayer && (
           <g className="analysis-ranges" pointerEvents="none">

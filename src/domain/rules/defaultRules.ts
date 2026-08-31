@@ -11,10 +11,10 @@ export const MATCHUP_LABELS: Record<Exclude<MatchupRating, null>, string> = {
 }
 
 export const defaultRules: RuleSetV1 = {
-  version: 'teyvat-mvp-1',
+  version: 'teyvat-mvp-2',
   field: {
     width: 20,
-    height: 10,
+    height: 14,
     baseMoveSpeed: 1,
     smallPenaltyRadius: 4,
     largePenaltyRadius: 7,
