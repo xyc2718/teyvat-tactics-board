@@ -1,0 +1,841 @@
+import { useMemo, useRef, useState } from 'react'
+import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, truncatePath } from '../domain/geometry/geometry'
+import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
+import { anchorPassPathToPlayer } from '../domain/model/passPath'
+import {
+  classifyPassThreat,
+  highestPassThreat,
+  PASS_THREAT_LABELS,
+  PASS_THREAT_ORDER,
+} from '../domain/rules/passThreat'
+import {
+  evaluateShotActionPressure,
+  shotPressureSummary,
+} from '../domain/rules/shotPressure'
+import { waterQMoveBoost } from '../domain/timeline/movementEffects'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from '../domain/timeline/projectFrame'
+import { planSimpleQ } from '../editor/locomotionScheduling'
+import { useTacticStore } from '../editor/useTacticStore'
+import {
+  actorPrompt,
+  isToolActorEligible,
+  isToolTargetPlayerEligible,
+  resolveToolActor,
+  targetPrompt,
+  toolNeedsActor,
+} from '../editor/toolWorkflow'
+import { toolLabels } from '../ui/labels'
+
+const SCALE = 50
+const VIEW = { x: -36, y: -22, width: 1072, height: 544 }
+
+function toSvg(point: Vec2) {
+  return { x: point.x * SCALE, y: point.y * SCALE }
+}
+
+function pointsAttribute(path: Vec2[]) {
+  return path.map((point) => `${Number((point.x * SCALE).toFixed(3))},${Number((point.y * SCALE).toFixed(3))}`).join(' ')
+}
+
+function actionPath(action: TacticAction): Vec2[] | null {
+  return 'path' in action ? action.path : null
+}
+
+function openingFrame(document: TacticDocumentV1): ProjectedFrame {
+  return {
+    ...document.initialScene,
+    statuses: [],
+    time: 0,
+    cooldowns: Object.fromEntries(document.initialScene.players.map((player) => [player.id, { q: 0, e: 0 }])),
+    shots: [],
+  }
+}
+
+type DragState =
+  | { kind: 'entity'; id: string; point: Vec2 }
+  | { kind: 'path'; actionId: string; index: number; point: Vec2 }
+  | { kind: 'staticArrow'; arrowId: string; point: Vec2 }
+  | { kind: 'facing'; playerId: string; center: Vec2; initialFacing: number; facing: number }
+  | null
+
+export function TacticsBoard() {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [drag, setDrag] = useState<DragState>(null)
+  const [hoverPoint, setHoverPoint] = useState<Vec2 | null>(null)
+  const document = useTacticStore((state) => state.document)
+  const currentTime = useTacticStore((state) => state.currentTime)
+  const selection = useTacticStore((state) => state.selection)
+  const tool = useTacticStore((state) => state.tool)
+  const boardMode = useTacticStore((state) => state.boardMode)
+  const showAdvancedTimeline = useTacticStore((state) => state.showAdvancedTimeline)
+  const select = useTacticStore((state) => state.select)
+  const chooseActor = useTacticStore((state) => state.chooseActorForTool)
+  const setNotice = useTacticStore((state) => state.setNotice)
+  const moveEntity = useTacticStore((state) => state.moveEntity)
+  const setPlayerFacing = useTacticStore((state) => state.setPlayerFacing)
+  const createShot = useTacticStore((state) => state.createShot)
+  const createAction = useTacticStore((state) => state.createAction)
+  const updateActionPathPoint = useTacticStore((state) => state.updateActionPathPoint)
+  const updateStaticMoveArrowTarget = useTacticStore((state) => state.updateStaticMoveArrowTarget)
+  const deleteStaticMoveArrow = useTacticStore((state) => state.deleteStaticMoveArrow)
+  const frame = useMemo(
+    () => boardMode === 'basic' ? openingFrame(document) : projectFrame(document, currentTime),
+    [boardMode, document, currentTime],
+  )
+  const rules = document.rulesSnapshot
+
+  const selectedPlayer = selection?.kind === 'player'
+    ? frame.players.find((player) => player.id === selection.id)
+    : undefined
+  const toolActor = resolveToolActor(tool, selectedPlayer, frame, rules)
+  const actionActor = toolNeedsActor(tool) ? toolActor : selectedPlayer
+  const qPreviewPlan = toolActor && tool === 'qMove' && !showAdvancedTimeline
+    ? planSimpleQ(document, toolActor.id, currentTime)
+    : null
+  const previewActor = qPreviewPlan ? { ...qPreviewPlan.actor, position: qPreviewPlan.origin } : toolActor
+  const previewStartTime = qPreviewPlan?.startTime ?? currentTime
+  const selectedPass = selection?.kind === 'action'
+    ? document.actions.find((action) => action.id === selection.id && action.type === 'pass')
+    : undefined
+  const selectedAction = selection?.kind === 'action'
+    ? document.actions.find((action) => action.id === selection.id)
+    : undefined
+  const selectedStaticArrow = selection?.kind === 'staticArrow'
+    ? document.staticMoveArrows.find((arrow) => arrow.id === selection.id)
+    : undefined
+  function clientToLogicalPoint(clientX: number, clientY: number): Vec2 {
+    const rect = svgRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 0, y: 0 }
+    const svgX = VIEW.x + ((clientX - rect.left) / rect.width) * VIEW.width
+    const svgY = VIEW.y + ((clientY - rect.top) / rect.height) * VIEW.height
+    return { x: svgX / SCALE, y: svgY / SCALE }
+  }
+
+  function clientToField(clientX: number, clientY: number): Vec2 {
+    const point = clientToLogicalPoint(clientX, clientY)
+    return {
+      x: Math.max(0, Math.min(rules.field.width, point.x)),
+      y: Math.max(0, Math.min(rules.field.height, point.y)),
+    }
+  }
+
+  function beginEntityDrag(event: React.PointerEvent, id: string, point: Vec2) {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    if (tool !== 'select') {
+      if (tool === 'shoot') {
+        if (id === 'ball') setNotice('射门只需选择一名球员。')
+        else createShot(id)
+        return
+      }
+      if (tool === 'attack') {
+        if (id === 'ball') setNotice('攻击范围模式请点击一名球员。')
+        else chooseActor(id)
+        return
+      }
+      if (toolNeedsActor(tool) && !toolActor) {
+        if (id === 'ball') setNotice('当前步骤需要先选择一名可用球员。')
+        else chooseActor(id)
+        return
+      }
+      createAction(actionActor?.id ?? null, point, id === 'ball' ? undefined : id)
+      return
+    }
+    select(id === 'ball' ? { kind: 'ball', id: 'ball' } : { kind: 'player', id })
+    setDrag({ kind: 'entity', id, point })
+    svgRef.current?.setPointerCapture?.(event.pointerId)
+  }
+
+  function beginFacingDrag(event: React.PointerEvent<SVGGElement>, player: PlayerState, center: Vec2) {
+    if (tool !== 'select' || event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const facing = normalizeAngle(player.facing)
+    setDrag({ kind: 'facing', playerId: player.id, center: { ...center }, initialFacing: facing, facing })
+    event.currentTarget.ownerSVGElement?.setPointerCapture?.(event.pointerId)
+  }
+
+  function onBoardPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    if (event.button !== 0) return
+    const point = clientToField(event.clientX, event.clientY)
+    if (tool === 'select') {
+      select(null)
+      return
+    }
+    if (tool === 'attack') {
+      setNotice('攻击范围模式请点击一名球员，可连续切换查看对象。')
+      return
+    }
+    if (tool === 'shoot') {
+      setNotice('射门无需选择落点；请点击一名射门球员。')
+      return
+    }
+    if (tool === 'eZone') {
+      setNotice(actorPrompt(tool))
+      return
+    }
+    if (toolNeedsActor(tool) && !toolActor) {
+      setNotice(actorPrompt(tool))
+      return
+    }
+    createAction(actionActor?.id ?? null, point)
+  }
+
+  function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    const logicalPoint = clientToLogicalPoint(event.clientX, event.clientY)
+    const point = clientToField(event.clientX, event.clientY)
+    setHoverPoint(point)
+    if (drag?.kind === 'facing') {
+      setDrag({ ...drag, facing: directionAngle(drag.center, logicalPoint, drag.facing) })
+    } else if (drag) {
+      setDrag({ ...drag, point })
+    }
+  }
+
+  function onPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (!drag) return
+    if (drag.kind === 'entity') moveEntity(drag.id, drag.point)
+    if (drag.kind === 'path') updateActionPathPoint(drag.actionId, drag.index, drag.point)
+    if (drag.kind === 'staticArrow') updateStaticMoveArrowTarget(drag.arrowId, drag.point)
+    if (drag.kind === 'facing') {
+      const delta = Math.abs(normalizeAngle(drag.facing - drag.initialFacing))
+      if (delta > 0.001 && Math.abs(delta - 360) > 0.001) setPlayerFacing(drag.playerId, drag.facing)
+    }
+    setDrag(null)
+    if (svgRef.current?.hasPointerCapture?.(event.pointerId)) svgRef.current.releasePointerCapture?.(event.pointerId)
+  }
+
+  function onPointerCancel(event: React.PointerEvent<SVGSVGElement>) {
+    setDrag(null)
+    setHoverPoint(null)
+    if (svgRef.current?.hasPointerCapture?.(event.pointerId)) svgRef.current.releasePointerCapture?.(event.pointerId)
+  }
+
+  function onLostPointerCapture() {
+    setDrag(null)
+    setHoverPoint(null)
+  }
+
+  function previewPath(action: TacticAction): Vec2[] | null {
+    const path = actionPath(action)
+    if (!path) return null
+    if (drag?.kind === 'path' && drag.actionId === action.id) {
+      return path.map((point, index) => index === drag.index ? drag.point : point)
+    }
+    if (action.type === 'pass' && drag?.kind === 'entity' && drag.id !== 'ball') {
+      return anchorPassPathToPlayer(action, drag.id, drag.point)
+    }
+    return path
+  }
+
+  function renderAction(action: TacticAction, elevated: boolean) {
+    const isSelected = selection?.kind === 'action' && selection.id === action.id
+    if (action.type === 'eZone') {
+      const endTime = action.startTime + action.duration
+      const active = currentTime >= action.startTime && currentTime < endTime
+      if (!elevated && !document.view.analysis && !active) return null
+      const sampleTime = Math.max(action.startTime, Math.min(currentTime, endTime))
+      const zoneFrame = active ? frame : projectFrame(document, sampleTime)
+      const center = zoneFrame.players.find((player) => player.id === action.actorId)?.position ?? action.center
+      const owner = zoneFrame.players.find((player) => player.id === action.actorId)
+      const multiplier = owner ? rules.roles[owner.role].e?.slowMultiplier : undefined
+      return (
+        <g key={action.id} data-action-id={action.id} className={isSelected ? 'selected-action' : ''} pointerEvents={elevated ? 'none' : undefined} onPointerDown={(event) => { event.stopPropagation(); select({ kind: 'action', id: action.id }) }}>
+          <circle cx={center.x * SCALE} cy={center.y * SCALE} r={action.radius * SCALE} className={`ice-zone ${active ? 'active' : ''}`}>
+            <title>随身冰圈 · 持续 {action.duration.toFixed(1)} 秒 · 敌方圈内移速 {multiplier ?? 1}× · 敌方 Q 距离 {owner ? rules.roles[owner.role].e?.qDistanceMultiplier ?? 1 : 1}×</title>
+          </circle>
+        </g>
+      )
+    }
+    const path = previewPath(action)
+    if (!path) return null
+    const qAction = action.type === 'qMove' ? { ...action, path } : null
+    const qEffect = qAction ? evaluateQDistanceEffect(document, qAction) : null
+    const renderedPath = qAction ? effectiveQPath(document, qAction) : path
+    const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
+    const opacity = isSelected || isCurrent ? 1 : 0.42
+    const waterBoost = action.type === 'move' ? waterQMoveBoost(document, action) : null
+    const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
+    return (
+      <g
+        key={action.id}
+        data-action-id={action.id}
+        className={isSelected ? 'selected-action' : ''}
+        opacity={opacity}
+        pointerEvents={elevated ? 'none' : undefined}
+        onPointerDown={(event) => { event.stopPropagation(); select({ kind: 'action', id: action.id }) }}
+      >
+        {action.type === 'pass'
+          ? <PassThreatLines
+              path={path}
+              passerId={action.actorId}
+              frame={projectFrame(document, action.startTime)}
+              rules={rules}
+              markerEnd="url(#arrow-pass)"
+            />
+          : <polyline
+              points={pointsAttribute(renderedPath)}
+              className={`action-path action-${action.type}`}
+              markerEnd={`url(#arrow-${action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'annotation' ? 'note' : 'move'})`}
+            >
+              {qEffect && qEffect.reduction > 0.005 && <title>冰圈影响：原路径 {qEffect.authoredDistance.toFixed(2)} 格，实际 Q 位移 {qEffect.effectiveDistance.toFixed(2)} 格</title>}
+            </polyline>}
+        {waterBoost && <WaterBoostRoute effect={waterBoost} />}
+        {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
+        {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
+        {action.type === 'shoot' && shotPressure && <ShotPressureLabel action={action} evaluation={shotPressure} />}
+        {elevated && action.type !== 'shoot' && path.map((point, index) => (
+          <circle
+            key={`${action.id}-handle-${index}`}
+            cx={point.x * SCALE}
+            cy={point.y * SCALE}
+            r="8"
+            className="path-handle"
+            pointerEvents="all"
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              setDrag({ kind: 'path', actionId: action.id, index, point })
+              svgRef.current?.setPointerCapture?.(event.pointerId)
+            }}
+          />
+        ))}
+      </g>
+    )
+  }
+
+  function playerPosition(id: string, fallback: Vec2) {
+    return drag?.kind === 'entity' && drag.id === id ? drag.point : fallback
+  }
+
+  function renderStaticArrow(arrow: StaticMoveArrow, elevated: boolean) {
+    const player = frame.players.find((candidate) => candidate.id === arrow.playerId)
+    if (!player) return null
+    const start = playerPosition(player.id, player.position)
+    const target = drag?.kind === 'staticArrow' && drag.arrowId === arrow.id ? drag.point : arrow.target
+    const selected = selection?.kind === 'staticArrow' && selection.id === arrow.id
+    return <g
+      key={arrow.id}
+      data-static-arrow-id={arrow.id}
+      className={`static-move-arrow-group ${selected ? 'selected' : ''}`}
+      pointerEvents={elevated ? 'none' : undefined}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+        select({ kind: 'staticArrow', id: arrow.id })
+      }}
+    >
+      <line
+        x1={start.x * SCALE}
+        y1={start.y * SCALE}
+        x2={target.x * SCALE}
+        y2={target.y * SCALE}
+        className={`static-move-arrow team-${player.team}`}
+        markerEnd={`url(#arrow-basic-${player.team})`}
+      >
+        <title>{player.name} 移动箭头</title>
+      </line>
+      {elevated && <circle
+        cx={target.x * SCALE}
+        cy={target.y * SCALE}
+        r="9"
+        className="path-handle static-arrow-handle"
+        pointerEvents="all"
+        role="slider"
+        tabIndex={0}
+        aria-label={`调整${player.name}移动箭头终点`}
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          setDrag({ kind: 'staticArrow', arrowId: arrow.id, point: target })
+          svgRef.current?.setPointerCapture?.(event.pointerId)
+        }}
+      />}
+    </g>
+  }
+
+  const ballPosition = drag?.kind === 'entity' && (drag.id === 'ball' || drag.id === frame.ball.carrierId)
+    ? drag.point
+    : frame.ball.position
+
+  return (
+    <div className="board-shell" aria-label="20 乘 10 格战术球场">
+      <svg
+        ref={svgRef}
+        className={`tactics-board tool-${tool}`}
+        viewBox={`${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`}
+        role="application"
+        aria-label="战术编辑球场"
+        onPointerDown={onBoardPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => { if (!drag) setHoverPoint(null) }}
+        onPointerCancel={onPointerCancel}
+        onLostPointerCapture={onLostPointerCapture}
+      >
+        <defs>
+          <linearGradient id="pitchGradient" x1="0" x2="1">
+            <stop offset="0" stopColor="#4f9368" />
+            <stop offset="0.5" stopColor="#63aa78" />
+            <stop offset="1" stopColor="#4f9368" />
+          </linearGradient>
+          <marker id="arrow-move" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#f5d58b" />
+          </marker>
+          <marker id="arrow-q" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#7de2f2" />
+          </marker>
+          <marker id="arrow-q-preview" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto">
+            <path d="M0.5,0.5 L4.5,2.5 L0.5,4.5" fill="none" stroke="rgba(142, 233, 247, .55)" strokeWidth="1" />
+          </marker>
+          <marker id="arrow-pass" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#f7f4df" />
+          </marker>
+          <marker id="arrow-shoot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#ffba4a" />
+          </marker>
+          <marker id="arrow-note" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#d6c9ff" />
+          </marker>
+          <marker id="arrow-basic-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#69d8f0" />
+          </marker>
+          <marker id="arrow-basic-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#ff795f" />
+          </marker>
+          <clipPath id="pitchClip"><rect x="0" y="0" width="1000" height="500" rx="15" /></clipPath>
+        </defs>
+
+        <rect className="pitch" x="0" y="0" width="1000" height="500" rx="15" fill="url(#pitchGradient)" />
+        <g clipPath="url(#pitchClip)">
+          {Array.from({ length: 20 }, (_, index) => (
+            <rect key={`stripe-${index}`} x={index * SCALE} y="0" width={SCALE} height="500" className={index % 2 ? 'pitch-stripe alt' : 'pitch-stripe'} />
+          ))}
+          {Array.from({ length: 21 }, (_, index) => <line key={`vx-${index}`} x1={index * SCALE} x2={index * SCALE} y1="0" y2="500" className="grid-line" />)}
+          {Array.from({ length: 11 }, (_, index) => <line key={`hy-${index}`} x1="0" x2="1000" y1={index * SCALE} y2={index * SCALE} className="grid-line" />)}
+          <circle cx="0" cy="250" r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer blue-zone" />
+          <circle cx="0" cy="250" r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner blue-zone" />
+          <circle cx="1000" cy="250" r={rules.field.largePenaltyRadius * SCALE} className="zone zone-outer red-zone" />
+          <circle cx="1000" cy="250" r={rules.field.smallPenaltyRadius * SCALE} className="zone zone-inner red-zone" />
+        </g>
+        <rect x="0" y="0" width="1000" height="500" rx="15" className="pitch-border" />
+        <line x1="500" x2="500" y1="0" y2="500" className="field-mark" />
+        <circle cx="500" cy="250" r="65" className="field-mark fill-none" />
+        <circle cx="500" cy="250" r="4" className="center-dot" />
+        <path d="M0 205 H-24 V295 H0" className="goal-frame goal-blue" />
+        <path d="M1000 205 H1024 V295 H1000" className="goal-frame goal-red" />
+        <text x="12" y="20" className="field-label">蓝方球门</text>
+        <text x="988" y="20" textAnchor="end" className="field-label">红方球门</text>
+
+        {boardMode === 'simulation' && (document.view.analysis || tool === 'attack') && selectedPlayer && (
+          <g className="analysis-ranges" pointerEvents="none">
+            <circle
+              cx={toSvg(selectedPlayer.position).x}
+              cy={toSvg(selectedPlayer.position).y}
+              r={rules.roles[selectedPlayer.role].attackRadius * SCALE}
+              className="range-circle attack-range"
+            />
+            {rules.roles[selectedPlayer.role].attackInnerRadius !== undefined && (
+              <circle
+                cx={toSvg(selectedPlayer.position).x}
+                cy={toSvg(selectedPlayer.position).y}
+                r={(rules.roles[selectedPlayer.role].attackInnerRadius ?? 0) * SCALE}
+                className="range-circle attack-inner-range"
+              />
+            )}
+            {document.view.analysis && <>
+              <circle
+                cx={toSvg(selectedPlayer.position).x}
+                cy={toSvg(selectedPlayer.position).y}
+                r={rules.roles[selectedPlayer.role].q.maxDistance * SCALE}
+                className="range-circle q-range"
+              />
+              {selectedPlayer.hasBall && <>
+                <circle cx={toSvg(selectedPlayer.position).x} cy={toSvg(selectedPlayer.position).y} r={rules.passing.safeDistance * SCALE} className="range-circle pass-safe-range" />
+                <circle cx={toSvg(selectedPlayer.position).x} cy={toSvg(selectedPlayer.position).y} r={rules.passing.maxDistance * SCALE} className="range-circle pass-max-range" />
+              </>}
+            </>}
+          </g>
+        )}
+
+        {tool !== 'select' && previewActor && (
+          <ToolPointerPreview
+            tool={tool}
+            actor={previewActor}
+            hoverPoint={hoverPoint}
+            document={document}
+            frame={frame}
+            basicMode={boardMode === 'basic'}
+            startTime={previewStartTime}
+          />
+        )}
+
+        {boardMode === 'simulation' && <g className="actions-layer actions-layer-background">
+          {document.actions.filter((action) => action.id !== selectedAction?.id).map((action) => renderAction(action, false))}
+        </g>}
+
+        {boardMode === 'basic' && <g className="static-arrows-layer static-arrows-background">
+          {document.staticMoveArrows
+            .filter((arrow) => arrow.id !== selectedStaticArrow?.id)
+            .map((arrow) => renderStaticArrow(arrow, false))}
+        </g>}
+
+        <g className="entities-layer">
+        {frame.players.map((player) => {
+          const position = playerPosition(player.id, player.position)
+          const svgPoint = toSvg(position)
+          const roleRule = rules.roles[player.role]
+          const renderedFacing = drag?.kind === 'facing' && drag.playerId === player.id ? drag.facing : player.facing
+          const facing = angleToVector(renderedFacing)
+          const selected = selection?.kind === 'player' && selection.id === player.id
+          const actorCandidate = tool === 'attack'
+            || (tool !== 'select' && !toolActor && isToolActorEligible(tool, player, frame, rules))
+          const targetCandidate = tool !== 'select' && tool !== 'attack' && toolActor
+            ? isToolTargetPlayerEligible(tool, toolActor, player)
+            : false
+          const workflowDimmed = tool !== 'select' && tool !== 'attack' && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
+          const statuses = boardMode === 'basic' ? [] : frame.statuses.filter((status) => status.playerId === player.id)
+          const cooldown = boardMode === 'basic' ? undefined : frame.cooldowns[player.id]
+          const shot = boardMode === 'basic' ? undefined : frame.shots.find((candidate) => {
+            if (candidate.actorId !== player.id || candidate.completed) return false
+            const action = document.actions.find((item) => item.id === candidate.actionId)
+            return action && currentTime <= action.startTime + action.duration
+          })
+          return (
+            <g
+              key={player.id}
+              className={`player-token team-${player.team} ${selected ? 'selected' : ''} ${actorCandidate ? 'tool-eligible' : ''} ${targetCandidate ? 'tool-target-eligible' : ''} ${workflowDimmed ? 'tool-ineligible' : ''}`}
+              transform={`translate(${svgPoint.x} ${svgPoint.y})`}
+              onPointerDown={(event) => beginEntityDrag(event, player.id, position)}
+              tabIndex={0}
+              role="button"
+              aria-label={`${player.name}，${roleRule.label}${tool === 'attack' ? '，可查看攻击范围' : actorCandidate ? '，可选施法者' : targetCandidate ? '，可选目标' : ''}`}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return
+                event.preventDefault()
+                if (tool === 'attack') {
+                  chooseActor(player.id)
+                } else if (tool === 'shoot') {
+                  createShot(player.id)
+                } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {
+                  chooseActor(player.id)
+                } else if (tool !== 'select') {
+                  createAction(actionActor?.id ?? null, position, player.id)
+                } else {
+                  select({ kind: 'player', id: player.id })
+                }
+              }}
+            >
+              {statuses.map((status, index) => <circle key={status.id} r={27 + index * 5} className={`status-ring status-${status.kind}`} />)}
+              <circle r="22" className="token-shadow" />
+              <circle r="20" className="token-body" />
+              {boardMode === 'simulation' && <>
+                <path d={`M 0 0 L ${facing.x * 31} ${facing.y * 31}`} className="facing-line" />
+                <path d={`M ${facing.x * 31} ${facing.y * 31} l ${-facing.x * 7 - facing.y * 5} ${-facing.y * 7 + facing.x * 5} l ${facing.y * 10} ${-facing.x * 10} Z`} className="facing-head" />
+              </>}
+              <text y="6" textAnchor="middle" className="role-glyph">{roleRule.shortLabel}</text>
+              <text y="39" textAnchor="middle" className="player-name">{player.name}</text>
+              {boardMode === 'simulation' && player.hasBall && <circle cx="16" cy="-16" r="6" className="possession-dot" />}
+              {(cooldown?.q ?? 0) > 0.05 && <g transform="translate(-27 -27)">
+                <rect x="-4" y="-8" width="31" height="15" rx="7" className="cd-badge" />
+                <text x="11" y="3" textAnchor="middle" className="cd-text">Q {cooldown?.q.toFixed(1)}</text>
+              </g>}
+              {shot && <circle r="27" className={`charge-ring ${shot.interrupted ? 'interrupted' : ''}`} pathLength="1" strokeDasharray={`${shot.progress} 1`} />}
+            </g>
+          )
+        })}
+
+        {boardMode === 'simulation' && tool === 'select' && selectedPlayer && (() => {
+          const position = playerPosition(selectedPlayer.id, selectedPlayer.position)
+          const renderedFacing = drag?.kind === 'facing' && drag.playerId === selectedPlayer.id
+            ? drag.facing
+            : selectedPlayer.facing
+          const facing = angleToVector(renderedFacing)
+          const handle = {
+            x: position.x * SCALE + facing.x * 39,
+            y: position.y * SCALE + facing.y * 39,
+          }
+          const roundedFacing = Math.round(normalizeAngle(renderedFacing)) % 360
+          return <g
+            className={`facing-handle ${drag?.kind === 'facing' ? 'dragging' : ''}`}
+            transform={`translate(${handle.x} ${handle.y})`}
+            role="slider"
+            tabIndex={0}
+            aria-label={`调整${selectedPlayer.name}面向`}
+            aria-valuemin={0}
+            aria-valuemax={359}
+            aria-valuenow={roundedFacing}
+            aria-valuetext={`${roundedFacing} 度`}
+            onPointerDown={(event) => beginFacingDrag(event, selectedPlayer, position)}
+            onKeyDown={(event) => {
+              let nextFacing: number | null = null
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextFacing = renderedFacing - 1
+              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextFacing = renderedFacing + 1
+              if (event.key === 'Home') nextFacing = 0
+              if (event.key === 'End') nextFacing = 359
+              if (nextFacing === null) return
+              event.preventDefault()
+              event.stopPropagation()
+              setPlayerFacing(selectedPlayer.id, normalizeAngle(nextFacing))
+            }}
+          >
+            <circle r="16" className="facing-handle-hit" />
+            <circle r="9" className="facing-handle-ring" />
+            <circle r="3" className="facing-handle-dot" />
+          </g>
+        })()}
+
+        {boardMode === 'simulation' && <g
+          className={`ball-token ${frame.ball.isFree ? 'free' : ''}`}
+          transform={`translate(${ballPosition.x * SCALE} ${ballPosition.y * SCALE})`}
+          onPointerDown={(event) => beginEntityDrag(event, 'ball', ballPosition)}
+          tabIndex={0}
+          role="button"
+          aria-label="足球"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            if (tool === 'select') {
+              select({ kind: 'ball', id: 'ball' })
+            } else if (tool === 'shoot') {
+              setNotice('射门只需选择一名球员。')
+            } else if (toolNeedsActor(tool) && !toolActor) {
+              setNotice(actorPrompt(tool))
+            } else {
+              createAction(actionActor?.id ?? null, ballPosition)
+            }
+          }}
+        >
+          <circle r="11" className="ball-shadow" />
+          <circle r="9" className="ball-body" />
+          <path d="M0 -4 L4 -1 L3 4 L-3 4 L-4 -1 Z" className="ball-mark" />
+        </g>}
+        </g>
+
+        {boardMode === 'simulation' && selectedAction && <g className="actions-layer selected-action-layer">
+          {renderAction(selectedAction, true)}
+        </g>}
+        {boardMode === 'basic' && selectedStaticArrow && <g className="static-arrows-layer selected-static-arrow-layer">
+          {renderStaticArrow(selectedStaticArrow, true)}
+        </g>}
+      </svg>
+      {tool !== 'select' && <div className="board-workflow-guide" role="status">
+        <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
+        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
+        <kbd>Esc 取消</kbd>
+      </div>}
+      {boardMode === 'simulation' && (tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass')) && <PassThreatLegend />}
+      {boardMode === 'basic' && selectedStaticArrow && <button className="static-arrow-delete" onClick={() => deleteStaticMoveArrow(selectedStaticArrow.id)}>删除所选箭头</button>}
+      <div className="board-scale"><span />1 格 ≈ 基础移动 1 秒</div>
+      <div className="board-hint">
+        {boardMode === 'basic'
+          ? tool === 'select'
+            ? '拖动球员调整站位 · 选择球员后使用“移动箭头” · 点击箭头可编辑或删除'
+            : toolActor ? '点击球场设置移动箭头终点' : '先选择一名球员'
+          : tool === 'select' ? '拖动球员或球 · 选中球员后拖动方向手柄 · 点击路径可编辑控制点' : tool === 'shoot' || tool === 'eZone' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
+      </div>
+    </div>
+  )
+}
+
+function ShotPressureLabel({
+  action,
+  evaluation,
+}: {
+  action: Extract<TacticAction, { type: 'shoot' }>
+  evaluation: NonNullable<ReturnType<typeof evaluateShotActionPressure>>
+}) {
+  const anchor = pointAlongPath(action.path, 0.52)
+  return <g className={`shot-pressure-label ${evaluation.isRisk ? 'risk' : 'safe'}`} pointerEvents="none">
+    <rect x={anchor.x * SCALE - 91} y={anchor.y * SCALE - 30} width="182" height="17" rx="6" />
+    <text x={anchor.x * SCALE} y={anchor.y * SCALE - 19} textAnchor="middle">{shotPressureSummary(evaluation)}</text>
+  </g>
+}
+
+function ToolPointerPreview({
+  tool,
+  actor,
+  hoverPoint,
+  document,
+  frame,
+  basicMode,
+  startTime,
+}: {
+  tool: ToolId
+  actor: PlayerState
+  hoverPoint: Vec2 | null
+  document: TacticDocumentV1
+  frame: ProjectedFrame
+  basicMode: boolean
+  startTime: number
+}) {
+  const rules = document.rulesSnapshot
+  const origin = actor.position
+
+  if (basicMode && tool === 'move') {
+    return <g className="tool-preview-layer basic-move-preview" pointerEvents="none">
+      {hoverPoint && <line
+        x1={origin.x * SCALE}
+        y1={origin.y * SCALE}
+        x2={hoverPoint.x * SCALE}
+        y2={hoverPoint.y * SCALE}
+        className={`static-move-arrow preview team-${actor.team}`}
+        markerEnd={`url(#arrow-basic-${actor.team})`}
+      />}
+    </g>
+  }
+
+  if (tool === 'qMove') {
+    const qRule = rules.roles[actor.role].q
+    const maxDistance = qRule.maxDistance
+    const rawPath = hoverPoint ? [origin, hoverPoint] : [origin, origin]
+    const authoredPath = truncatePath(rawPath, maxDistance)
+    const previewAction: Extract<TacticAction, { type: 'qMove' }> = {
+      id: 'q-preview', type: 'qMove', actorId: actor.id, startTime, duration: qRule.duration, path: authoredPath,
+    }
+    const effect = evaluateQDistanceEffect(document, previewAction)
+    const path = effectiveQPath(document, previewAction)
+    const length = hoverPoint ? pathLength(rawPath) : 0
+    const endpoint = path[path.length - 1] ?? origin
+    return <g className="tool-preview-layer" pointerEvents="none">
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={maxDistance * SCALE} className="tool-preview-range q-preview-range" />
+      {hoverPoint && <>
+        <polyline points={pointsAttribute(path)} className="tool-preview-path q-preview-path" markerEnd="url(#arrow-q-preview)" data-preview="true" />
+        <text x={endpoint.x * SCALE} y={endpoint.y * SCALE - 13} textAnchor="middle" className="tool-preview-label">
+          预览 · {effect.effectiveDistance.toFixed(1)} / {maxDistance} 格{effect.reduction > 0.005 ? ' · 冰圈缩短' : length > maxDistance ? ' · 已限制' : ''}
+        </text>
+      </>}
+    </g>
+  }
+
+  if (tool === 'pass') {
+    const safe = rules.passing.safeDistance
+    const max = rules.passing.maxDistance
+    const path = hoverPoint ? [origin, hoverPoint] : []
+    const length = pathLength(path)
+    const segments = classifyPassThreat(path, actor.team, frame, rules)
+    const threat = highestPassThreat(segments)
+    return <g className="tool-preview-layer" pointerEvents="none">
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={safe * SCALE} className="tool-preview-range pass-preview-safe" />
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={max * SCALE} className="tool-preview-range pass-preview-max" />
+      {hoverPoint && <>
+        <PassThreatLines path={path} passerId={actor.id} frame={frame} rules={rules} markerEnd="url(#arrow-pass)" preview />
+        <text x={hoverPoint.x * SCALE} y={hoverPoint.y * SCALE - 13} textAnchor="middle" className={`tool-preview-label threat-text-${threat}`}>{length.toFixed(1)} 格 · {PASS_THREAT_LABELS[threat]}</text>
+      </>}
+    </g>
+  }
+
+  if (tool === 'eZone') {
+    const e = rules.roles[actor.role].e
+    if (!e) return null
+    return <g className="tool-preview-layer" pointerEvents="none">
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={e.radius * SCALE} className="tool-preview-range zone-preview" />
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r="6" className="zone-preview-center" />
+      <text x={origin.x * SCALE} y={origin.y * SCALE - e.radius * SCALE - 12} textAnchor="middle" className="tool-preview-label">随身冰圈 · 敌方移速 {e.slowMultiplier}× · Q {e.qDistanceMultiplier}×</text>
+    </g>
+  }
+
+  return null
+}
+
+function PassThreatLines({
+  path,
+  passerId,
+  frame,
+  rules,
+  markerEnd,
+  preview = false,
+}: {
+  path: Vec2[]
+  passerId: string
+  frame: ProjectedFrame
+  rules: RuleSetV1
+  markerEnd: string
+  preview?: boolean
+}) {
+  const passer = frame.players.find((player) => player.id === passerId)
+  if (!passer) return null
+  const segments = classifyPassThreat(path, passer.team, frame, rules)
+  return <>{segments.map((segment, index) => (
+    <polyline
+      key={`${segment.startDistance}-${segment.endDistance}-${segment.level}`}
+      points={pointsAttribute(segment.path)}
+      className={`${preview ? 'tool-preview-path pass-preview-segment' : 'action-path action-pass'} pass-threat-segment threat-${segment.level}`}
+      markerEnd={index === segments.length - 1 ? markerEnd : undefined}
+      data-threat={segment.level}
+    >
+      <title>{PASS_THREAT_LABELS[segment.level]} · {segment.startDistance.toFixed(1)}–{segment.endDistance.toFixed(1)} 格</title>
+    </polyline>
+  ))}</>
+}
+
+function PassThreatLegend() {
+  return <div className="pass-threat-legend" aria-label="传球威胁图例">
+    {PASS_THREAT_ORDER.map((level) => <span key={level}><i className={`threat-${level}`} />{PASS_THREAT_LABELS[level]}</span>)}
+  </div>
+}
+
+function WaterBoostRoute({
+  effect,
+}: {
+  effect: NonNullable<ReturnType<typeof waterQMoveBoost>>
+}) {
+  return <g className="water-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
+    <polyline points={pointsAttribute(effect.path)} className="water-q-boost-segment">
+      <title>水 Q 加速段，累计身位收益 {effect.separationGain.toFixed(2)} 格</title>
+    </polyline>
+  </g>
+}
+
+function PassAnalysis({ path, document }: { path: Vec2[]; document: TacticDocumentV1 }) {
+  const fullLength = pathLength(path)
+  if (fullLength <= document.rulesSnapshot.passing.safeDistance) return null
+  const start = pointAlongPath(path, document.rulesSnapshot.passing.safeDistance / fullLength)
+  const end = pointAlongPath(path, Math.min(1, document.rulesSnapshot.passing.maxDistance / fullLength))
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const length = Math.hypot(dx, dy) || 1
+  const nx = -dy / length
+  const ny = dx / length
+  const startWidth = document.rulesSnapshot.passing.interceptStartWidth
+  const endWidth = document.rulesSnapshot.passing.interceptEndWidth
+  const polygon = [
+    { x: start.x + nx * startWidth, y: start.y + ny * startWidth },
+    { x: end.x + nx * endWidth, y: end.y + ny * endWidth },
+    { x: end.x - nx * endWidth, y: end.y - ny * endWidth },
+    { x: start.x - nx * startWidth, y: start.y - ny * startWidth },
+  ]
+  return <>
+    <polygon points={pointsAttribute(polygon)} className="intercept-cone">
+      <title>传球截断风险区 · 全长 {fullLength.toFixed(1)} 格</title>
+    </polygon>
+  </>
+}
+
+function QAnalysis({ action, document, scale }: { action: Extract<TacticAction, { type: 'qMove' }>; document: TacticDocumentV1; scale: number }) {
+  const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+  const renderedPath = effectiveQPath(document, action)
+  const end = renderedPath[renderedPath.length - 1]
+  const beforeEnd = renderedPath[renderedPath.length - 2]
+  if (!actor || !end || !beforeEnd) return null
+  const rule = document.rulesSnapshot.roles[actor.role]
+  // Water's gain is drawn on the real overlapping move route below, not as a
+  // hypothetical straight extension from the Q endpoint.
+  const gain = rule.receiveBoost?.netSeparationGain
+  const freeze = rule.q.freezeDuration
+  const hits = actor.role === 'ice' ? analyzeDocumentIceQHits(document, action) : []
+  let extension: Vec2 | null = null
+  if (gain) {
+    const dx = end.x - beforeEnd.x
+    const dy = end.y - beforeEnd.y
+    const length = Math.hypot(dx, dy) || 1
+    extension = { x: end.x + (dx / length) * gain, y: end.y + (dy / length) * gain }
+  }
+  return <>
+    {extension && <line x1={end.x * scale} y1={end.y * scale} x2={extension.x * scale} y2={extension.y * scale} className="separation-extension">
+      <title>{rule.afterQBoost ? 'Q 后加速' : '接球加速'} · 身位收益 {gain?.toFixed(1)} 格</title>
+    </line>}
+    {freeze && hits.map((hit) => <g key={hit.targetId} className="ice-q-hit" data-target-id={hit.targetId}>
+      <circle cx={hit.closestPoint.x * scale} cy={hit.closestPoint.y * scale} r={rule.attackRadius * scale} className="ice-q-hit-radius">
+        <title>命中 {hit.target.name} @{hit.hitTime.toFixed(2)} 秒 · 冻结 {freeze} 秒 · 后退 {rule.q.facingKnockback} 格</title>
+      </circle>
+    </g>)}
+  </>
+}

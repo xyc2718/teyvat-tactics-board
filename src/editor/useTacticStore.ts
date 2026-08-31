@@ -1,0 +1,1124 @@
+import { create } from 'zustand'
+import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, truncatePath } from '../domain/geometry/geometry'
+import { createDefaultDocument } from '../domain/model/createDocument'
+import { anchorPassPathToPlayer } from '../domain/model/passPath'
+import type {
+  BoardMode,
+  MatchupRating,
+  RoleId,
+  RuleSetV1,
+  SceneState,
+  TacticAction,
+  TacticDocumentV1,
+  ToolId,
+  Vec2,
+} from '../domain/model/types'
+import { cloneDefaultRules } from '../domain/rules/defaultRules'
+import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
+import { documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
+import { projectFrame } from '../domain/timeline/projectFrame'
+import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
+import { loadDraft, saveDraft } from '../persistence/tacticFile'
+import { planSimpleLocomotion, planSimpleQ, reflowSimpleLocomotion } from './locomotionScheduling'
+import { isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
+
+type Selection =
+  | { kind: 'player'; id: string }
+  | { kind: 'ball'; id: 'ball' }
+  | { kind: 'action'; id: string }
+  | { kind: 'staticArrow'; id: string }
+  | null
+
+interface HistoryState {
+  past: TacticDocumentV1[]
+  future: TacticDocumentV1[]
+}
+
+interface TacticStore extends HistoryState {
+  document: TacticDocumentV1
+  selection: Selection
+  tool: ToolId
+  boardMode: BoardMode
+  activeStepId: string
+  currentTime: number
+  isPlaying: boolean
+  playbackSpeed: number
+  showAdvancedTools: boolean
+  showAdvancedTimeline: boolean
+  showRules: boolean
+  showLogic: boolean
+  notice: string | null
+  select: (selection: Selection) => void
+  setTool: (tool: ToolId) => void
+  setBoardMode: (mode: BoardMode) => void
+  chooseActorForTool: (playerId: string) => void
+  cancelTool: () => void
+  setCurrentTime: (time: number) => void
+  setPlaying: (playing: boolean) => void
+  setPlaybackSpeed: (speed: number) => void
+  setAdvancedTools: (show: boolean) => void
+  setAdvancedTimeline: (show: boolean) => void
+  setRulesOpen: (show: boolean) => void
+  setLogicOpen: (show: boolean) => void
+  setAnalysis: (show: boolean) => void
+  setNotice: (notice: string | null) => void
+  updateMeta: (field: 'title' | 'author' | 'notes', value: string) => void
+  moveEntity: (id: string, position: Vec2) => void
+  setPlayerRole: (id: string, role: RoleId) => void
+  setPlayerTeam: (id: string, team: 'blue' | 'red') => void
+  setPlayerFacing: (id: string, facing: number) => void
+  givePossession: (id: string | null) => void
+  createShot: (actorId: string) => void
+  createEZone: (actorId: string) => void
+  createAction: (actorId: string | null, target: Vec2, targetPlayerId?: string) => void
+  updateActionPathPoint: (actionId: string, index: number, point: Vec2) => void
+  updateActionTiming: (actionId: string, field: 'startTime' | 'duration', value: number) => void
+  setShotCharge: (actionId: string, charge: 'yellow' | 'red') => void
+  deleteAction: (actionId: string) => void
+  updateStaticMoveArrowTarget: (arrowId: string, target: Vec2) => void
+  deleteStaticMoveArrow: (arrowId: string) => void
+  addStep: () => void
+  selectStep: (id: string) => void
+  renameStep: (id: string, name: string) => void
+  updateStepNote: (id: string, note: string) => void
+  deleteStep: (id: string) => void
+  clearStepActions: (id: string) => void
+  updateFieldRule: (key: keyof RuleSetV1['field'], value: number) => void
+  updatePassingRule: (key: keyof RuleSetV1['passing'], value: number) => void
+  updateShootingRule: (key: Exclude<keyof RuleSetV1['shooting'], 'interruptedByAttack'>, value: number) => void
+  updateRoleRule: (role: RoleId, key: 'attackInnerRadius' | 'attackRadius' | 'qDistance' | 'qCooldown' | 'qDuration', value: number) => void
+  updateRoleExtra: (
+    role: RoleId,
+    key: 'boostDuration' | 'boostGain' | 'freezeDuration' | 'knockback' | 'slowFullDuration' | 'slowFullLoss' | 'slowDuration' | 'slowLoss' | 'eRadius' | 'eDuration' | 'eCooldown' | 'eSlowMultiplier' | 'eQDistanceMultiplier',
+    value: number,
+  ) => void
+  setMatchup: (attacker: RoleId, defender: RoleId, value: MatchupRating) => void
+  setModifier: (id: string, field: 'enabled' | 'delta', value: boolean | number) => void
+  resetRules: () => void
+  replaceDocument: (document: TacticDocumentV1) => void
+  newDocument: () => void
+  undo: () => void
+  redo: () => void
+}
+
+function cloneDocument(document: TacticDocumentV1): TacticDocumentV1 {
+  return structuredClone(document)
+}
+
+function uid(prefix: string): string {
+  return `${prefix}-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
+}
+
+function sceneFromFrame(document: TacticDocumentV1, time: number): SceneState {
+  const frame = projectFrame(document, time)
+  return {
+    players: frame.players.map((player) => ({ ...player, position: { ...player.position } })),
+    ball: { ...frame.ball, position: { ...frame.ball.position } },
+    statuses: frame.statuses.map((status) => ({ ...status })),
+  }
+}
+
+function applyDocument(state: TacticStore, next: TacticDocumentV1, trackHistory = true) {
+  next.meta.updatedAt = new Date().toISOString()
+  saveDraft(next)
+  return {
+    document: next,
+    past: trackHistory ? [...state.past.slice(-49), cloneDocument(state.document)] : state.past,
+    future: trackHistory ? [] : state.future,
+  }
+}
+
+function mutateDocument(state: TacticStore, mutation: (draft: TacticDocumentV1) => void) {
+  const next = cloneDocument(state.document)
+  mutation(next)
+  return applyDocument(state, next)
+}
+
+function firstQCooldownViolation(document: TacticDocumentV1, actorIds: string[]) {
+  for (const action of document.actions) {
+    if (action.type !== 'qMove' || !actorIds.includes(action.actorId)) continue
+    const validation = validateQStart(document, action.actorId, action.startTime, action.id)
+    if (!validation.valid) return validation
+  }
+  return null
+}
+
+function recalculateRuleDrivenActions(document: TacticDocumentV1) {
+  for (const action of document.actions) {
+    if (action.type === 'move') action.duration = movementDuration(action.path, document.rulesSnapshot)
+    if (action.type === 'pass') action.duration = passDuration(action.path, document.rulesSnapshot)
+    if (action.type === 'qMove') {
+      const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
+      if (player) {
+        action.path = truncatePath(action.path, document.rulesSnapshot.roles[player.role].q.maxDistance)
+        action.duration = qDuration(player, document.rulesSnapshot)
+      }
+    }
+    if (action.type === 'shoot') {
+      const player = projectFrame(document, action.startTime).players.find((candidate) => candidate.id === action.actorId)
+      if (player) action.duration = shotDuration(player, action.charge, document.rulesSnapshot)
+    }
+    if (action.type === 'eZone') {
+      const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
+      const e = player ? document.rulesSnapshot.roles[player.role].e : undefined
+      if (e) {
+        action.duration = e.duration
+        action.radius = e.radius
+      }
+    }
+  }
+}
+
+function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
+  const passes = document.actions
+    .filter(
+      (action): action is Extract<TacticAction, { type: 'pass' }> =>
+        action.type === 'pass'
+        && (playerId === undefined || action.actorId === playerId || action.targetPlayerId === playerId),
+    )
+    .sort((left, right) => left.startTime - right.startTime)
+
+  for (const action of passes) {
+    const frame = projectFrame(document, action.startTime)
+    const attachedPlayerIds = playerId === undefined
+      ? [...new Set([action.actorId, action.targetPlayerId].filter((id): id is string => id !== undefined))]
+      : [playerId]
+    for (const attachedPlayerId of attachedPlayerIds) {
+      const player = frame.players.find((candidate) => candidate.id === attachedPlayerId)
+      if (player) action.path = anchorPassPathToPlayer(action, attachedPlayerId, player.position)
+    }
+    action.duration = passDuration(action.path, document.rulesSnapshot)
+  }
+}
+
+function initialDocument(): TacticDocumentV1 {
+  const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
+  syncPassEndpoints(document)
+  return document
+}
+
+const startingDocument = initialDocument()
+
+export const useTacticStore = create<TacticStore>((set, get) => ({
+  document: startingDocument,
+  selection: null,
+  tool: 'select',
+  boardMode: 'simulation',
+  activeStepId: startingDocument.stepMarkers[0]?.id ?? '',
+  currentTime: 0,
+  isPlaying: false,
+  playbackSpeed: 1,
+  showAdvancedTools: false,
+  showAdvancedTimeline: false,
+  showRules: false,
+  showLogic: false,
+  notice: null,
+  past: [],
+  future: [],
+
+  select: (selection) => set({ selection, notice: null }),
+  setTool: (tool) => {
+    const current = get()
+    if (current.boardMode === 'basic' && tool !== 'select' && tool !== 'move') {
+      set({ notice: '基础模式只提供球员选择和移动箭头。' })
+      return
+    }
+    if (tool === 'shoot' && current.selection?.kind === 'player') {
+      const frame = projectFrame(current.document, current.currentTime)
+      const shooter = frame.players.find((player) => player.id === current.selection?.id)
+      if (shooter && isToolActorEligible(tool, shooter, frame, current.document.rulesSnapshot)) {
+        get().createShot(shooter.id)
+        return
+      }
+    }
+    if (tool === 'eZone' && current.selection?.kind === 'player') {
+      const frame = projectFrame(current.document, current.currentTime)
+      const actor = frame.players.find((player) => player.id === current.selection?.id)
+      if (actor && isToolActorEligible(tool, actor, frame, current.document.rulesSnapshot)) {
+        get().createEZone(actor.id)
+        return
+      }
+    }
+    set((state) => {
+      if (tool === 'select') return { tool, notice: null, isPlaying: false }
+      const frame = projectFrame(state.document, state.currentTime)
+
+      if (tool === 'pass') {
+        const carrier = frame.ball.carrierId
+          ? frame.players.find((player) => player.id === frame.ball.carrierId)
+          : undefined
+        return carrier
+          ? { tool, selection: { kind: 'player' as const, id: carrier.id }, notice: null, isPlaying: false }
+          : { tool, selection: null, notice: '当前没有持球者；请先回到选择模式设置球权。', isPlaying: false }
+      }
+
+      if (state.selection?.kind === 'player') {
+        const player = frame.players.find((candidate) => candidate.id === state.selection?.id)
+        if (player && isToolActorEligible(tool, player, frame, state.document.rulesSnapshot)) {
+          return { tool, notice: null, isPlaying: false }
+        }
+      }
+
+      return {
+        tool,
+        selection: toolNeedsActor(tool) ? null : state.selection,
+        notice: tool === 'eZone'
+          ? '冰圈只能由霜役施放；球场已高亮可选角色。'
+          : tool === 'shoot'
+            ? '选择一名射门球员；程序会自动瞄准对方球门中心。'
+            : null,
+        isPlaying: false,
+      }
+    })
+  },
+  setBoardMode: (boardMode) => set({
+    boardMode,
+    tool: 'select',
+    selection: null,
+    isPlaying: false,
+    showAdvancedTools: false,
+    showRules: false,
+    showLogic: false,
+    notice: null,
+  }),
+  chooseActorForTool: (playerId) => {
+    if (get().tool === 'shoot') {
+      get().createShot(playerId)
+      return
+    }
+    if (get().tool === 'eZone') {
+      get().createEZone(playerId)
+      return
+    }
+    set((state) => {
+      const frame = projectFrame(state.document, state.currentTime)
+      const player = frame.players.find((candidate) => candidate.id === playerId)
+      if (!player) return {}
+      if (state.tool === 'select') return { selection: { kind: 'player' as const, id: player.id } }
+      if (!isToolActorEligible(state.tool, player, frame, state.document.rulesSnapshot)) {
+        const notice = state.tool === 'pass'
+          ? '传球者必须是当前持球者。'
+          : state.tool === 'eZone'
+            ? '冰圈只能由霜役施放。'
+            : '该球员不能执行当前动作。'
+        return { notice }
+      }
+      return { selection: { kind: 'player' as const, id: player.id }, notice: null }
+    })
+  },
+  cancelTool: () => set((state) => ({
+    tool: 'select',
+    selection: state.selection?.kind === 'player' ? state.selection : null,
+    notice: null,
+  })),
+  setCurrentTime: (rawTime) => set((state) => {
+    const currentTime = Math.max(0, rawTime)
+    if (state.tool !== 'pass') return { currentTime, isPlaying: false, notice: null }
+    const frame = projectFrame(state.document, currentTime)
+    const carrier = frame.ball.carrierId
+      ? frame.players.find((player) => player.id === frame.ball.carrierId)
+      : undefined
+    return carrier
+      ? {
+          currentTime,
+          isPlaying: false,
+          selection: { kind: 'player' as const, id: carrier.id },
+          notice: null,
+        }
+      : {
+          currentTime,
+          isPlaying: false,
+          selection: null,
+          notice: '当前没有持球者；请先回到选择模式设置球权。',
+        }
+  }),
+  setPlaying: (isPlaying) => set((state) => {
+    if (!isPlaying) return { isPlaying: false }
+    if (state.boardMode === 'basic') return { isPlaying: false, notice: '基础模式没有时间轴播放。' }
+    const duration = Math.max(
+      documentDuration(state.document.actions, state.document.stepMarkers.map((step) => step.time)),
+      2,
+    )
+    return {
+      isPlaying: true,
+      currentTime: state.currentTime >= duration ? 0 : state.currentTime,
+      tool: 'select' as const,
+      notice: null,
+    }
+  }),
+  setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed }),
+  setAdvancedTools: (showAdvancedTools) => set({ showAdvancedTools }),
+  setAdvancedTimeline: (showAdvancedTimeline) => set({ showAdvancedTimeline }),
+  setRulesOpen: (showRules) => set({ showRules, ...(showRules ? { showLogic: false } : {}) }),
+  setLogicOpen: (showLogic) => set({ showLogic, ...(showLogic ? { showRules: false } : {}) }),
+  setNotice: (notice) => set({ notice }),
+
+  setAnalysis: (analysis) =>
+    set((state) => {
+      const next = cloneDocument(state.document)
+      next.view.analysis = analysis
+      return applyDocument(state, next, false)
+    }),
+
+  updateMeta: (field, value) => set((state) => mutateDocument(state, (draft) => {
+    const limits = { title: 120, author: 80, notes: 4000 } as const
+    draft.meta[field] = value.slice(0, limits[field])
+  })),
+
+  moveEntity: (id, rawPosition) =>
+    set((state) => mutateDocument(state, (draft) => {
+      const position = clampPoint(rawPosition, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
+      if (state.boardMode === 'basic') {
+        const player = draft.initialScene.players.find((candidate) => candidate.id === id)
+        if (!player) return
+        player.position = position
+        if (draft.initialScene.ball.carrierId === id) draft.initialScene.ball.position = { ...position }
+        for (const step of draft.stepMarkers) {
+          if (Math.abs(step.time) > 1e-9) continue
+          const stepPlayer = step.snapshot.players.find((candidate) => candidate.id === id)
+          if (stepPlayer) stepPlayer.position = { ...position }
+          if (step.snapshot.ball.carrierId === id) step.snapshot.ball.position = { ...position }
+        }
+        syncPassEndpoints(draft, id)
+        return
+      }
+      const activeStep = draft.stepMarkers.find((step) => step.id === state.activeStepId)
+      const sorted = [...draft.stepMarkers].sort((a, b) => a.time - b.time)
+      const activeIndex = activeStep ? sorted.findIndex((step) => step.id === activeStep.id) : 0
+
+      if (id === 'ball') {
+        if (!activeStep || activeIndex <= 0) {
+          draft.initialScene.ball = { position, carrierId: null, isFree: true }
+          for (const player of draft.initialScene.players) player.hasBall = false
+          if (activeStep) activeStep.snapshot = structuredClone(draft.initialScene)
+          return
+        }
+        activeStep.snapshot.ball = { position, carrierId: null, isFree: true }
+        for (const player of activeStep.snapshot.players) player.hasBall = false
+        const previous = sorted[activeIndex - 1]
+        const carrierId = previous?.snapshot.ball.carrierId
+        if (previous && carrierId) {
+          const path = [{ ...previous.snapshot.ball.position }, position]
+          const action: TacticAction = {
+            id: `auto-pass-${activeStep.id}`,
+            type: 'pass',
+            actorId: carrierId,
+            path,
+            startTime: previous.time,
+            duration: passDuration(path, draft.rulesSnapshot),
+          }
+          draft.actions = [...draft.actions.filter((candidate) => candidate.id !== action.id), action]
+          activeStep.time = Math.max(activeStep.time, actionEndTimeSafe(action))
+        }
+        return
+      }
+
+      const initialPlayer = draft.initialScene.players.find((player) => player.id === id)
+      if (!initialPlayer) return
+      if (!activeStep || activeIndex <= 0) {
+        initialPlayer.position = position
+        if (draft.initialScene.ball.carrierId === id) draft.initialScene.ball.position = { ...position }
+        if (activeStep) activeStep.snapshot = structuredClone(draft.initialScene)
+        syncPassEndpoints(draft, id)
+        return
+      }
+
+      const player = activeStep.snapshot.players.find((candidate) => candidate.id === id)
+      const previous = sorted[activeIndex - 1]
+      const previousPlayer = previous?.snapshot.players.find((candidate) => candidate.id === id)
+      if (!player || !previous || !previousPlayer) return
+      player.position = position
+      if (activeStep.snapshot.ball.carrierId === id) activeStep.snapshot.ball.position = { ...position }
+      const path = [{ ...previousPlayer.position }, position]
+      const action: TacticAction = {
+        id: `auto-move-${activeStep.id}-${id}`,
+        type: 'move',
+        actorId: id,
+        path,
+        startTime: previous.time,
+        duration: movementDuration(path, draft.rulesSnapshot),
+      }
+      draft.actions = [...draft.actions.filter((candidate) => candidate.id !== action.id), action]
+      activeStep.time = Math.max(activeStep.time, actionEndTimeSafe(action))
+      syncPassEndpoints(draft, id)
+    })),
+
+  setPlayerRole: (id, role) => set((state) => {
+    const documentPatch = mutateDocument(state, (draft) => {
+      const update = (scene: SceneState) => {
+        const player = scene.players.find((candidate) => candidate.id === id)
+        if (player) player.role = role
+      }
+      update(draft.initialScene)
+      draft.stepMarkers.forEach((step) => update(step.snapshot))
+      recalculateRuleDrivenActions(draft)
+      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, id)
+    })
+    const selectedActorLostEligibility = state.tool === 'eZone'
+      && state.selection?.kind === 'player'
+      && state.selection.id === id
+      && state.document.rulesSnapshot.roles[role].e === undefined
+    const cooldownViolation = state.showAdvancedTimeline
+      ? firstQCooldownViolation(documentPatch.document, [id])
+      : null
+    return selectedActorLostEligibility
+      ? {
+          ...documentPatch,
+          selection: null,
+          notice: '该球员已不再是霜役，请重新选择冰圈施法者。',
+        }
+      : cooldownViolation
+        ? { ...documentPatch, notice: `职业已修改；${qCooldownConflictNotice(cooldownViolation)}` }
+        : documentPatch
+  }),
+
+  setPlayerTeam: (id, team) => set((state) => mutateDocument(state, (draft) => {
+    const update = (scene: SceneState) => {
+      const player = scene.players.find((candidate) => candidate.id === id)
+      if (player) player.team = team
+    }
+    update(draft.initialScene)
+    draft.stepMarkers.forEach((step) => update(step.snapshot))
+  })),
+
+  setPlayerFacing: (id, facing) => set((state) => {
+    const normalized = normalizeAngle(facing)
+    const scenes = [state.document.initialScene, ...state.document.stepMarkers.map((step) => step.snapshot)]
+    const players = scenes
+      .map((scene) => scene.players.find((candidate) => candidate.id === id))
+      .filter((player) => player !== undefined)
+    if (players.length === 0 || players.every((player) => player.facing === normalized)) return {}
+
+    return mutateDocument(state, (draft) => {
+      const update = (scene: SceneState) => {
+        const player = scene.players.find((candidate) => candidate.id === id)
+        if (player) player.facing = normalized
+      }
+      update(draft.initialScene)
+      draft.stepMarkers.forEach((step) => update(step.snapshot))
+    })
+  }),
+
+  givePossession: (id) => set((state) => {
+    const documentPatch = mutateDocument(state, (draft) => {
+      const frame = projectFrame(draft, state.currentTime)
+      const target = id ? frame.players.find((player) => player.id === id) : undefined
+      if (state.currentTime <= 0) {
+        for (const player of draft.initialScene.players) player.hasBall = player.id === id
+        draft.initialScene.ball = {
+          carrierId: id,
+          position: target ? { ...target.position } : { ...frame.ball.position },
+          isFree: id === null,
+        }
+        const opening = draft.stepMarkers.find((step) => step.time === 0)
+        if (opening) opening.snapshot = structuredClone(draft.initialScene)
+        return
+      }
+
+      draft.actions = draft.actions.filter((action) => {
+        const isPossessionEdit = action.type === 'receive' || action.type === 'possession'
+        return !isPossessionEdit || action.startTime !== state.currentTime
+      })
+      if (id) {
+        draft.actions.push({
+          id: uid('receive'),
+          type: 'receive',
+          actorId: id,
+          startTime: state.currentTime,
+          duration: 0,
+        })
+      } else {
+        draft.actions.push({
+          id: uid('possession'),
+          type: 'possession',
+          carrierId: null,
+          position: { ...frame.ball.position },
+          startTime: state.currentTime,
+          duration: 0,
+        })
+      }
+    })
+    if (state.tool !== 'pass') return documentPatch
+    return id
+      ? {
+          ...documentPatch,
+          selection: { kind: 'player' as const, id },
+          notice: null,
+        }
+      : {
+          ...documentPatch,
+          selection: null,
+          notice: '当前没有持球者；请先回到选择模式设置球权。',
+        }
+  }),
+
+  createShot: (actorId) => set((state) => {
+    const frame = projectFrame(state.document, state.currentTime)
+    const shooter = frame.players.find((player) => player.id === actorId)
+    if (!shooter) return { notice: '未找到可射门的球员。' }
+    const target = goalCenter(
+      shooter.team,
+      state.document.rulesSnapshot.field.width,
+      state.document.rulesSnapshot.field.height,
+    )
+    const action: TacticAction = {
+      id: uid('shoot'),
+      type: 'shoot',
+      actorId: shooter.id,
+      charge: 'yellow',
+      path: [{ ...shooter.position }, target],
+      startTime: state.currentTime,
+      duration: shotDuration(shooter, 'yellow', state.document.rulesSnapshot),
+    }
+    const next = cloneDocument(state.document)
+    next.actions.push(action)
+    return {
+      ...applyDocument(state, next),
+      tool: 'select' as const,
+      selection: { kind: 'player' as const, id: shooter.id },
+      notice: null,
+      isPlaying: false,
+    }
+  }),
+
+  createEZone: (actorId) => set((state) => {
+    const frame = projectFrame(state.document, state.currentTime)
+    const actor = frame.players.find((player) => player.id === actorId)
+    if (!actor) return { notice: '未找到冰圈施法者。' }
+    const e = state.document.rulesSnapshot.roles[actor.role].e
+    if (!e) return { notice: '冰圈只能由霜役施放。' }
+    const action: TacticAction = {
+      id: uid('zone'),
+      type: 'eZone',
+      actorId: actor.id,
+      center: { ...actor.position },
+      radius: e.radius,
+      startTime: state.currentTime,
+      duration: e.duration,
+    }
+    const next = cloneDocument(state.document)
+    next.actions.push(action)
+    return {
+      ...applyDocument(state, next),
+      tool: 'select' as const,
+      selection: { kind: 'player' as const, id: actor.id },
+      notice: null,
+      isPlaying: false,
+    }
+  }),
+
+  createAction: (actorId, target, targetPlayerId) =>
+    set((state) => {
+      const document = state.document
+      const clampedTarget = clampPoint(target, document.rulesSnapshot.field.width, document.rulesSnapshot.field.height)
+      if (state.boardMode === 'basic') {
+        if (state.tool !== 'move') return { notice: '基础模式只支持移动箭头。' }
+        const actor = actorId
+          ? document.initialScene.players.find((player) => player.id === actorId)
+          : undefined
+        if (!actor) return { notice: '请先选择一名球员。' }
+        if (distance(actor.position, clampedTarget) < 0.05) return { notice: '箭头目标不能与球员当前位置重合。' }
+        const next = cloneDocument(document)
+        const existing = next.staticMoveArrows.find((arrow) => arrow.playerId === actor.id)
+        next.staticMoveArrows = next.staticMoveArrows.filter((arrow) => arrow.playerId !== actor.id)
+        next.staticMoveArrows.push({
+          id: existing?.id ?? uid('basic-move'),
+          playerId: actor.id,
+          target: clampedTarget,
+        })
+        return {
+          ...applyDocument(state, next),
+          tool: 'select' as const,
+          selection: { kind: 'player' as const, id: actor.id },
+          notice: null,
+        }
+      }
+      const frame = projectFrame(document, state.currentTime)
+      const effectiveActorId = state.tool === 'pass' ? frame.ball.carrierId : actorId
+      const actor = effectiveActorId
+        ? frame.players.find((player) => player.id === effectiveActorId)
+        : undefined
+      let action: TacticAction | null = null
+
+      if (state.tool === 'attack') {
+        const inspected = targetPlayerId
+          ? frame.players.find((player) => player.id === targetPlayerId)
+          : undefined
+        return inspected
+          ? {
+              tool: 'attack' as const,
+              selection: { kind: 'player' as const, id: inspected.id },
+              notice: null,
+            }
+          : { notice: '攻击范围模式只需点击一名球员，不会创建时间轴动作。' }
+      }
+
+      if (state.tool === 'shoot') {
+        return { notice: '射门无需选择落点；请直接选择射门球员。' }
+      }
+
+      if (state.tool === 'annotation') {
+        const origin = actor?.position ?? frame.ball.position
+        action = {
+          id: uid('note'),
+          type: 'annotation',
+          startTime: state.currentTime,
+          duration: 2,
+          path: [{ ...origin }, clampedTarget],
+          text: '战术说明',
+        }
+      } else if (!actor) {
+        return { notice: '请先选择一名球员。' }
+      } else if (!isToolActorEligible(state.tool, actor, frame, document.rulesSnapshot)) {
+        return { notice: state.tool === 'pass' ? '传球者必须是当前持球者。' : '当前球员不能执行该动作。' }
+      } else if (state.tool === 'move') {
+        const plan = state.showAdvancedTimeline
+          ? null
+          : planSimpleLocomotion(
+              document,
+              actor.id,
+              state.currentTime,
+              (scheduledActor) => movementDuration([scheduledActor.position, clampedTarget], document.rulesSnapshot),
+            )
+        const origin = plan?.origin ?? actor.position
+        const path = [{ ...origin }, clampedTarget]
+        if (pathLength(path) < 0.05) return { notice: '目标位置与球员当前位置重合。' }
+        action = {
+          id: uid('move'),
+          type: 'move',
+          actorId: actor.id,
+          path,
+          startTime: plan?.startTime ?? state.currentTime,
+          duration: plan?.duration ?? movementDuration(path, document.rulesSnapshot),
+        }
+      } else if (state.tool === 'qMove') {
+        if (state.showAdvancedTimeline) {
+          const cooldownValidation = validateQStart(document, actor.id, state.currentTime)
+          if (!cooldownValidation.valid) return { notice: qCooldownConflictNotice(cooldownValidation) }
+        }
+        const roleRule = document.rulesSnapshot.roles[actor.role]
+        const plan = state.showAdvancedTimeline
+          ? null
+          : planSimpleQ(document, actor.id, state.currentTime)
+        const scheduledActor = plan?.actor ?? actor
+        const origin = plan?.origin ?? actor.position
+        let path = [{ ...origin }, clampedTarget]
+        if (pathLength(path) < 0.05) return { notice: 'Q 目标不能与施法者当前位置重合。' }
+        if (roleRule.q.turnable && distance(origin, clampedTarget) > 0.4) {
+          const midpoint = {
+            x: (origin.x + clampedTarget.x) / 2,
+            y: (origin.y + clampedTarget.y) / 2,
+          }
+          path = [{ ...origin }, midpoint, clampedTarget]
+        }
+        path = truncatePath(path, roleRule.q.maxDistance)
+        action = {
+          id: uid('q'),
+          type: 'qMove',
+          actorId: actor.id,
+          path,
+          targetId: targetPlayerId && frame.players.find((player) => player.id === targetPlayerId)?.team !== actor.team
+            ? targetPlayerId
+            : undefined,
+          startTime: plan?.startTime ?? state.currentTime,
+          duration: plan?.duration ?? qDuration(scheduledActor, document.rulesSnapshot),
+        }
+      } else if (state.tool === 'pass') {
+        const targetPlayer = targetPlayerId ? frame.players.find((player) => player.id === targetPlayerId) : undefined
+        if (targetPlayer && !isToolTargetPlayerEligible('pass', actor, targetPlayer)) {
+          return { notice: targetPlayer.id === actor.id ? '不能把球传给自己。' : '只能把球传给同队球员。' }
+        }
+        const endpoint = targetPlayer?.position ?? clampedTarget
+        const path = [{ ...actor.position }, { ...endpoint }]
+        if (pathLength(path) < 0.05) return { notice: '传球目标与持球者位置重合。' }
+        action = {
+          id: uid('pass'),
+          type: 'pass',
+          actorId: actor.id,
+          targetPlayerId: targetPlayer?.team === actor.team ? targetPlayer.id : undefined,
+          path,
+          startTime: state.currentTime,
+          duration: passDuration(path, document.rulesSnapshot),
+        }
+      } else if (state.tool === 'eZone') {
+        const e = document.rulesSnapshot.roles[actor.role].e
+        if (!e) return { notice: '当前职业没有已配置的 E 范围技能。' }
+        action = {
+          id: uid('zone'),
+          type: 'eZone',
+          actorId: actor.id,
+          center: { ...actor.position },
+          radius: e.radius,
+          startTime: state.currentTime,
+          duration: e.duration,
+        }
+      }
+
+      if (!action) return {}
+      const next = cloneDocument(document)
+      next.actions.push(action)
+      return {
+        ...applyDocument(state, next),
+        tool: 'select' as const,
+        selection: actor ? { kind: 'player' as const, id: actor.id } : null,
+        notice: null,
+      }
+    }),
+
+  updateActionPathPoint: (actionId, index, rawPoint) => set((state) => {
+    const currentAction = state.document.actions.find((candidate) => candidate.id === actionId)
+    const currentPath = currentAction ? actionPathSafe(currentAction) : undefined
+    if (!currentAction || currentAction.type === 'shoot' || !currentPath?.[index]) return {}
+
+    return mutateDocument(state, (draft) => {
+      const action = draft.actions.find((candidate) => candidate.id === actionId)
+      const path = action ? actionPathSafe(action) : undefined
+      if (!action || !path || !path[index]) return
+      const point = clampPoint(rawPoint, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
+      path[index] = point
+      if (action.type === 'qMove') {
+        const player = draft.initialScene.players.find((candidate) => candidate.id === action.actorId)
+        if (player) action.path = truncatePath(action.path, draft.rulesSnapshot.roles[player.role].q.maxDistance)
+      }
+      if (action.type === 'move') action.duration = movementDuration(action.path, draft.rulesSnapshot)
+      if (action.type === 'pass') action.duration = passDuration(action.path, draft.rulesSnapshot)
+      if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
+        reflowSimpleLocomotion(draft, action.actorId)
+      }
+    })
+  }),
+
+  updateActionTiming: (actionId, field, value) => set((state) => {
+    const action = state.document.actions.find((candidate) => candidate.id === actionId)
+    const safeValue = Math.max(0, value)
+    if (action?.type === 'qMove' && field === 'startTime') {
+      const validation = validateQStart(state.document, action.actorId, safeValue, action.id)
+      if (!validation.valid) return { notice: qCooldownConflictNotice(validation) }
+      return {
+        ...mutateDocument(state, (draft) => {
+          const candidate = draft.actions.find((item) => item.id === actionId)
+          if (candidate) candidate.startTime = safeValue
+        }),
+        notice: null,
+      }
+    }
+    return mutateDocument(state, (draft) => {
+      const candidate = draft.actions.find((item) => item.id === actionId)
+      if (candidate) candidate[field] = safeValue
+    })
+  }),
+
+  setShotCharge: (actionId, charge) => set((state) => mutateDocument(state, (draft) => {
+    const action = draft.actions.find((candidate) => candidate.id === actionId)
+    if (!action || action.type !== 'shoot') return
+    action.charge = charge
+    const frame = projectFrame(draft, action.startTime)
+    const player = frame.players.find((candidate) => candidate.id === action.actorId)
+    if (player) action.duration = shotDuration(player, charge, draft.rulesSnapshot)
+  })),
+
+  deleteAction: (actionId) => set((state) => ({
+    ...mutateDocument(state, (draft) => {
+      draft.actions = draft.actions.filter((action) => action.id !== actionId)
+    }),
+    selection: state.selection?.kind === 'action' && state.selection.id === actionId
+      ? null
+      : state.selection,
+  })),
+
+  updateStaticMoveArrowTarget: (arrowId, rawTarget) => set((state) => {
+    const arrow = state.document.staticMoveArrows.find((candidate) => candidate.id === arrowId)
+    if (!arrow) return {}
+    const target = clampPoint(rawTarget, state.document.rulesSnapshot.field.width, state.document.rulesSnapshot.field.height)
+    const player = state.document.initialScene.players.find((candidate) => candidate.id === arrow.playerId)
+    if (!player || distance(player.position, target) < 0.05) return { notice: '箭头目标不能与球员当前位置重合。' }
+    return mutateDocument(state, (draft) => {
+      const candidate = draft.staticMoveArrows.find((item) => item.id === arrowId)
+      if (candidate) candidate.target = target
+    })
+  }),
+
+  deleteStaticMoveArrow: (arrowId) => set((state) => {
+    if (!state.document.staticMoveArrows.some((arrow) => arrow.id === arrowId)) return {}
+    return {
+      ...mutateDocument(state, (draft) => {
+        draft.staticMoveArrows = draft.staticMoveArrows.filter((arrow) => arrow.id !== arrowId)
+      }),
+      selection: state.selection?.kind === 'staticArrow' && state.selection.id === arrowId
+        ? null
+        : state.selection,
+      notice: '已删除移动箭头，可撤销。',
+    }
+  }),
+
+  addStep: () => set((state) => {
+    const next = cloneDocument(state.document)
+    const maxStep = Math.max(...next.stepMarkers.map((step) => step.time), 0)
+    const maxAction = Math.max(...next.actions.map(actionEndTimeSafe), 0)
+    const time = Math.max(maxStep + 2, maxAction)
+    const id = uid('step')
+    next.stepMarkers.push({
+      id,
+      time,
+      name: `步骤 ${next.stepMarkers.length + 1}`,
+      note: '',
+      snapshot: sceneFromFrame(next, time),
+    })
+    return {
+      ...applyDocument(state, next),
+      activeStepId: id,
+      currentTime: time,
+      isPlaying: false,
+      tool: 'select' as const,
+      notice: null,
+    }
+  }),
+
+  selectStep: (id) => {
+    const step = get().document.stepMarkers.find((candidate) => candidate.id === id)
+    if (!step) return
+    set({ activeStepId: id })
+    get().setCurrentTime(step.time)
+  },
+
+  renameStep: (id, name) => set((state) => mutateDocument(state, (draft) => {
+    const step = draft.stepMarkers.find((candidate) => candidate.id === id)
+    if (step) step.name = name.slice(0, 100)
+  })),
+
+  updateStepNote: (id, note) => set((state) => mutateDocument(state, (draft) => {
+    const step = draft.stepMarkers.find((candidate) => candidate.id === id)
+    if (step) step.note = note.slice(0, 1000)
+  })),
+
+  deleteStep: (id) => set((state) => {
+    const target = state.document.stepMarkers.find((step) => step.id === id)
+    if (!target) return {}
+    const next = cloneDocument(state.document)
+
+    if (next.stepMarkers.length === 1) {
+      next.stepMarkers = [{
+        id: target.id,
+        time: 0,
+        name: '初始站位',
+        note: '',
+        snapshot: structuredClone(next.initialScene),
+      }]
+      return {
+        ...applyDocument(state, next),
+        activeStepId: target.id,
+        currentTime: 0,
+        isPlaying: false,
+        tool: 'select' as const,
+        notice: '已删除最后一个步骤，并恢复为初始站位；时间轴动作仍保留，可撤销。',
+      }
+    }
+
+    const sorted = next.stepMarkers
+      .map((step, index) => ({ step, index }))
+      .sort((left, right) => left.step.time - right.step.time || left.index - right.index)
+    const deletedIndex = sorted.findIndex(({ step }) => step.id === id)
+    next.stepMarkers = next.stepMarkers.filter((step) => step.id !== id)
+    const activeSurvivor = next.stepMarkers.find((step) => step.id === state.activeStepId)
+    const fallback = activeSurvivor
+      ?? sorted[deletedIndex - 1]?.step
+      ?? sorted[deletedIndex + 1]?.step
+      ?? next.stepMarkers[0]
+    return {
+      ...applyDocument(state, next),
+      activeStepId: fallback?.id ?? '',
+      currentTime: activeSurvivor ? state.currentTime : fallback?.time ?? 0,
+      isPlaying: false,
+      tool: 'select' as const,
+      notice: `已删除步骤“${target.name}”；时间轴动作仍保留，可撤销。`,
+    }
+  }),
+
+  clearStepActions: (id) => set((state) => {
+    const ownership = getStepActionOwnership(state.document, id)
+    if (!ownership || ownership.count === 0) return {}
+    const removedIds = new Set(ownership.actionIds)
+    const step = state.document.stepMarkers.find((candidate) => candidate.id === id)
+    const next = cloneDocument(state.document)
+    next.actions = next.actions.filter((action) => !removedIds.has(action.id))
+    const nextDuration = Math.max(
+      documentDuration(next.actions, next.stepMarkers.map((marker) => marker.time)),
+      2,
+    )
+    const selection = state.selection?.kind === 'action' && !next.actions.some((action) => action.id === state.selection?.id)
+      ? null
+      : state.selection
+    return {
+      ...applyDocument(state, next),
+      selection,
+      tool: 'select' as const,
+      isPlaying: false,
+      currentTime: Math.min(state.currentTime, nextDuration),
+      notice: `已清空“${step?.name ?? '当前帧'}”的 ${ownership.count} 个动作（${formatStepActionRange(ownership)}）；步骤本身保留，可撤销恢复。`,
+    }
+  }),
+
+  updateFieldRule: (key, value) => set((state) => mutateDocument(state, (draft) => {
+    draft.rulesSnapshot.field[key] = Math.max(0.01, value)
+    if (key === 'smallPenaltyRadius' && draft.rulesSnapshot.field.smallPenaltyRadius > draft.rulesSnapshot.field.largePenaltyRadius) {
+      draft.rulesSnapshot.field.largePenaltyRadius = draft.rulesSnapshot.field.smallPenaltyRadius
+    }
+    if (key === 'largePenaltyRadius' && draft.rulesSnapshot.field.largePenaltyRadius < draft.rulesSnapshot.field.smallPenaltyRadius) {
+      draft.rulesSnapshot.field.smallPenaltyRadius = draft.rulesSnapshot.field.largePenaltyRadius
+    }
+    recalculateRuleDrivenActions(draft)
+    if (!state.showAdvancedTimeline && key === 'baseMoveSpeed') {
+      for (const player of draft.initialScene.players) reflowSimpleLocomotion(draft, player.id)
+    }
+  })),
+  updatePassingRule: (key, value) => set((state) => mutateDocument(state, (draft) => {
+    draft.rulesSnapshot.passing[key] = Math.max(0.01, value)
+    if (key === 'safeDistance' && draft.rulesSnapshot.passing.safeDistance > draft.rulesSnapshot.passing.maxDistance) {
+      draft.rulesSnapshot.passing.maxDistance = draft.rulesSnapshot.passing.safeDistance
+    }
+    if (key === 'maxDistance' && draft.rulesSnapshot.passing.maxDistance < draft.rulesSnapshot.passing.safeDistance) {
+      draft.rulesSnapshot.passing.safeDistance = draft.rulesSnapshot.passing.maxDistance
+    }
+    recalculateRuleDrivenActions(draft)
+  })),
+  updateShootingRule: (key, value) => set((state) => mutateDocument(state, (draft) => {
+    draft.rulesSnapshot.shooting[key] = Math.max(0.01, value)
+    recalculateRuleDrivenActions(draft)
+  })),
+  updateRoleRule: (role, key, value) => set((state) => {
+    const documentPatch = mutateDocument(state, (draft) => {
+      const roleRule = draft.rulesSnapshot.roles[role]
+      const safe = Math.max(0, value)
+      if (key === 'attackInnerRadius') roleRule.attackInnerRadius = Math.min(safe, roleRule.attackRadius)
+      if (key === 'attackRadius') roleRule.attackRadius = safe
+      if (key === 'attackRadius' && (roleRule.attackInnerRadius ?? 0) > safe) roleRule.attackInnerRadius = safe
+      if (key === 'qDistance') roleRule.q.maxDistance = safe
+      if (key === 'qCooldown') roleRule.q.cooldown = safe
+      if (key === 'qDuration') roleRule.q.duration = safe
+      if (key !== 'qCooldown') recalculateRuleDrivenActions(draft)
+      if (!state.showAdvancedTimeline && (key === 'qDistance' || key === 'qDuration' || key === 'qCooldown')) {
+        for (const player of draft.initialScene.players.filter((candidate) => candidate.role === role)) {
+          reflowSimpleLocomotion(draft, player.id)
+        }
+      }
+    })
+    if (!state.showAdvancedTimeline || key !== 'qCooldown') return documentPatch
+    const actorIds = documentPatch.document.initialScene.players
+      .filter((player) => player.role === role)
+      .map((player) => player.id)
+    const violation = firstQCooldownViolation(documentPatch.document, actorIds)
+    return violation
+      ? { ...documentPatch, notice: `规则已修改；${qCooldownConflictNotice(violation)}` }
+      : documentPatch
+  }),
+  updateRoleExtra: (role, key, value) => set((state) => mutateDocument(state, (draft) => {
+    const roleRule = draft.rulesSnapshot.roles[role]
+    const safe = Math.max(0, value)
+    if (key === 'boostDuration') {
+      if (roleRule.afterQBoost) roleRule.afterQBoost.duration = safe
+      else if (roleRule.receiveBoost) roleRule.receiveBoost.duration = safe
+    }
+    if (key === 'boostGain') {
+      if (roleRule.afterQBoost) roleRule.afterQBoost.netSeparationGain = safe
+      else if (roleRule.receiveBoost) roleRule.receiveBoost.netSeparationGain = safe
+    }
+    if (key === 'freezeDuration') roleRule.q.freezeDuration = safe
+    if (key === 'knockback') roleRule.q.facingKnockback = safe
+    if (key === 'slowFullDuration' && roleRule.slow) roleRule.slow.duration = safe
+    if (key === 'slowFullLoss' && roleRule.slow) roleRule.slow.fullSeparationLoss = safe
+    if (key === 'slowDuration' && roleRule.slow) roleRule.slow.effectiveDuration = safe
+    if (key === 'slowLoss' && roleRule.slow) roleRule.slow.effectiveSeparationLoss = safe
+    if (key === 'eRadius' && roleRule.e) roleRule.e.radius = safe
+    if (key === 'eDuration' && roleRule.e) roleRule.e.duration = safe
+    if (key === 'eCooldown' && roleRule.e) roleRule.e.cooldown = safe
+    if (key === 'eSlowMultiplier' && roleRule.e) roleRule.e.slowMultiplier = Math.min(1, safe)
+    if (key === 'eQDistanceMultiplier' && roleRule.e) roleRule.e.qDistanceMultiplier = Math.min(1, safe)
+    recalculateRuleDrivenActions(draft)
+  })),
+  setMatchup: (attacker, defender, value) => set((state) => mutateDocument(state, (draft) => {
+    draft.rulesSnapshot.matchups[attacker][defender] = value
+  })),
+  setModifier: (id, field, value) => set((state) => mutateDocument(state, (draft) => {
+    const modifier = draft.rulesSnapshot.modifiers.find((candidate) => candidate.id === id)
+    if (!modifier) return
+    if (field === 'enabled' && typeof value === 'boolean') modifier.enabled = value
+    if (field === 'delta' && typeof value === 'number' && [-2, -1, 1, 2].includes(value)) {
+      modifier.delta = value as -2 | -1 | 1 | 2
+    }
+  })),
+  resetRules: () => set((state) => mutateDocument(state, (draft) => {
+    draft.rulesSnapshot = cloneDefaultRules()
+    recalculateRuleDrivenActions(draft)
+    if (!state.showAdvancedTimeline) {
+      for (const player of draft.initialScene.players) reflowSimpleLocomotion(draft, player.id)
+    }
+  })),
+
+  replaceDocument: (document) => set((state) => {
+    const next = cloneDocument(document)
+    syncPassEndpoints(next)
+    return {
+      ...applyDocument(state, next),
+      selection: null,
+      tool: 'select' as const,
+      boardMode: 'simulation' as const,
+      activeStepId: next.stepMarkers[0]?.id ?? '',
+      currentTime: 0,
+      isPlaying: false,
+      notice: '战术文件已导入。',
+    }
+  }),
+
+  newDocument: () => set((state) => {
+    const document = createDefaultDocument()
+    return {
+      ...applyDocument(state, document),
+      selection: null,
+      tool: 'select' as const,
+      boardMode: 'simulation' as const,
+      activeStepId: document.stepMarkers[0]?.id ?? '',
+      currentTime: 0,
+      isPlaying: false,
+      notice: '已新建战术。',
+    }
+  }),
+
+  undo: () => set((state) => {
+    const previous = state.past[state.past.length - 1]
+    if (!previous) return {}
+    saveDraft(previous)
+    return {
+      document: cloneDocument(previous),
+      past: state.past.slice(0, -1),
+      future: [cloneDocument(state.document), ...state.future].slice(0, 50),
+      selection: null,
+      notice: null,
+    }
+  }),
+
+  redo: () => set((state) => {
+    const next = state.future[0]
+    if (!next) return {}
+    saveDraft(next)
+    return {
+      document: cloneDocument(next),
+      past: [...state.past, cloneDocument(state.document)].slice(-50),
+      future: state.future.slice(1),
+      selection: null,
+      notice: null,
+    }
+  }),
+}))
+
+function actionEndTimeSafe(action: TacticAction): number {
+  return action.startTime + Math.max(0, action.duration)
+}
+
+function actionPathSafe(action: TacticAction): Vec2[] | undefined {
+  return 'path' in action ? action.path : undefined
+}
+
+export function getActionLength(action: TacticAction): number | null {
+  const path = actionPathSafe(action)
+  return path ? pathLength(path) : null
+}
