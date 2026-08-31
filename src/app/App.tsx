@@ -107,7 +107,9 @@ export function App() {
       {boardMode === 'simulation' && <TimelinePanel />}
       <RulesDrawer />
       <LogicDrawer />
-      <div className="version-badge" aria-label={`应用版本 ${packageJson.version}`}>v{packageJson.version}</div>
+      <div className="version-badge" aria-label={`Version ${packageJson.version}, Developer ${packageJson.author}`}>
+        v{packageJson.version} · Developer: {packageJson.author}
+      </div>
       {notice && <div className="toast" role="status"><span aria-hidden="true">i</span>{notice}</div>}
       <div className="small-screen-message">第一版专为电脑端设计，请使用更宽的浏览器窗口。</div>
     </div>

@@ -34,7 +34,7 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: '跑动' })).toBeInTheDocument()
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '推演模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText('应用版本 0.1.0')).toHaveTextContent('v0.1.0')
+    expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
   })
 
   it('uses the projected carrier for the possession button even when an imported flag is stale', () => {

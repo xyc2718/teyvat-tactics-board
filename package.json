@@ -2,6 +2,7 @@
   "name": "teyvat-tactics-board",
   "private": true,
   "version": "0.1.0",
+  "author": "xyc",
   "homepage": "https://xyc2718.github.io/teyvat-tactics-board/",
   "repository": {
     "type": "git",
