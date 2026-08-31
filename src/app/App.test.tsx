@@ -165,7 +165,7 @@ describe('App shell', () => {
     expect(container.querySelector('.board-workflow-guide')).not.toBeInTheDocument()
   })
 
-  it('lets a tool-first Q choose an existing move endpoint as its actor node', () => {
+  it('lets the actor-selection stage choose an existing move endpoint as its actor node', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'clickable-run-end',
@@ -175,7 +175,7 @@ describe('App shell', () => {
       duration: 2,
       path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
     })
-    useTacticStore.setState({ document, currentTime: 0, selection: { kind: 'player', id: 'blue-fire' } })
+    useTacticStore.setState({ document, currentTime: 0, selection: null })
     render(<App />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
@@ -187,6 +187,36 @@ describe('App shell', () => {
       tool: 'qMove',
     })
     expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
+  })
+
+  it('does not let another action endpoint intercept a chosen water Q landing point', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'other-player-run-end',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+    })
+    useTacticStore.setState({
+      document,
+      currentTime: 0,
+      selection: { kind: 'player', id: 'blue-water' },
+    })
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
+    expect(screen.queryByRole('button', { name: '从跑动终点续接Q 位移' })).not.toBeInTheDocument()
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    fireEvent.pointerDown(board, { clientX: 311, clientY: 257, pointerId: 32, button: 0 })
+
+    const q = useTacticStore.getState().document.actions.at(-1)
+    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-water' })
+    if (q?.type === 'qMove') expect(q.path.at(-1)).toEqual({ x: 5.5, y: 4.7 })
   })
 
   it('saves a cooldown-delayed Q from the projected final origin without a virtual arrow', () => {

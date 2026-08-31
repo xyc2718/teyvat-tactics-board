@@ -293,6 +293,7 @@ export function TacticsBoard() {
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel action={action} evaluation={shotPressure} />}
         {!isPlaying
           && (tool === 'move' || tool === 'qMove')
+          && !toolActor
           && (action.type === 'move' || action.type === 'qMove')
           && renderedEnd
           && <circle
