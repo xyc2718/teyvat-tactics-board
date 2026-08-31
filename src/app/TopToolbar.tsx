@@ -4,7 +4,7 @@ import { useTacticStore } from '../editor/useTacticStore'
 import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
 
-const simulationTools: ToolId[] = ['select', 'move', 'qMove', 'pass', 'shoot', 'annotation']
+const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation']
 const basicTools: ToolId[] = ['select', 'move']
 const advancedTools: ToolId[] = ['attack', 'eZone']
 
@@ -106,6 +106,7 @@ function ToolIcon({ tool }: { tool: ToolId }) {
   const symbols: Record<ToolId, string> = {
     select: '⌖',
     move: '↝',
+    wait: 'Ⅱ',
     qMove: 'ϟ',
     pass: '⇢',
     shoot: '◉',

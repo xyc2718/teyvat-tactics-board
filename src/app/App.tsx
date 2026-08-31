@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import packageJson from '../../package.json'
 import { TacticsBoard } from '../board/TacticsBoard'
-import { documentDuration } from '../domain/timeline/durations'
+import { timelineDuration } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
 import { InspectorPanel } from '../inspector/InspectorPanel'
 import { RulesDrawer } from '../inspector/RulesDrawer'
@@ -18,8 +18,8 @@ export function App() {
   const updateMeta = useTacticStore((state) => state.updateMeta)
   const setNotice = useTacticStore((state) => state.setNotice)
   const duration = useMemo(
-    () => Math.max(documentDuration(document.actions, document.stepMarkers.map((step) => step.time)), 2),
-    [document.actions, document.stepMarkers],
+    () => timelineDuration(document),
+    [document],
   )
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export function App() {
       const elapsed = ((now - previous) / 1000) * state.playbackSpeed
       previous = now
       const next = state.currentTime + elapsed
-      if (next >= duration) {
+      if (duration <= 0 || next >= duration) {
         useTacticStore.setState({ currentTime: duration, isPlaying: false })
         return
       }
@@ -67,7 +67,7 @@ export function App() {
       }
       const keyTools = state.boardMode === 'basic'
         ? { v: 'select', m: 'move' } as const
-        : { v: 'select', m: 'move', q: 'qMove', p: 'pass', s: 'shoot', a: 'annotation', k: 'attack', e: 'eZone' } as const
+        : { v: 'select', m: 'move', w: 'wait', q: 'qMove', p: 'pass', s: 'shoot', a: 'annotation', k: 'attack', e: 'eZone' } as const
       const tool = keyTools[event.key.toLowerCase() as keyof typeof keyTools]
       if (tool && !event.repeat) {
         event.preventDefault()

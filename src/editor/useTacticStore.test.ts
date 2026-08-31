@@ -186,6 +186,9 @@ describe('tactic store timeline edits', () => {
   })
 
   it('restarts playback from zero after reaching the end', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({ id: 'playable-wait', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 })
+    useTacticStore.setState({ document })
     useTacticStore.setState({ currentTime: 2, isPlaying: false })
     useTacticStore.getState().setPlaying(true)
     expect(useTacticStore.getState().currentTime).toBe(0)
@@ -193,6 +196,9 @@ describe('tactic store timeline edits', () => {
   })
 
   it('cancels a pending drawing tool when playback starts', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({ id: 'playable-wait', type: 'wait', actorId: 'red-water', startTime: 0, duration: 1 })
+    useTacticStore.setState({ document })
     useTacticStore.getState().setTool('qMove')
     useTacticStore.getState().chooseActorForTool('blue-water')
     useTacticStore.getState().setPlaying(true)
@@ -200,6 +206,100 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().isPlaying).toBe(true)
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
+  })
+
+  it('keeps the opening setup as a zero-duration static frame', () => {
+    useTacticStore.setState({ currentTime: 2, isPlaying: false })
+    useTacticStore.getState().setPlaying(true)
+
+    expect(useTacticStore.getState()).toMatchObject({ currentTime: 0, isPlaying: false, tool: 'select' })
+    expect(useTacticStore.getState().notice).toContain('静态初始帧')
+  })
+
+  it('snaps paused time to action joints while playback may remain continuous', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push(
+      { id: 'snap-move', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] },
+      { id: 'snap-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 3 },
+    )
+    useTacticStore.setState({ document })
+
+    useTacticStore.getState().setCurrentTime(4.4)
+    expect(useTacticStore.getState().currentTime).toBe(5)
+    useTacticStore.setState({ currentTime: 3.1, isPlaying: true })
+    useTacticStore.getState().setPlaying(false)
+    expect(useTacticStore.getState().currentTime).toBe(2)
+  })
+
+  it('chains run, wait, and Q and reconnects both sides when the wait-start joint moves', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push(
+      { id: 'joint-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] },
+      { id: 'joint-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 1 },
+      { id: 'joint-q', type: 'qMove', actorId: 'blue-fire', startTime: 3, duration: 0, path: [{ x: 5.5, y: 2.7 }, { x: 7.5, y: 2.7 }] },
+    )
+    useTacticStore.setState({ document, currentTime: 2, past: [], future: [] })
+
+    useTacticStore.getState().moveEntity('blue-fire', { x: 6.5, y: 2.7 })
+    const actions = useTacticStore.getState().document.actions
+    const move = actions.find((action) => action.id === 'joint-run')
+    const wait = actions.find((action) => action.id === 'joint-wait')
+    const q = actions.find((action) => action.id === 'joint-q')
+    expect(move).toMatchObject({ type: 'move', duration: 3, path: [{ x: 3.5, y: 2.7 }, { x: 6.5, y: 2.7 }] })
+    expect(wait).toMatchObject({ type: 'wait', startTime: 3, duration: 1 })
+    expect(q).toMatchObject({ type: 'qMove', startTime: 4 })
+    if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 2.7 })
+    expect(useTacticStore.getState().currentTime).toBe(3)
+  })
+
+  it('does not let a player drag rewrite a route between timeline joints', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({ id: 'locked-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    useTacticStore.setState({ document, currentTime: 1, past: [], future: [] })
+
+    useTacticStore.getState().moveEntity('blue-fire', { x: 8, y: 4 })
+
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === 'locked-run')).toMatchObject({
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
+    })
+    expect(useTacticStore.getState().notice).toContain('开始或结束节点')
+  })
+
+  it('adds an editable wait after the selected player locomotion chain', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({ id: 'before-wait', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    useTacticStore.setState({ document, selection: { kind: 'player', id: 'blue-fire' } })
+
+    useTacticStore.getState().setTool('wait')
+    let state = useTacticStore.getState()
+    const wait = state.document.actions.find((action) => action.type === 'wait')
+    expect(wait).toMatchObject({ actorId: 'blue-fire', startTime: 2, duration: 1 })
+    expect(state.selection).toEqual({ kind: 'action', id: wait?.id })
+
+    state.updateActionTiming(wait!.id, 'duration', 2.5)
+    state = useTacticStore.getState()
+    expect(state.document.actions.find((action) => action.id === wait?.id)).toMatchObject({ startTime: 2, duration: 2.5 })
+  })
+
+  it('switches a run between straight and adjustable curved projection', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({ id: 'curved-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }] })
+    useTacticStore.setState({ document, currentTime: 2 })
+
+    useTacticStore.getState().setMovePathMode('curved-run', 'curve')
+    let move = useTacticStore.getState().document.actions.find((action) => action.id === 'curved-run')
+    expect(move).toMatchObject({ type: 'move' })
+    if (move?.type !== 'move') throw new Error('Expected move')
+    expect(move.curveControl).toBeDefined()
+    expect(move.duration).toBeGreaterThan(2)
+    expect(useTacticStore.getState().currentTime).toBe(move.duration)
+    expect(projectFrame(useTacticStore.getState().document, move.duration / 2).players.find((player) => player.id === 'blue-fire')?.position.y).toBeGreaterThan(2.7)
+
+    useTacticStore.getState().setMovePathMode('curved-run', 'straight')
+    move = useTacticStore.getState().document.actions.find((action) => action.id === 'curved-run')
+    if (move?.type !== 'move') throw new Error('Expected move')
+    expect(move.curveControl).toBeUndefined()
+    expect(move.duration).toBeCloseTo(2)
   })
 
   it('supports tool-first Q creation and keeps the actor selected after one shot', () => {

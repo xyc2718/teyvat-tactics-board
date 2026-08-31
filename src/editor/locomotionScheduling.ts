@@ -1,4 +1,4 @@
-import { truncatePath } from '../domain/geometry/geometry'
+import { resolvedMovePath, truncatePath } from '../domain/geometry/geometry'
 import type { PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
 import { projectFrame } from '../domain/timeline/projectFrame'
@@ -7,6 +7,12 @@ import { earliestLegalQStart } from '../domain/rules/qCooldown'
 const EPSILON = 1e-6
 
 type LocomotionAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
+type ActorSequenceAction = LocomotionAction | (Extract<TacticAction, { type: 'wait' }> & { actorId: string })
+
+function isActorSequenceAction(action: TacticAction, actorId: string): action is ActorSequenceAction {
+  return (action.type === 'move' || action.type === 'qMove' || action.type === 'wait')
+    && action.actorId === actorId
+}
 
 export interface LocomotionPlan {
   startTime: number
@@ -28,10 +34,7 @@ export function planSimpleLocomotion(
   normalizeStart: (candidate: number) => number = (candidate) => candidate,
 ): LocomotionPlan | null {
   const locomotion = document.actions
-    .filter(
-      (action): action is LocomotionAction =>
-        (action.type === 'move' || action.type === 'qMove') && action.actorId === actorId,
-    )
+    .filter((action): action is ActorSequenceAction => isActorSequenceAction(action, actorId))
     .sort((left, right) => left.startTime - right.startTime || actionEndTime(left) - actionEndTime(right))
 
   let startTime = Math.max(0, requestedStart)
@@ -83,6 +86,15 @@ export function planSimpleQ(
   )
 }
 
+export function planSimpleWait(
+  document: TacticDocumentV1,
+  actorId: string,
+  requestedStart: number,
+  duration: number,
+): LocomotionPlan | null {
+  return planSimpleLocomotion(document, actorId, requestedStart, () => Math.max(0, duration))
+}
+
 /**
  * Restores the simple-mode invariant after a role or rule edit changes a
  * locomotion duration. Authored endpoints/control points stay intact while
@@ -92,30 +104,45 @@ export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: stri
   const entries = document.actions
     .map((action, index) => ({ action, index }))
     .filter(
-      (entry): entry is { action: LocomotionAction; index: number } =>
-        (entry.action.type === 'move' || entry.action.type === 'qMove')
-        && entry.action.actorId === actorId,
+      (entry): entry is { action: ActorSequenceAction; index: number } =>
+        isActorSequenceAction(entry.action, actorId),
     )
     .sort((left, right) => left.action.startTime - right.action.startTime || left.index - right.index)
   const nonLocomotion = document.actions.filter(
-    (action) => !((action.type === 'move' || action.type === 'qMove') && action.actorId === actorId),
+    (action) => !isActorSequenceAction(action, actorId),
   )
-  const scheduled: LocomotionAction[] = []
+  const scheduled: ActorSequenceAction[] = []
+  let chainEnd: number | null = null
 
   for (const { action } of entries) {
-    const tail = action.path.slice(1).map((point) => ({ ...point }))
-    if (tail.length === 0) continue
+    const requestedStart = chainEnd ?? action.startTime
     const planningDocument: TacticDocumentV1 = {
       ...document,
       actions: [...nonLocomotion, ...scheduled],
     }
+
+    if (action.type === 'wait') {
+      const plan = planSimpleWait(planningDocument, actorId, requestedStart, action.duration)
+      if (!plan) continue
+      action.startTime = plan.startTime
+      action.duration = Math.max(0, action.duration)
+      scheduled.push(action)
+      chainEnd = actionEndTime(action)
+      continue
+    }
+
+    const tail = action.path.slice(1).map((point) => ({ ...point }))
+    if (tail.length === 0) continue
     const plan = action.type === 'qMove'
-      ? planSimpleQ(planningDocument, actorId, action.startTime)
+      ? planSimpleQ(planningDocument, actorId, requestedStart)
       : planSimpleLocomotion(
           planningDocument,
           actorId,
-          action.startTime,
-          (scheduledActor) => movementDuration([{ ...scheduledActor.position }, ...tail], document.rulesSnapshot),
+          requestedStart,
+          (scheduledActor) => movementDuration(
+            resolvedMovePath({ ...action, path: [{ ...scheduledActor.position }, ...tail] }),
+            document.rulesSnapshot,
+          ),
         )
     if (!plan) continue
 
@@ -126,8 +153,9 @@ export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: stri
     action.path = path
     action.startTime = plan.startTime
     action.duration = action.type === 'move'
-      ? movementDuration(path, document.rulesSnapshot)
+      ? movementDuration(resolvedMovePath(action), document.rulesSnapshot)
       : qDuration(plan.actor, document.rulesSnapshot)
     scheduled.push(action)
+    chainEnd = actionEndTime(action)
   }
 }

@@ -1,4 +1,4 @@
-import type { Vec2 } from '../model/types'
+import type { MoveAction, Vec2 } from '../model/types'
 
 const EPSILON = 1e-6
 
@@ -22,6 +22,28 @@ export function pathLength(path: Vec2[]): number {
     const previous = path[index]
     return previous ? total + distance(previous, point) : total
   }, 0)
+}
+
+/** Samples a quadratic Bezier into a stable polyline for projection and rules. */
+export function quadraticPath(start: Vec2, control: Vec2, end: Vec2, segments = 24): Vec2[] {
+  const count = Math.max(2, Math.floor(segments))
+  return Array.from({ length: count + 1 }, (_, index) => {
+    const t = index / count
+    const inverse = 1 - t
+    return {
+      x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
+      y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y,
+    }
+  })
+}
+
+export function resolvedMovePath(action: MoveAction): Vec2[] {
+  const start = action.path[0]
+  const end = action.path.at(-1)
+  if (!start || !end) return action.path.map((point) => ({ ...point }))
+  return action.curveControl
+    ? quadraticPath(start, action.curveControl, end)
+    : [{ ...start }, { ...end }]
 }
 
 export function pointAlongPath(path: Vec2[], progress: number): Vec2 {

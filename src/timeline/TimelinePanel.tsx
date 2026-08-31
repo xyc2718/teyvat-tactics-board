@@ -1,4 +1,4 @@
-import { documentDuration } from '../domain/timeline/durations'
+import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { useTacticStore } from '../editor/useTacticStore'
 import { actionLabels } from '../ui/labels'
@@ -23,7 +23,9 @@ export function TimelinePanel() {
   const select = useTacticStore((state) => state.select)
   const updateActionTiming = useTacticStore((state) => state.updateActionTiming)
   const deleteAction = useTacticStore((state) => state.deleteAction)
-  const duration = Math.max(documentDuration(document.actions, document.stepMarkers.map((step) => step.time)), 2)
+  const duration = timelineDuration(document)
+  const sliderMax = Math.max(duration, 0.01)
+  const joints = timelineJointTimes(document)
   const activeStep = document.stepMarkers.find((step) => step.id === activeStepId)
   const activeOwnership = activeStep ? getStepActionOwnership(document, activeStep.id) : null
 
@@ -38,8 +40,9 @@ export function TimelinePanel() {
         <button className="timeline-icon-button" onClick={() => setCurrentTime(0)} aria-label="回到开头">|◀</button>
         <span className="timeline-time current">{currentTime.toFixed(2)}</span>
         <div className="scrubber-wrap">
-          <input aria-label="播放位置" type="range" min="0" max={duration} step="0.01" value={Math.min(currentTime, duration)} onChange={(event) => setCurrentTime(Number(event.target.value))} />
-          <div className="step-ticks">{document.stepMarkers.map((step) => <button key={step.id} style={{ left: `${(step.time / duration) * 100}%` }} className={step.id === activeStepId ? 'active' : ''} onClick={() => selectStep(step.id)} aria-label={`跳到 ${step.name}`} />)}</div>
+          <input aria-label="播放位置" type="range" min="0" max={sliderMax} step="0.01" value={Math.min(currentTime, sliderMax)} disabled={duration <= 0} onChange={(event) => setCurrentTime(Number(event.target.value))} />
+          <div className="joint-ticks" aria-hidden="true">{duration > 0 && joints.map((time) => <i key={time} style={{ left: `${(time / duration) * 100}%` }} />)}</div>
+          <div className="step-ticks">{duration > 0 && document.stepMarkers.map((step) => <button key={step.id} style={{ left: `${(step.time / duration) * 100}%` }} className={step.id === activeStepId ? 'active' : ''} onClick={() => selectStep(step.id)} aria-label={`跳到 ${step.name}`} />)}</div>
         </div>
         <span className="timeline-time">{duration.toFixed(2)}s</span>
         <select className="speed-select" value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))} aria-label="播放速度">
@@ -92,7 +95,7 @@ export function TimelinePanel() {
                 <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{actionLabels[action.type]}</button>
                 <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
                 <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
-                <div className="mini-track"><span style={{ left: `${(action.startTime / duration) * 100}%`, width: `${Math.max((action.duration / duration) * 100, 1.5)}%` }} /></div>
+                <div className="mini-track"><span style={{ left: `${duration > 0 ? (action.startTime / duration) * 100 : 0}%`, width: `${duration > 0 ? Math.max((action.duration / duration) * 100, 1.5) : 1.5}%` }} /></div>
                 <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${actionLabels[action.type]}`}>×</button>
               </div>
             ))}

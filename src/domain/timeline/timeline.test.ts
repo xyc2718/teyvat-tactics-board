@@ -48,6 +48,19 @@ describe('projectFrame', () => {
     expect(projectFrame(document, 0.25).players.find((player) => player.id === action.actorId)?.position.x).toBeCloseTo(5.75)
   })
 
+  it('projects an adjustable curved run through its Bezier arc', () => {
+    const document = createDefaultDocument()
+    const action: MoveAction = {
+      id: 'curve-1', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2.3,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }], curveControl: { x: 4.5, y: 4.7 },
+    }
+    document.actions.push(action)
+    const middle = projectFrame(document, action.duration / 2).players.find((player) => player.id === action.actorId)
+    expect(middle?.position.x).toBeCloseTo(4.5, 1)
+    expect(middle?.position.y).toBeGreaterThan(3.5)
+    expect(projectFrame(document, action.duration).players.find((player) => player.id === action.actorId)?.position).toEqual({ x: 5.5, y: 2.7 })
+  })
+
   it('applies water Q instantly and tracks its cooldown and boost', () => {
     const document = createDefaultDocument()
     const action: QMoveAction = {

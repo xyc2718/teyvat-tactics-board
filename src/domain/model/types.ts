@@ -5,6 +5,7 @@ export type BoardMode = 'simulation' | 'basic'
 export type ToolId =
   | 'select'
   | 'move'
+  | 'wait'
   | 'qMove'
   | 'pass'
   | 'shoot'
@@ -62,6 +63,8 @@ export interface MoveAction extends BaseAction {
   type: 'move'
   actorId: string
   path: Vec2[]
+  /** Optional quadratic Bezier control point. Omitted paths are straight. */
+  curveControl?: Vec2
 }
 
 export interface QMoveAction extends BaseAction {

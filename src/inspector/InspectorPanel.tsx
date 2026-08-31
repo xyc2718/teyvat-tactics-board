@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { distance, normalizeAngle, pathLength } from '../domain/geometry/geometry'
+import { distance, normalizeAngle, pathLength, resolvedMovePath } from '../domain/geometry/geometry'
 import { evaluateMatchup, evaluateWarnings } from '../domain/rules/evaluateRules'
 import {
   evaluateShotActionPressure,
@@ -15,6 +15,7 @@ export function InspectorPanel() {
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
   const selection = useTacticStore((state) => state.selection)
+  const showAdvancedTimeline = useTacticStore((state) => state.showAdvancedTimeline)
   const frame = useMemo(() => projectFrame(document, currentTime), [document, currentTime])
   const selectedPlayer = selection?.kind === 'player'
     ? frame.players.find((player) => player.id === selection.id)
@@ -32,6 +33,7 @@ export function InspectorPanel() {
   const setFacing = useTacticStore((state) => state.setPlayerFacing)
   const givePossession = useTacticStore((state) => state.givePossession)
   const updateTiming = useTacticStore((state) => state.updateActionTiming)
+  const setMovePathMode = useTacticStore((state) => state.setMovePathMode)
   const setShotCharge = useTacticStore((state) => state.setShotCharge)
   const deleteAction = useTacticStore((state) => state.deleteAction)
   const select = useTacticStore((state) => state.select)
@@ -102,9 +104,23 @@ export function InspectorPanel() {
         <div className="inspector-content">
           <section className="inspector-section">
             <div className="action-kind"><span className={`action-dot type-${selectedAction.type}`} />{actionLabels[selectedAction.type]}</div>
-            <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
-            <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
-            {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.path).toFixed(2)} 格</strong></div>}
+            {showAdvancedTimeline
+              ? <>
+                  <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
+                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
+                </>
+              : <>
+                  <div className="inline-info"><span>开始节点</span><strong>{selectedAction.startTime.toFixed(2)}s</strong></div>
+                  {selectedAction.type === 'wait'
+                    ? <label className="field-row"><span>等待时长</span><NumberInput value={selectedAction.duration} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
+                    : <div className="inline-info"><span>动作时长</span><strong>{selectedAction.duration.toFixed(2)}s</strong></div>}
+                </>}
+            {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.type === 'move' ? resolvedMovePath(selectedAction) : selectedAction.path).toFixed(2)} 格</strong></div>}
+            {selectedAction.type === 'move' && <div className="move-path-mode" role="group" aria-label="跑动路径类型">
+              <button className={!selectedAction.curveControl ? 'active' : ''} aria-pressed={!selectedAction.curveControl} onClick={() => setMovePathMode(selectedAction.id, 'straight')}>直线</button>
+              <button className={selectedAction.curveControl ? 'active' : ''} aria-pressed={Boolean(selectedAction.curveControl)} onClick={() => setMovePathMode(selectedAction.id, 'curve')}>可调曲线</button>
+            </div>}
+            {selectedAction.type === 'move' && selectedAction.curveControl && <p className="callout">拖动球场上的白色曲线控制点调整弧度；动作时长会随曲线长度自动更新。</p>}
             {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
             {selectedAction.type === 'shoot' && <label className="field-row"><span>蓄力等级</span>
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>

@@ -6,6 +6,7 @@ import {
   oppositeFacingOffset,
   pathLength,
   pointAlongPath,
+  resolvedMovePath,
   truncatePath,
 } from '../geometry/geometry'
 import type {
@@ -108,7 +109,7 @@ function moveDistanceWithoutEZoneSlow(
   action: MoveAction,
   time: number,
 ): number {
-  const routeLength = pathLength(action.path)
+  const routeLength = pathLength(resolvedMovePath(action))
   const effectiveTime = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   let traveled = clamp((effectiveTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1) * routeLength
 
@@ -168,7 +169,8 @@ function moveDistanceWithEZoneSlow(
   hitMap: IceQHitMap,
 ): number {
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
-  const routeLength = pathLength(action.path)
+  const route = resolvedMovePath(action)
+  const routeLength = pathLength(route)
   const end = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   if (!movingActor || routeLength <= 0 || end <= action.startTime) return 0
 
@@ -190,7 +192,7 @@ function moveDistanceWithEZoneSlow(
         moveDistanceWithoutEZoneSlow(document, action, stepStart),
     )
     const probeDistance = Math.min(routeLength, traveled + unslowedStep / 2)
-    const probePosition = pointAlongPath(action.path, probeDistance / Math.max(routeLength, 0.0001))
+    const probePosition = pointAlongPath(route, probeDistance / Math.max(routeLength, 0.0001))
     const probeTime = (stepStart + stepEnd) / 2
     traveled += unslowedStep * eZoneMultiplierAt(
       document,
@@ -299,7 +301,7 @@ function movementProgress(
     return baseProgress
   }
 
-  const routeLength = pathLength(action.path)
+  const routeLength = pathLength(resolvedMovePath(action))
   const traveled = applyControlEffects && applyEZoneEffects
     ? moveDistanceWithEZoneSlow(document, action, effectiveTime, applyControlEffects, hitMap)
     : moveDistanceWithoutEZoneSlow(document, action, effectiveTime)
@@ -365,8 +367,9 @@ function projectSceneCore(
 
     if (action.type === 'move' || action.type === 'qMove') {
       if (!actor || action.path.length < 2) continue
+      const route = action.type === 'move' ? resolvedMovePath(action) : action.path
       actor.position = clampPoint(
-        pointAlongPath(action.path, movementProgress(document, action, time, applyControlEffects, hitMap, applyEZoneEffects)),
+        pointAlongPath(route, movementProgress(document, action, time, applyControlEffects, hitMap, applyEZoneEffects)),
         rules.field.width,
         rules.field.height,
       )

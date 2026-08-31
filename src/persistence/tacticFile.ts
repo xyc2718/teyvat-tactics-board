@@ -51,7 +51,13 @@ const actionBase = {
 }
 
 const actionSchema = z.discriminatedUnion('type', [
-  z.object({ ...actionBase, type: z.literal('move'), actorId: z.string(), path: z.array(vec2Schema).min(2).max(20) }),
+  z.object({
+    ...actionBase,
+    type: z.literal('move'),
+    actorId: z.string(),
+    path: z.array(vec2Schema).min(2).max(20),
+    curveControl: vec2Schema.optional(),
+  }),
   z.object({
     ...actionBase,
     type: z.literal('qMove'),
@@ -298,6 +304,7 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     if ('targetId' in action && action.targetId && !knownPlayers.has(action.targetId)) return `动作 ${action.id} 的目标不存在。`
     if (action.type === 'pass' && action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的接球队员不存在。`
     if ('path' in action && action.path.some((point) => !pointInField(point))) return `动作 ${action.id} 包含球场范围外的坐标。`
+    if (action.type === 'move' && action.curveControl && !pointInField(action.curveControl)) return `动作 ${action.id} 的曲线控制点超出球场。`
     // V1 keeps the activation snapshot for compatibility, but the live E-zone center is its actor.
     if (action.type === 'possession' && !pointInField(action.position)) return `动作 ${action.id} 的球权位置超出球场。`
   }

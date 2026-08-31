@@ -1,4 +1,4 @@
-import { clampPoint, getShootZone, normalizeAngle, oppositeFacingOffset, pathLength } from '../geometry/geometry'
+import { clampPoint, getShootZone, normalizeAngle, oppositeFacingOffset, pathLength, resolvedMovePath } from '../geometry/geometry'
 import type { RuleWarning, TacticAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { evaluateWarnings } from '../rules/evaluateRules'
 import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from '../rules/passThreat'
@@ -42,7 +42,7 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
       const boostText = boost
         ? `；其中 ${boost.overlapStart.toFixed(2)}–${boost.overlapEnd.toFixed(2)}s 为水 Q 加速段，累计身位收益 +${boost.separationGain.toFixed(2)} 格`
         : ''
-      return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(action.path).toFixed(2)} 格路径跑到 ${pointText(action.path.at(-1))}${boostText}。`
+      return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(resolvedMovePath(action)).toFixed(2)} 格${action.curveControl ? '曲线' : '直线'}跑到 ${pointText(action.path.at(-1))}${boostText}。`
     }
     case 'qMove': {
       const rule = actor ? document.rulesSnapshot.roles[actor.role] : undefined

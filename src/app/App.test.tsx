@@ -107,7 +107,38 @@ describe('App shell', () => {
     expect(screen.getByText('E 圈内敌方 Q 距离')).toBeInTheDocument()
   })
 
-  it('guides a tool-first Q workflow, previews the path, and resets after creation', () => {
+  it('renders the opening setup as a disabled zero-second timeline', () => {
+    render(<App />)
+
+    expect(screen.getByLabelText('播放位置')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument()
+    expect(screen.getAllByText('0.00s').length).toBeGreaterThan(0)
+  })
+
+  it('adds a wait from the selected player and exposes its duration directly', () => {
+    render(<App />)
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { pointerId: 1, button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: '等待' }))
+
+    expect(useTacticStore.getState().document.actions[0]).toMatchObject({ type: 'wait', actorId: 'blue-fire', duration: 1 })
+    expect(screen.getByText('等待时长')).toBeInTheDocument()
+  })
+
+  it('hides unrelated future arrows while paused and reveals the path at its joint', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'future-path', type: 'move', actorId: 'blue-fire', startTime: 5, duration: 2,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0 })
+    const { container } = render(<App />)
+    expect(container.querySelector('[data-action-id="future-path"]')).not.toBeInTheDocument()
+
+    act(() => useTacticStore.getState().setCurrentTime(5))
+    expect(container.querySelector('[data-action-id="future-path"] .action-move')).toBeInTheDocument()
+  })
+
+  it('guides a tool-first Q workflow without a virtual arrow and resets after creation', () => {
     const { container } = render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
     expect(screen.getByRole('status')).toHaveTextContent('1 / 2')
@@ -119,12 +150,9 @@ describe('App shell', () => {
     const board = screen.getByRole('application', { name: '战术编辑球场' })
     mockBoardRect(board)
     fireEvent.pointerMove(board, { clientX: 650, clientY: 270, pointerId: 1 })
-    const preview = container.querySelector('.q-preview-path')
-    expect(preview).toBeInTheDocument()
-    expect(preview).toHaveAttribute('data-preview', 'true')
-    expect(preview).toHaveAttribute('marker-end', 'url(#arrow-q-preview)')
-    expect(container.querySelector('#arrow-q-preview path')).toHaveAttribute('fill', 'none')
-    expect(screen.getByText(/预览 ·/)).toBeInTheDocument()
+    expect(container.querySelector('.q-preview-range')).toBeInTheDocument()
+    expect(container.querySelector('.q-preview-path')).not.toBeInTheDocument()
+    expect(container.querySelector('#arrow-q-preview')).not.toBeInTheDocument()
     fireEvent.pointerDown(board, { clientX: 650, clientY: 270, pointerId: 1, button: 0 })
 
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({ type: 'qMove', actorId: 'blue-fire' })
@@ -135,7 +163,7 @@ describe('App shell', () => {
     expect(container.querySelector('.board-workflow-guide')).not.toBeInTheDocument()
   })
 
-  it('previews a cooldown-delayed Q from the same final origin used by the saved action', () => {
+  it('saves a cooldown-delayed Q from the projected final origin without a virtual arrow', () => {
     const document = createDefaultDocument()
     document.actions.push(
       { id: 'existing-water-q', type: 'qMove', actorId: 'blue-water', startTime: 0, duration: 0, path: [{ x: 5.5, y: 5 }, { x: 8, y: 5 }] },
@@ -148,7 +176,7 @@ describe('App shell', () => {
     mockBoardRect(board)
     fireEvent.pointerMove(board, { clientX: 736, clientY: 272, pointerId: 1 })
 
-    expect(container.querySelector('.q-preview-path')?.getAttribute('points')?.split(' ')[0]).toBe('600,250')
+    expect(container.querySelector('.q-preview-path')).not.toBeInTheDocument()
     fireEvent.pointerDown(board, { clientX: 736, clientY: 272, pointerId: 1, button: 0 })
     const saved = useTacticStore.getState().document.actions.at(-1)
     expect(saved).toMatchObject({ type: 'qMove', startTime: 7 })
@@ -161,7 +189,7 @@ describe('App shell', () => {
 
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
     expect(container.querySelectorAll('.player-token.tool-target-eligible')).toHaveLength(2)
-    expect(screen.getByRole('status')).toHaveTextContent('移动指针查看传球区间')
+    expect(screen.getByRole('status')).toHaveTextContent('参考安全/最远距离圈')
 
     fireEvent.pointerDown(screen.getByRole('button', { name: /红方 1，水灵/ }), { pointerId: 1, button: 0 })
     expect(useTacticStore.getState().document.actions).toHaveLength(0)
@@ -283,16 +311,16 @@ describe('App shell', () => {
     expect(useTacticStore.getState().document.actions).toHaveLength(0)
   })
 
-  it('uses the same threat segments for pass hover and saved pass rendering', () => {
+  it('shows only pass distance rings before creation and threat segments after saving', () => {
     const { container } = render(<App />)
     fireEvent.click(screen.getByRole('button', { name: '传球' }))
     const board = screen.getByRole('application', { name: '战术编辑球场' })
     mockBoardRect(board)
 
     fireEvent.pointerMove(board, { clientX: 736, clientY: 272, pointerId: 1 })
-    expect(container.querySelectorAll('.pass-preview-segment').length).toBeGreaterThan(1)
-    expect(container.querySelector('.pass-preview-segment[data-threat="safe"]')).toBeInTheDocument()
-    expect(container.querySelector('.pass-preview-segment[data-threat="drop"]')).toBeInTheDocument()
+    expect(container.querySelector('.pass-preview-safe')).toBeInTheDocument()
+    expect(container.querySelector('.pass-preview-max')).toBeInTheDocument()
+    expect(container.querySelectorAll('.pass-preview-segment')).toHaveLength(0)
     expect(screen.getByLabelText('传球威胁图例').children).toHaveLength(6)
 
     fireEvent.pointerDown(board, { clientX: 736, clientY: 272, pointerId: 1, button: 0 })

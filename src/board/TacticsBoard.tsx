@@ -1,10 +1,9 @@
 import { useMemo, useRef, useState } from 'react'
-import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, truncatePath } from '../domain/geometry/geometry'
+import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
 import { anchorPassPathToPlayer } from '../domain/model/passPath'
 import {
   classifyPassThreat,
-  highestPassThreat,
   PASS_THREAT_LABELS,
   PASS_THREAT_ORDER,
 } from '../domain/rules/passThreat'
@@ -14,7 +13,6 @@ import {
 } from '../domain/rules/shotPressure'
 import { waterQMoveBoost } from '../domain/timeline/movementEffects'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from '../domain/timeline/projectFrame'
-import { planSimpleQ } from '../editor/locomotionScheduling'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
   actorPrompt,
@@ -54,6 +52,7 @@ function openingFrame(document: TacticDocumentV1): ProjectedFrame {
 type DragState =
   | { kind: 'entity'; id: string; point: Vec2 }
   | { kind: 'path'; actionId: string; index: number; point: Vec2 }
+  | { kind: 'curve'; actionId: string; point: Vec2 }
   | { kind: 'staticArrow'; arrowId: string; point: Vec2 }
   | { kind: 'facing'; playerId: string; center: Vec2; initialFacing: number; facing: number }
   | null
@@ -61,13 +60,12 @@ type DragState =
 export function TacticsBoard() {
   const svgRef = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<DragState>(null)
-  const [hoverPoint, setHoverPoint] = useState<Vec2 | null>(null)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const isPlaying = useTacticStore((state) => state.isPlaying)
   const selection = useTacticStore((state) => state.selection)
   const tool = useTacticStore((state) => state.tool)
   const boardMode = useTacticStore((state) => state.boardMode)
-  const showAdvancedTimeline = useTacticStore((state) => state.showAdvancedTimeline)
   const select = useTacticStore((state) => state.select)
   const chooseActor = useTacticStore((state) => state.chooseActorForTool)
   const setNotice = useTacticStore((state) => state.setNotice)
@@ -76,6 +74,7 @@ export function TacticsBoard() {
   const createShot = useTacticStore((state) => state.createShot)
   const createAction = useTacticStore((state) => state.createAction)
   const updateActionPathPoint = useTacticStore((state) => state.updateActionPathPoint)
+  const updateMoveCurveControl = useTacticStore((state) => state.updateMoveCurveControl)
   const updateStaticMoveArrowTarget = useTacticStore((state) => state.updateStaticMoveArrowTarget)
   const deleteStaticMoveArrow = useTacticStore((state) => state.deleteStaticMoveArrow)
   const frame = useMemo(
@@ -89,11 +88,6 @@ export function TacticsBoard() {
     : undefined
   const toolActor = resolveToolActor(tool, selectedPlayer, frame, rules)
   const actionActor = toolNeedsActor(tool) ? toolActor : selectedPlayer
-  const qPreviewPlan = toolActor && tool === 'qMove' && !showAdvancedTimeline
-    ? planSimpleQ(document, toolActor.id, currentTime)
-    : null
-  const previewActor = qPreviewPlan ? { ...qPreviewPlan.actor, position: qPreviewPlan.origin } : toolActor
-  const previewStartTime = qPreviewPlan?.startTime ?? currentTime
   const selectedPass = selection?.kind === 'action'
     ? document.actions.find((action) => action.id === selection.id && action.type === 'pass')
     : undefined
@@ -120,7 +114,7 @@ export function TacticsBoard() {
   }
 
   function beginEntityDrag(event: React.PointerEvent, id: string, point: Vec2) {
-    if (event.button !== 0) return
+    if (event.button !== 0 || isPlaying) return
     event.stopPropagation()
     if (tool !== 'select') {
       if (tool === 'shoot') {
@@ -147,7 +141,7 @@ export function TacticsBoard() {
   }
 
   function beginFacingDrag(event: React.PointerEvent<SVGGElement>, player: PlayerState, center: Vec2) {
-    if (tool !== 'select' || event.button !== 0) return
+    if (tool !== 'select' || event.button !== 0 || isPlaying) return
     event.preventDefault()
     event.stopPropagation()
     const facing = normalizeAngle(player.facing)
@@ -156,7 +150,7 @@ export function TacticsBoard() {
   }
 
   function onBoardPointerDown(event: React.PointerEvent<SVGSVGElement>) {
-    if (event.button !== 0) return
+    if (event.button !== 0 || isPlaying) return
     const point = clientToField(event.clientX, event.clientY)
     if (tool === 'select') {
       select(null)
@@ -184,7 +178,6 @@ export function TacticsBoard() {
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const logicalPoint = clientToLogicalPoint(event.clientX, event.clientY)
     const point = clientToField(event.clientX, event.clientY)
-    setHoverPoint(point)
     if (drag?.kind === 'facing') {
       setDrag({ ...drag, facing: directionAngle(drag.center, logicalPoint, drag.facing) })
     } else if (drag) {
@@ -196,6 +189,7 @@ export function TacticsBoard() {
     if (!drag) return
     if (drag.kind === 'entity') moveEntity(drag.id, drag.point)
     if (drag.kind === 'path') updateActionPathPoint(drag.actionId, drag.index, drag.point)
+    if (drag.kind === 'curve') updateMoveCurveControl(drag.actionId, drag.point)
     if (drag.kind === 'staticArrow') updateStaticMoveArrowTarget(drag.arrowId, drag.point)
     if (drag.kind === 'facing') {
       const delta = Math.abs(normalizeAngle(drag.facing - drag.initialFacing))
@@ -207,13 +201,11 @@ export function TacticsBoard() {
 
   function onPointerCancel(event: React.PointerEvent<SVGSVGElement>) {
     setDrag(null)
-    setHoverPoint(null)
     if (svgRef.current?.hasPointerCapture?.(event.pointerId)) svgRef.current.releasePointerCapture?.(event.pointerId)
   }
 
   function onLostPointerCapture() {
     setDrag(null)
-    setHoverPoint(null)
   }
 
   function previewPath(action: TacticAction): Vec2[] | null {
@@ -251,9 +243,13 @@ export function TacticsBoard() {
     if (!path) return null
     const qAction = action.type === 'qMove' ? { ...action, path } : null
     const qEffect = qAction ? evaluateQDistanceEffect(document, qAction) : null
-    const renderedPath = qAction ? effectiveQPath(document, qAction) : path
+    const moveAction = action.type === 'move'
+      ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
+      : null
+    const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? resolvedMovePath(moveAction) : path
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
-    const opacity = isSelected || isCurrent ? 1 : 0.42
+    const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
+    if (!elevated && !(isPlaying ? isCurrent : atJoint)) return null
     const waterBoost = action.type === 'move' ? waterQMoveBoost(document, action) : null
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
@@ -261,7 +257,6 @@ export function TacticsBoard() {
         key={action.id}
         data-action-id={action.id}
         className={isSelected ? 'selected-action' : ''}
-        opacity={opacity}
         pointerEvents={elevated ? 'none' : undefined}
         onPointerDown={(event) => { event.stopPropagation(); select({ kind: 'action', id: action.id }) }}
       >
@@ -299,6 +294,20 @@ export function TacticsBoard() {
             }}
           />
         ))}
+        {elevated && action.type === 'move' && action.curveControl && <circle
+          cx={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.x : action.curveControl.x) * SCALE}
+          cy={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.y : action.curveControl.y) * SCALE}
+          r="9"
+          className="path-handle curve-handle"
+          pointerEvents="all"
+          role="slider"
+          aria-label="调整跑动曲线"
+          onPointerDown={(event) => {
+            event.stopPropagation()
+            setDrag({ kind: 'curve', actionId: action.id, point: action.curveControl! })
+            svgRef.current?.setPointerCapture?.(event.pointerId)
+          }}
+        />}
       </g>
     )
   }
@@ -366,7 +375,6 @@ export function TacticsBoard() {
         onPointerDown={onBoardPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => { if (!drag) setHoverPoint(null) }}
         onPointerCancel={onPointerCancel}
         onLostPointerCapture={onLostPointerCapture}
       >
@@ -381,9 +389,6 @@ export function TacticsBoard() {
           </marker>
           <marker id="arrow-q" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#7de2f2" />
-          </marker>
-          <marker id="arrow-q-preview" markerWidth="5" markerHeight="5" refX="4.5" refY="2.5" orient="auto">
-            <path d="M0.5,0.5 L4.5,2.5 L0.5,4.5" fill="none" stroke="rgba(142, 233, 247, .55)" strokeWidth="1" />
           </marker>
           <marker id="arrow-pass" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#f7f4df" />
@@ -455,15 +460,11 @@ export function TacticsBoard() {
           </g>
         )}
 
-        {tool !== 'select' && previewActor && (
+        {tool !== 'select' && toolActor && (
           <ToolPointerPreview
             tool={tool}
-            actor={previewActor}
-            hoverPoint={hoverPoint}
+            actor={toolActor}
             document={document}
-            frame={frame}
-            basicMode={boardMode === 'basic'}
-            startTime={previewStartTime}
           />
         )}
 
@@ -617,8 +618,8 @@ export function TacticsBoard() {
         </g>}
       </svg>
       {tool !== 'select' && <div className="board-workflow-guide" role="status">
-        <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
-        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
+        <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
+        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
         <kbd>Esc 取消</kbd>
       </div>}
       {boardMode === 'simulation' && (tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass')) && <PassThreatLegend />}
@@ -629,7 +630,7 @@ export function TacticsBoard() {
           ? tool === 'select'
             ? '拖动球员调整站位 · 选择球员后使用“移动箭头” · 点击箭头可编辑或删除'
             : toolActor ? '点击球场设置移动箭头终点' : '先选择一名球员'
-          : tool === 'select' ? '拖动球员或球 · 选中球员后拖动方向手柄 · 点击路径可编辑控制点' : tool === 'shoot' || tool === 'eZone' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
+          : tool === 'select' ? '非播放状态只停在动作节点 · 拖动节点球员可联动前后路径' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
       </div>
     </div>
   )
@@ -652,83 +653,25 @@ function ShotPressureLabel({
 function ToolPointerPreview({
   tool,
   actor,
-  hoverPoint,
   document,
-  frame,
-  basicMode,
-  startTime,
 }: {
   tool: ToolId
   actor: PlayerState
-  hoverPoint: Vec2 | null
   document: TacticDocumentV1
-  frame: ProjectedFrame
-  basicMode: boolean
-  startTime: number
 }) {
   const rules = document.rulesSnapshot
   const origin = actor.position
 
-  if (basicMode && tool === 'move') {
-    return <g className="tool-preview-layer basic-move-preview" pointerEvents="none">
-      {hoverPoint && <line
-        x1={origin.x * SCALE}
-        y1={origin.y * SCALE}
-        x2={hoverPoint.x * SCALE}
-        y2={hoverPoint.y * SCALE}
-        className={`static-move-arrow preview team-${actor.team}`}
-        markerEnd={`url(#arrow-basic-${actor.team})`}
-      />}
-    </g>
-  }
-
   if (tool === 'qMove') {
-    const qRule = rules.roles[actor.role].q
-    const maxDistance = qRule.maxDistance
-    const rawPath = hoverPoint ? [origin, hoverPoint] : [origin, origin]
-    const authoredPath = truncatePath(rawPath, maxDistance)
-    const previewAction: Extract<TacticAction, { type: 'qMove' }> = {
-      id: 'q-preview', type: 'qMove', actorId: actor.id, startTime, duration: qRule.duration, path: authoredPath,
-    }
-    const effect = evaluateQDistanceEffect(document, previewAction)
-    const path = effectiveQPath(document, previewAction)
-    const length = hoverPoint ? pathLength(rawPath) : 0
-    const endpoint = path[path.length - 1] ?? origin
     return <g className="tool-preview-layer" pointerEvents="none">
-      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={maxDistance * SCALE} className="tool-preview-range q-preview-range" />
-      {hoverPoint && <>
-        <polyline points={pointsAttribute(path)} className="tool-preview-path q-preview-path" markerEnd="url(#arrow-q-preview)" data-preview="true" />
-        <text x={endpoint.x * SCALE} y={endpoint.y * SCALE - 13} textAnchor="middle" className="tool-preview-label">
-          预览 · {effect.effectiveDistance.toFixed(1)} / {maxDistance} 格{effect.reduction > 0.005 ? ' · 冰圈缩短' : length > maxDistance ? ' · 已限制' : ''}
-        </text>
-      </>}
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.roles[actor.role].q.maxDistance * SCALE} className="tool-preview-range q-preview-range" />
     </g>
   }
 
   if (tool === 'pass') {
-    const safe = rules.passing.safeDistance
-    const max = rules.passing.maxDistance
-    const path = hoverPoint ? [origin, hoverPoint] : []
-    const length = pathLength(path)
-    const segments = classifyPassThreat(path, actor.team, frame, rules)
-    const threat = highestPassThreat(segments)
     return <g className="tool-preview-layer" pointerEvents="none">
-      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={safe * SCALE} className="tool-preview-range pass-preview-safe" />
-      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={max * SCALE} className="tool-preview-range pass-preview-max" />
-      {hoverPoint && <>
-        <PassThreatLines path={path} passerId={actor.id} frame={frame} rules={rules} markerEnd="url(#arrow-pass)" preview />
-        <text x={hoverPoint.x * SCALE} y={hoverPoint.y * SCALE - 13} textAnchor="middle" className={`tool-preview-label threat-text-${threat}`}>{length.toFixed(1)} 格 · {PASS_THREAT_LABELS[threat]}</text>
-      </>}
-    </g>
-  }
-
-  if (tool === 'eZone') {
-    const e = rules.roles[actor.role].e
-    if (!e) return null
-    return <g className="tool-preview-layer" pointerEvents="none">
-      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={e.radius * SCALE} className="tool-preview-range zone-preview" />
-      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r="6" className="zone-preview-center" />
-      <text x={origin.x * SCALE} y={origin.y * SCALE - e.radius * SCALE - 12} textAnchor="middle" className="tool-preview-label">随身冰圈 · 敌方移速 {e.slowMultiplier}× · Q {e.qDistanceMultiplier}×</text>
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.safeDistance * SCALE} className="tool-preview-range pass-preview-safe" />
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.maxDistance * SCALE} className="tool-preview-range pass-preview-max" />
     </g>
   }
 
@@ -741,14 +684,12 @@ function PassThreatLines({
   frame,
   rules,
   markerEnd,
-  preview = false,
 }: {
   path: Vec2[]
   passerId: string
   frame: ProjectedFrame
   rules: RuleSetV1
   markerEnd: string
-  preview?: boolean
 }) {
   const passer = frame.players.find((player) => player.id === passerId)
   if (!passer) return null
@@ -757,7 +698,7 @@ function PassThreatLines({
     <polyline
       key={`${segment.startDistance}-${segment.endDistance}-${segment.level}`}
       points={pointsAttribute(segment.path)}
-      className={`${preview ? 'tool-preview-path pass-preview-segment' : 'action-path action-pass'} pass-threat-segment threat-${segment.level}`}
+      className={`action-path action-pass pass-threat-segment threat-${segment.level}`}
       markerEnd={index === segments.length - 1 ? markerEnd : undefined}
       data-threat={segment.level}
     >

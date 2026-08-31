@@ -81,6 +81,22 @@ describe('tactic file boundary', () => {
     if (result.ok) expect(result.document.actions[0]).toEqual(source.actions[0])
   })
 
+  it('round-trips an optional adjustable run curve while keeping straight V1 moves valid', () => {
+    const source = createDefaultDocument()
+    source.actions.push({
+      id: 'curved-move', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2.2,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }], curveControl: { x: 4.5, y: 3.7 },
+    })
+    const parsed = parseTactic(serializeTactic(source))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.actions[0]).toEqual(source.actions[0])
+
+    const outside = structuredClone(source)
+    const move = outside.actions[0]
+    if (move?.type === 'move') move.curveControl = { x: 21, y: 5 }
+    expect(parseTactic(JSON.stringify(outside)).ok).toBe(false)
+  })
+
   it('rejects unknown versions and malformed content without replacing data', () => {
     expect(parseTactic('{"schemaVersion":2}')).toEqual({ ok: false, error: '暂不支持战术文件版本 2。' })
     expect(parseTactic('not json').ok).toBe(false)

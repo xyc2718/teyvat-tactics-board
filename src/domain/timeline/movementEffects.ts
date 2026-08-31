@@ -1,4 +1,4 @@
-import { clamp, pathLength, slicePath } from '../geometry/geometry'
+import { clamp, pathLength, resolvedMovePath, slicePath } from '../geometry/geometry'
 import type { MoveAction, QMoveAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { actionEndTime } from './durations'
 
@@ -30,7 +30,8 @@ export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): W
   const overlapStart = Math.max(move.startTime, boostStart)
   const overlapEnd = Math.min(moveEnd, boostStart + rule.duration)
   if (overlapEnd <= overlapStart) return null
-  const routeLength = pathLength(move.path)
+  const route = resolvedMovePath(move)
+  const routeLength = pathLength(route)
   if (routeLength <= 0) return null
   const separationGain = ((overlapEnd - overlapStart) / rule.duration) * rule.netSeparationGain
   const startProgress = clamp((overlapStart - move.startTime) / move.duration, 0, 1)
@@ -43,7 +44,7 @@ export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): W
     separationGain,
     startProgress,
     endProgress,
-    path: slicePath(move.path, startProgress, endProgress),
+    path: slicePath(route, startProgress, endProgress),
   }
 }
 
