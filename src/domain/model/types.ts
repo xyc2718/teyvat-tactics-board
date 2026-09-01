@@ -11,6 +11,7 @@ export type ToolId =
   | 'shoot'
   | 'annotation'
   | 'attack'
+  | 'strikeRange'
   | 'eZone'
 
 export interface Vec2 {

@@ -1,6 +1,6 @@
 import { projectFrame } from '../domain/timeline/projectFrame'
 import { useTacticStore } from '../editor/useTacticStore'
-import { isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
+import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
 
 export function RosterPanel() {
   const document = useTacticStore((state) => state.document)
@@ -26,7 +26,7 @@ export function RosterPanel() {
       select({ kind: 'player', id: player.id })
       return
     }
-    if (tool === 'attack') {
+    if (isRangeInspectionTool(tool)) {
       chooseActor(player.id)
       return
     }
@@ -58,14 +58,14 @@ export function RosterPanel() {
             const role = document.rulesSnapshot.roles[player.role]
             const selected = selection?.kind === 'player' && selection.id === player.id
             const statuses = frame.statuses.filter((status) => status.playerId === player.id)
-            const actorCandidate = tool === 'attack'
+            const actorCandidate = isRangeInspectionTool(tool)
               || (tool !== 'select'
                 && (!actor || tool === 'move' || tool === 'qMove')
                 && isToolActorEligible(tool, player, frame, document.rulesSnapshot))
-            const targetCandidate = tool !== 'select' && tool !== 'attack' && tool !== 'move' && tool !== 'qMove' && actor
+            const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'move' && tool !== 'qMove' && actor
               ? isToolTargetPlayerEligible(tool, actor, player)
               : false
-            const workflowDimmed = tool !== 'select' && tool !== 'attack' && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || tool === 'pass' || tool === 'qMove')
+            const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || tool === 'pass' || tool === 'qMove')
             return (
               <button
                 key={player.id}

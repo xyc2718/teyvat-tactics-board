@@ -90,6 +90,10 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().setTool('attack')
     expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
 
+    useTacticStore.getState().setTool('strikeRange')
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+
     useTacticStore.getState().setBoardMode('basic')
     useTacticStore.getState().setTool('move')
     useTacticStore.getState().createAction('blue-water', { x: 8, y: 5 })
@@ -455,6 +459,28 @@ describe('tactic store timeline edits', () => {
     expect(q).toMatchObject({ type: 'qMove', startTime: 4 })
     if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 4.7 })
     expect(useTacticStore.getState().currentTime).toBe(3)
+  })
+
+  it('keeps a saved shot origin attached when its shooter is moved', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({
+      id: 'attached-shot',
+      type: 'shoot',
+      actorId: 'blue-fire',
+      charge: 'yellow',
+      startTime: 0,
+      duration: 0.8,
+      path: [{ x: 3.5, y: 4.7 }, { x: 20, y: 7 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0, past: [], future: [] })
+
+    useTacticStore.getState().moveEntity('blue-fire', { x: 12, y: 6 })
+
+    const shot = useTacticStore.getState().document.actions.find((action) => action.id === 'attached-shot')
+    expect(shot).toMatchObject({
+      type: 'shoot',
+      path: [{ x: 12, y: 6 }, { x: 20, y: 7 }],
+    })
   })
 
   it('does not let a player drag rewrite a route between timeline joints', () => {

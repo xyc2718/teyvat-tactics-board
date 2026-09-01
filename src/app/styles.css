@@ -213,6 +213,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .range-circle { fill: none; stroke-width: 2; pointer-events: none; }
 .attack-range { fill: rgba(255, 113, 92, .07); stroke: rgba(255, 132, 111, .62); }
 .attack-inner-range { fill: rgba(7, 18, 16, .72); stroke: rgba(255, 184, 169, .72); stroke-dasharray: 2 3; }
+.strike-range { fill: rgba(211, 164, 255, .055); stroke: rgba(216, 176, 255, .82); stroke-dasharray: 10 6; filter: drop-shadow(0 0 3px rgba(190, 134, 242, .28)); }
 .q-range { stroke: rgba(105, 220, 241, .7); stroke-dasharray: 8 6; }
 .pass-safe-range { stroke: rgba(133, 222, 172, .68); stroke-dasharray: 3 5; }
 .pass-max-range { stroke: rgba(247, 190, 82, .7); stroke-dasharray: 10 6; }

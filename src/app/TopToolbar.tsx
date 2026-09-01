@@ -6,7 +6,7 @@ import { toolLabels } from '../ui/labels'
 
 const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation']
 const basicTools: ToolId[] = ['select', 'move']
-const advancedTools: ToolId[] = ['attack', 'eZone']
+const advancedTools: ToolId[] = ['attack', 'strikeRange', 'eZone']
 
 export function TopToolbar() {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -112,6 +112,7 @@ function ToolIcon({ tool }: { tool: ToolId }) {
     shoot: '◉',
     annotation: '✎',
     attack: '✦',
+    strikeRange: '◌',
     eZone: '❄',
   }
   return <span className="tool-symbol" aria-hidden="true">{symbols[tool]}</span>

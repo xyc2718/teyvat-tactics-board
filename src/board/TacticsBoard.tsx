@@ -17,6 +17,7 @@ import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
   actorPrompt,
+  isRangeInspectionTool,
   isToolActorEligible,
   isToolTargetPlayerEligible,
   resolveToolActor,
@@ -182,8 +183,8 @@ export function TacticsBoard() {
         else createShot(id)
         return
       }
-      if (tool === 'attack') {
-        if (id === 'ball') setNotice('攻击范围模式请点击一名球员。')
+      if (isRangeInspectionTool(tool)) {
+        if (id === 'ball') setNotice(`${toolLabels[tool].label}模式请点击一名球员。`)
         else chooseActor(id)
         return
       }
@@ -220,8 +221,8 @@ export function TacticsBoard() {
       select(null)
       return
     }
-    if (tool === 'attack') {
-      setNotice('攻击范围模式请点击一名球员，可连续切换查看对象。')
+    if (isRangeInspectionTool(tool)) {
+      setNotice(`${toolLabels[tool].label}模式请点击一名球员，可连续切换查看对象。`)
       return
     }
     if (tool === 'shoot') {
@@ -280,6 +281,9 @@ export function TacticsBoard() {
     }
     if (action.type === 'pass' && drag?.kind === 'entity' && drag.id !== 'ball') {
       return anchorPassPathToPlayer(action, drag.id, drag.point)
+    }
+    if (action.type === 'shoot' && drag?.kind === 'entity' && drag.id === action.actorId) {
+      return path.map((point, index) => index === 0 ? drag.point : point)
     }
     return path
   }
@@ -344,7 +348,7 @@ export function TacticsBoard() {
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
-        {action.type === 'shoot' && shotPressure && <ShotPressureLabel action={action} evaluation={shotPressure} />}
+        {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
         {elevated && action.type !== 'shoot' && path.map((point, index) => (
           <circle
             key={`${action.id}-handle-${index}`}
@@ -519,21 +523,33 @@ export function TacticsBoard() {
         <text x="12" y="20" className="field-label">蓝方球门</text>
         <text x={fieldWidth - 12} y="20" textAnchor="end" className="field-label">红方球门</text>
 
-        {boardMode === 'simulation' && (document.view.analysis || tool === 'attack') && selectedPlayer && (
+        {boardMode === 'simulation' && (document.view.analysis || isRangeInspectionTool(tool)) && selectedPlayer && (
           <g className="analysis-ranges" pointerEvents="none">
-            <circle
-              cx={toSvg(selectedPlayer.position).x}
-              cy={toSvg(selectedPlayer.position).y}
-              r={rules.roles[selectedPlayer.role].attackRadius * SCALE}
-              className="range-circle attack-range"
-            />
-            {rules.roles[selectedPlayer.role].attackInnerRadius !== undefined && (
+            {(document.view.analysis || tool === 'attack') && <>
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
-                r={(rules.roles[selectedPlayer.role].attackInnerRadius ?? 0) * SCALE}
-                className="range-circle attack-inner-range"
+                r={rules.roles[selectedPlayer.role].attackRadius * SCALE}
+                className="range-circle attack-range"
               />
+              {rules.roles[selectedPlayer.role].attackInnerRadius !== undefined && (
+                <circle
+                  cx={toSvg(selectedPlayer.position).x}
+                  cy={toSvg(selectedPlayer.position).y}
+                  r={(rules.roles[selectedPlayer.role].attackInnerRadius ?? 0) * SCALE}
+                  className="range-circle attack-inner-range"
+                />
+              )}
+            </>}
+            {tool === 'strikeRange' && (
+              <circle
+                cx={toSvg(selectedPlayer.position).x}
+                cy={toSvg(selectedPlayer.position).y}
+                r={(rules.roles[selectedPlayer.role].q.maxDistance + rules.roles[selectedPlayer.role].attackRadius) * SCALE}
+                className="range-circle strike-range"
+              >
+                <title>Q 技能 + 攻击最大打击范围：{(rules.roles[selectedPlayer.role].q.maxDistance + rules.roles[selectedPlayer.role].attackRadius).toFixed(1)} 格</title>
+              </circle>
             )}
             {document.view.analysis && <>
               <circle
@@ -576,14 +592,14 @@ export function TacticsBoard() {
           const renderedFacing = drag?.kind === 'facing' && drag.playerId === player.id ? drag.facing : player.facing
           const facing = angleToVector(renderedFacing)
           const selected = selection?.kind === 'player' && selection.id === player.id
-          const actorCandidate = tool === 'attack'
+          const actorCandidate = isRangeInspectionTool(tool)
             || (tool !== 'select'
               && (!toolActor || tool === 'move' || tool === 'qMove')
               && isToolActorEligible(tool, player, frame, rules))
-          const targetCandidate = tool !== 'select' && tool !== 'attack' && tool !== 'move' && tool !== 'qMove' && toolActor
+          const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'move' && tool !== 'qMove' && toolActor
             ? isToolTargetPlayerEligible(tool, toolActor, player)
             : false
-          const workflowDimmed = tool !== 'select' && tool !== 'attack' && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
+          const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
           const statuses = boardMode === 'basic' ? [] : frame.statuses.filter((status) => status.playerId === player.id)
           const cooldown = boardMode === 'basic' ? undefined : frame.cooldowns[player.id]
           const shot = boardMode === 'basic' ? undefined : frame.shots.find((candidate) => {
@@ -599,11 +615,11 @@ export function TacticsBoard() {
               onPointerDown={(event) => beginEntityDrag(event, player.id, position)}
               tabIndex={0}
               role="button"
-              aria-label={`${player.name}，${roleRule.label}${tool === 'attack' ? '，可查看攻击范围' : actorCandidate ? '，可选施法者' : targetCandidate ? '，可选目标' : ''}`}
+              aria-label={`${player.name}，${roleRule.label}${isRangeInspectionTool(tool) ? `，可查看${toolLabels[tool].label}` : actorCandidate ? '，可选施法者' : targetCandidate ? '，可选目标' : ''}`}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter') return
                 event.preventDefault()
-                if (tool === 'attack') {
+                if (isRangeInspectionTool(tool)) {
                   chooseActor(player.id)
                 } else if (tool === 'shoot') {
                   createShot(player.id)
@@ -738,8 +754,8 @@ export function TacticsBoard() {
         >＋</button>
       </div>
       {tool !== 'select' && <div className="board-workflow-guide" role="status">
-        <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
-        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
+        <span className="guide-step">{isRangeInspectionTool(tool) ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
+        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
         <span className="guide-actions">
           {boardMode === 'simulation' && toolActor && (tool === 'move' || tool === 'qMove') && <button
             type="button"
@@ -757,7 +773,7 @@ export function TacticsBoard() {
           ? tool === 'select'
             ? '拖动球员调整站位 · 选择球员后使用“移动箭头” · 点击箭头可编辑或删除'
             : toolActor ? '点击球场设置移动箭头终点' : '先选择一名球员'
-          : tool === 'select' ? '非播放状态只停在动作节点 · 拖动节点球员可联动前后路径' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
+          : tool === 'select' ? '非播放状态只停在动作节点 · 拖动节点球员可联动前后路径' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
       </div>
       </div>
     </div>
@@ -765,13 +781,13 @@ export function TacticsBoard() {
 }
 
 function ShotPressureLabel({
-  action,
+  path,
   evaluation,
 }: {
-  action: Extract<TacticAction, { type: 'shoot' }>
+  path: Vec2[]
   evaluation: NonNullable<ReturnType<typeof evaluateShotActionPressure>>
 }) {
-  const anchor = pointAlongPath(action.path, 0.52)
+  const anchor = pointAlongPath(path, 0.52)
   return <g className={`shot-pressure-label ${evaluation.isRisk ? 'risk' : 'safe'}`} pointerEvents="none">
     <rect x={anchor.x * SCALE - 91} y={anchor.y * SCALE - 30} width="182" height="17" rx="6" />
     <text x={anchor.x * SCALE} y={anchor.y * SCALE - 19} textAnchor="middle">{shotPressureSummary(evaluation)}</text>

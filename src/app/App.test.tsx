@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
-import type { EZoneAction, MoveAction, PassAction, QMoveAction } from '../domain/model/types'
+import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../domain/model/types'
 import { useTacticStore } from '../editor/useTacticStore'
 import { App } from './App'
 
@@ -567,6 +567,24 @@ describe('App shell', () => {
     expect(useTacticStore.getState().document.actions).toHaveLength(0)
   })
 
+  it('shows Q plus attack reach as a separate non-writing range inspection', () => {
+    const { container } = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /更多/ }))
+    fireEvent.click(screen.getByRole('button', { name: '打击范围' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Q 技能加攻击的最大打击范围')
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { pointerId: 1, button: 0 })
+    expect(useTacticStore.getState().tool).toBe('strikeRange')
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
+    expect(container.querySelector('.strike-range')).toHaveAttribute('r', '190')
+    expect(container.querySelector('.attack-range')).not.toBeInTheDocument()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 1, button: 0 })
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
+    expect(container.querySelector('.strike-range')).toHaveAttribute('r', '175')
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+  })
+
   it('shows only pass distance rings before creation and threat segments after saving', () => {
     const { container } = render(<App />)
     fireEvent.click(screen.getByRole('button', { name: '传球' }))
@@ -632,6 +650,38 @@ describe('App shell', () => {
     fireEvent.pointerUp(board, { pointerId: 26, clientX: 361, clientY: 272 })
     expect(storedPass().path[0]).toEqual({ x: 6.5, y: 5 })
     expect(firstThreatSegment()?.getAttribute('points')).toMatch(/^325,250/)
+    expect(useTacticStore.getState().past).toHaveLength(1)
+  })
+
+  it('previews and commits a saved shot origin with the dragged shooter', () => {
+    const document = createDefaultDocument()
+    const shot: ShootAction = {
+      id: 'follow-shooter-shot',
+      type: 'shoot',
+      actorId: 'blue-fire',
+      charge: 'yellow',
+      path: [{ x: 3.5, y: 4.7 }, { x: 20, y: 7 }],
+      startTime: 0,
+      duration: 0.8,
+    }
+    document.actions.push(shot)
+    useTacticStore.setState({ document, past: [], future: [] })
+    const { container } = render(<App />)
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    const shooter = screen.getByRole('button', { name: /蓝方 2，蛮牛/ })
+    const shotPath = () => container.querySelector('[data-action-id="follow-shooter-shot"] .action-shoot')
+    const storedShot = () => useTacticStore.getState().document.actions.find((action) => action.id === shot.id) as ShootAction
+
+    expect(shotPath()).toHaveAttribute('points', '175,235 1000,350')
+    fireEvent.pointerDown(shooter, { pointerId: 27, button: 0, clientX: 211, clientY: 257 })
+    fireEvent.pointerMove(board, { pointerId: 27, clientX: 261, clientY: 257 })
+    expect(shotPath()).toHaveAttribute('points', '225,235 1000,350')
+    expect(storedShot().path[0]).toEqual({ x: 3.5, y: 4.7 })
+
+    fireEvent.pointerUp(board, { pointerId: 27, clientX: 261, clientY: 257 })
+    expect(storedShot().path[0]).toEqual({ x: 4.5, y: 4.7 })
+    expect(shotPath()).toHaveAttribute('points', '225,235 1000,350')
     expect(useTacticStore.getState().past).toHaveLength(1)
   })
 

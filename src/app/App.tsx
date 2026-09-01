@@ -67,7 +67,7 @@ export function App() {
       }
       const keyTools = state.boardMode === 'basic'
         ? { v: 'select', m: 'move' } as const
-        : { v: 'select', m: 'move', w: 'wait', q: 'qMove', p: 'pass', s: 'shoot', a: 'annotation', k: 'attack', e: 'eZone' } as const
+        : { v: 'select', m: 'move', w: 'wait', q: 'qMove', p: 'pass', s: 'shoot', a: 'annotation', k: 'attack', r: 'strikeRange', e: 'eZone' } as const
       const tool = keyTools[event.key.toLowerCase() as keyof typeof keyTools]
       if (tool && !event.repeat) {
         event.preventDefault()

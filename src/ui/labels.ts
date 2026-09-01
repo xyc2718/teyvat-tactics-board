@@ -16,6 +16,7 @@ export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = 
   shoot: { label: '射门', shortcut: 'S' },
   annotation: { label: '说明', shortcut: 'A' },
   attack: { label: '攻击范围', shortcut: 'K' },
+  strikeRange: { label: '打击范围', shortcut: 'R' },
   eZone: { label: '冰圈', shortcut: 'E' },
 }
 

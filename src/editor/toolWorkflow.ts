@@ -7,8 +7,13 @@ const ACTOR_TOOLS: ReadonlySet<ToolId> = new Set([
   'pass',
   'shoot',
   'attack',
+  'strikeRange',
   'eZone',
 ])
+
+export function isRangeInspectionTool(tool: ToolId): boolean {
+  return tool === 'attack' || tool === 'strikeRange'
+}
 
 export function toolNeedsActor(tool: ToolId): boolean {
   return ACTOR_TOOLS.has(tool)
@@ -51,7 +56,7 @@ export function isToolTargetPlayerEligible(
 ): boolean {
   if (target.id === actor.id) return false
   if (tool === 'pass') return target.team === actor.team
-  if (tool === 'attack') return true
+  if (isRangeInspectionTool(tool)) return true
   return false
 }
 
@@ -59,6 +64,7 @@ export function actorPrompt(tool: ToolId): string {
   if (tool === 'pass') return '当前没有持球者，请先在“选择”模式设置球权'
   if (tool === 'eZone') return '选择一名霜役立即开启随身冰圈'
   if (tool === 'attack') return '选择任意球员查看其攻击内外范围'
+  if (tool === 'strikeRange') return '选择任意球员查看其 Q 技能加攻击的最大打击范围'
   if (tool === 'shoot') return '选择射门球员；点击后自动瞄准对方球门中心'
   if (tool === 'wait') return '选择一名球员，为其动作链添加等待'
   if (tool === 'move') return '第 1/2 步：选择球员；画面会自动跳到该球员的最新关键帧'
@@ -71,6 +77,7 @@ export function targetPrompt(tool: ToolId): string {
   if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈，点击队友或空地'
   if (tool === 'eZone') return '冰圈始终以霜役为圆心并随其移动'
   if (tool === 'attack') return '点击其他球员可连续切换攻击范围查看对象'
+  if (tool === 'strikeRange') return '点击其他球员可连续切换打击范围查看对象'
   if (tool === 'shoot') return '选择射门球员；无需指定落点'
   if (tool === 'wait') return '选择球员后立即添加 1 秒等待，并可在右侧修改时长'
   if (tool === 'move') return '第 2/2 步：点击球场目标位置；可直接改选球员或返回第 1 步'

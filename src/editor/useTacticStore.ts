@@ -22,7 +22,7 @@ import { formatStepActionRange, getStepActionOwnership } from '../domain/timelin
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
 import { latestActorSequenceJoint, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion } from './locomotionScheduling'
-import { isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
+import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
 
 type Selection =
   | { kind: 'player'; id: string }
@@ -286,6 +286,23 @@ function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
   }
 }
 
+function syncShotOrigins(document: TacticDocumentV1, playerId?: string) {
+  const shots = document.actions
+    .filter(
+      (action): action is Extract<TacticAction, { type: 'shoot' }> =>
+        action.type === 'shoot' && (playerId === undefined || action.actorId === playerId),
+    )
+    .sort((left, right) => left.startTime - right.startTime)
+
+  for (const action of shots) {
+    if (action.path.length < 2) continue
+    const shooter = projectFrame(document, action.startTime).players.find((player) => player.id === action.actorId)
+    if (!shooter) continue
+    action.path[0] = { ...shooter.position }
+    action.duration = shotDuration(shooter, action.charge, document.rulesSnapshot)
+  }
+}
+
 const JOINT_EPSILON = 1e-5
 
 type ActorSequenceAction = Extract<TacticAction, { type: 'move' | 'qMove' | 'wait' }> & { actorId: string }
@@ -361,6 +378,7 @@ function editPlayerJoint(
 
   reflowSimpleLocomotion(document, actorId)
   syncPassEndpoints(document, actorId)
+  syncShotOrigins(document, actorId)
   refreshStepSnapshots(document)
 
   if (endingAtJoint) return { ok: true, anchorActionId: endingAtJoint.id, anchorEdge: 'end' }
@@ -630,6 +648,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           if (step.snapshot.ball.carrierId === id) step.snapshot.ball.position = { ...position }
         }
         syncPassEndpoints(draft, id)
+        syncShotOrigins(draft, id)
         return
       }
       const activeStep = draft.stepMarkers.find((step) => step.id === state.activeStepId)
@@ -904,17 +923,17 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         : undefined
       let action: TacticAction | null = null
 
-      if (state.tool === 'attack') {
+      if (isRangeInspectionTool(state.tool)) {
         const inspected = targetPlayerId
           ? frame.players.find((player) => player.id === targetPlayerId)
           : undefined
         return inspected
           ? {
-              tool: 'attack' as const,
+              tool: state.tool,
               selection: { kind: 'player' as const, id: inspected.id },
               notice: null,
             }
-          : { notice: '攻击范围模式只需点击一名球员，不会创建时间轴动作。' }
+          : { notice: `${state.tool === 'attack' ? '攻击范围' : '打击范围'}模式只需点击一名球员，不会创建时间轴动作。` }
       }
 
       if (state.tool === 'shoot') {
