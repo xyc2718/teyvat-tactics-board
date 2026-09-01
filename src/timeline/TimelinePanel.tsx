@@ -47,7 +47,8 @@ export function TimelinePanel() {
   const sliderMax = Math.max(duration, 0.01)
   const joints = timelineJointTimes(document)
   const activeStep = document.stepMarkers.find((step) => step.id === activeStepId)
-  const activeOwnership = activeStep ? getStepActionOwnership(document, activeStep.id) : null
+  const editableStep = activeStep && !isOpeningStep(document, activeStep.id) ? activeStep : null
+  const activeOwnership = editableStep ? getStepActionOwnership(document, editableStep.id) : null
   const selectedAction = selection?.kind === 'action'
     ? document.actions.find((action) => action.id === selection.id)
     : undefined
@@ -206,25 +207,27 @@ export function TimelinePanel() {
         </div>
       </div>
 
-      {activeStep && !isOpeningStep(document, activeStep.id) && <div className="step-editor">
-        <label><span>步骤名称</span><input maxLength={100} value={activeStep.name} onChange={(event) => renameStep(activeStep.id, event.target.value)} /></label>
-        <label className="note-field"><span>讲解备注</span><input maxLength={1000} value={activeStep.note} placeholder="可选：说明这一拍的意图" onChange={(event) => updateStepNote(activeStep.id, event.target.value)} /></label>
-        {activeOwnership && <div className="clear-frame-control">
+      <div className="step-editor" data-placeholder={!editableStep} aria-hidden={!editableStep}>
+        {editableStep && <>
+          <label><span>步骤名称</span><input maxLength={100} value={editableStep.name} onChange={(event) => renameStep(editableStep.id, event.target.value)} /></label>
+          <label className="note-field"><span>讲解备注</span><input maxLength={1000} value={editableStep.note} placeholder="可选：说明这一拍的意图" onChange={(event) => updateStepNote(editableStep.id, event.target.value)} /></label>
+          {activeOwnership && <div className="clear-frame-control">
+            <button
+              className="clear-frame-button"
+              disabled={activeOwnership.count === 0}
+              onClick={() => clearStepActions(editableStep.id)}
+              aria-label={`清空当前帧，共 ${activeOwnership.count} 个动作`}
+            >清空当前帧（{activeOwnership.count}）</button>
+            <small>{formatStepActionRange(activeOwnership)}；仅删除在此范围内开始的动作，步骤本身保留，可撤销。</small>
+          </div>}
           <button
-            className="clear-frame-button"
-            disabled={activeOwnership.count === 0}
-            onClick={() => clearStepActions(activeStep.id)}
-            aria-label={`清空当前帧，共 ${activeOwnership.count} 个动作`}
-          >清空当前帧（{activeOwnership.count}）</button>
-          <small>{formatStepActionRange(activeOwnership)}；仅删除在此范围内开始的动作，步骤本身保留，可撤销。</small>
-        </div>}
-        <button
-          className="text-danger"
-          onClick={() => deleteStep(activeStep.id)}
-          aria-label={document.stepMarkers.length === 1 ? '删除当前步骤并恢复初始站位' : '删除当前步骤'}
-          title={document.stepMarkers.length === 1 ? '删除最后一个步骤后，将自动恢复一个 0 秒初始站位节点' : '仅删除讲解节点，连续时间轴上的动作会保留'}
-        >{document.stepMarkers.length === 1 ? '删除并重置' : '删除步骤'}</button>
-      </div>}
+            className="text-danger"
+            onClick={() => deleteStep(editableStep.id)}
+            aria-label={document.stepMarkers.length === 1 ? '删除当前步骤并恢复初始站位' : '删除当前步骤'}
+            title={document.stepMarkers.length === 1 ? '删除最后一个步骤后，将自动恢复一个 0 秒初始站位节点' : '仅删除讲解节点，连续时间轴上的动作会保留'}
+          >{document.stepMarkers.length === 1 ? '删除并重置' : '删除步骤'}</button>
+        </>}
+      </div>
 
       {showAdvanced && <div className="advanced-tracks">
         <div className="track-head">

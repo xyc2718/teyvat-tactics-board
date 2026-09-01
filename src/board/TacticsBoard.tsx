@@ -24,6 +24,7 @@ import {
   toolNeedsActor,
 } from '../editor/toolWorkflow'
 import { toolLabels } from '../ui/labels'
+import { clientPointToSvgViewBox } from './svgCoordinates'
 
 const SCALE = 50
 const VIEW_PADDING = { x: 36, y: 22 }
@@ -160,9 +161,8 @@ export function TacticsBoard() {
   function clientToLogicalPoint(clientX: number, clientY: number): Vec2 {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect) return { x: 0, y: 0 }
-    const svgX = view.x + ((clientX - rect.left) / rect.width) * view.width
-    const svgY = view.y + ((clientY - rect.top) / rect.height) * view.height
-    return { x: svgX / SCALE, y: svgY / SCALE }
+    const svgPoint = clientPointToSvgViewBox({ x: clientX, y: clientY }, rect, view)
+    return { x: svgPoint.x / SCALE, y: svgPoint.y / SCALE }
   }
 
   function clientToField(clientX: number, clientY: number): Vec2 {
@@ -454,6 +454,7 @@ export function TacticsBoard() {
             ref={svgRef}
             className={`tactics-board tool-${tool}`}
             viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`}
+            preserveAspectRatio="xMidYMid meet"
             style={{
               aspectRatio: `${view.width} / ${view.height}`,
               width: `${boardRenderPercent}%`,

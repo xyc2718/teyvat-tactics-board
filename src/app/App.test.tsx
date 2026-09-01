@@ -78,6 +78,20 @@ describe('App shell', () => {
     if (q?.type === 'qMove') expect(q.path.at(-1)).toEqual({ x: 8, y: 7 })
   })
 
+  it('keeps tactical coordinates accurate when the browser letterboxes a wide SVG element', () => {
+    render(<App />)
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 43, button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board, 1600, 744)
+    fireEvent.pointerDown(board, { clientX: 700, clientY: 372, pointerId: 44, button: 0 })
+
+    const q = useTacticStore.getState().document.actions.at(-1)
+    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-water' })
+    if (q?.type === 'qMove') expect(q.path.at(-1)).toEqual({ x: 8, y: 7 })
+  })
+
   it('uses the projected carrier for the possession button even when an imported flag is stale', () => {
     const document = createDefaultDocument()
     const carrier = document.initialScene.players.find((player) => player.id === 'red-fire')!

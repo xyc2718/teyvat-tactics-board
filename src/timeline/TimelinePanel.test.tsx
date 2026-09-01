@@ -54,12 +54,23 @@ describe('TimelinePanel player tracks', () => {
   })
 
   it('keeps implementation guidance out of the opening step UI', () => {
-    render(<TimelinePanel />)
+    const { container } = render(<TimelinePanel />)
 
     expect(screen.queryByText('静止帧 · 仅布置位置')).not.toBeInTheDocument()
     expect(screen.queryByText('初始站位是静止帧')).not.toBeInTheDocument()
     expect(screen.getByText('初始站位').closest('.step-card')).not.toHaveTextContent('0.00s')
     expect(screen.getByText('初始站位').closest('.step-card')).toHaveTextContent('起')
+    expect(container.querySelector('.step-editor')).toHaveAttribute('data-placeholder', 'true')
+    expect(screen.queryByLabelText('步骤名称')).not.toBeInTheDocument()
+  })
+
+  it('keeps the reserved step editor row when a normal step becomes active', () => {
+    const { container } = render(<TimelinePanel />)
+
+    act(() => useTacticStore.getState().setTool('qMove'))
+
+    expect(container.querySelector('.step-editor')).toHaveAttribute('data-placeholder', 'false')
+    expect(screen.getByLabelText('步骤名称')).toBeInTheDocument()
   })
 
   it('shows each step duration while navigation continues to use the marker start time', () => {
