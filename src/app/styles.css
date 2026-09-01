@@ -124,7 +124,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .legend-line { width: 20px; border-top: 2px solid; } .legend-line.move { border-color: #f5d58b; } .legend-line.q { border-color: #7de2f2; border-top-style: dashed; } .legend-line.pass { border-color: #fff; border-top-style: dotted; } .legend-line.shoot { border-color: #ffba4a; }
 
 .board-column { min-width: 0; min-height: 0; padding: 14px 16px 10px; background: radial-gradient(circle at 50% 35%, rgba(31, 79, 65, .34), transparent 60%); }
-.board-shell { position: relative; height: 100%; min-height:0; overflow:hidden; }
+.board-shell { position: relative; display:flex; flex-direction:column; gap:6px; height:100%; min-height:0; overflow:hidden; }
+.board-stage { position:relative; flex:1 1 auto; min-height:0; overflow:hidden; }
 .board-viewport { position:absolute; inset:0; overflow:auto; scrollbar-width:thin; scrollbar-color:#3b6658 rgba(5,16,13,.35); }
 .board-zoom-surface { min-width:100%; min-height:100%; display:grid; place-items:center; }
 .tactics-board { width: 100%; max-height: 100%; filter: drop-shadow(0 20px 28px rgba(0, 0, 0, .32)); user-select: none; touch-action: none; }
@@ -250,8 +251,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .guide-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; white-space:nowrap; }
 .guide-back-button { height:24px; padding:0 7px; border:1px solid rgba(126,226,242,.32); border-radius:4px; color:#a8e8f2; background:rgba(90,204,225,.08); cursor:pointer; font-size:9px; pointer-events:auto; }
 .guide-back-button:hover { border-color:rgba(168,237,248,.64); background:rgba(90,204,225,.15); }
-.pass-threat-legend { position: absolute; top: 51px; left: 50%; z-index: 3; display: flex; flex-wrap: wrap; justify-content: center; gap: 5px 10px; max-width: calc(100% - 90px); padding: 5px 9px; transform: translateX(-50%); border: 1px solid rgba(188, 216, 204, .16); border-radius: 7px; color: #a9beb6; background: rgba(6, 18, 14, .82); font-size: 8px; pointer-events: none; }
-.pass-threat-legend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.pass-threat-legend { flex:0 0 auto; align-self:center; display:flex; align-items:center; gap:7px; max-width:calc(100% - 20px); padding:4px 5px 4px 9px; border:1px solid rgba(188,216,204,.16); border-radius:7px; color:#a9beb6; background:rgba(6,18,14,.82); font-size:8px; }
+.pass-threat-legend-items { display:flex; flex-wrap:wrap; justify-content:center; gap:5px 10px; }
+.pass-threat-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .pass-threat-legend i { --threat-color: #d9e8e1; display: inline-block; width: 18px; height: 0; border-top: 3px solid var(--threat-color); }
 .pass-threat-legend i.threat-safe { --threat-color: #73dda2; }
 .pass-threat-legend i.threat-baseRisk { --threat-color: #e7c867; border-top-style: dashed; }
@@ -259,6 +261,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .pass-threat-legend i.threat-qMultiple { --threat-color: #ee755d; height: 5px; border-top-width: 2px; border-top-style: dotted; border-bottom: 2px dotted var(--threat-color); }
 .pass-threat-legend i.threat-direct { --threat-color: #ff4f72; border-top-width: 5px; border-top-style: solid; box-shadow: 0 0 3px rgba(255, 79, 114, .55); }
 .pass-threat-legend i.threat-drop { --threat-color: #a99bb6; border-top-style: dashed; opacity: .7; }
+.pass-threat-legend button { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:5px; color:#829a91; background:transparent; cursor:pointer; font-size:15px; line-height:1; }
+.pass-threat-legend button:hover { color:#fff0bd; background:rgba(223,189,114,.12); }
 
 .inspector-heading { padding: 18px 16px 14px; position: sticky; top: 0; z-index: 2; background: rgba(10, 25, 21, .96); border-bottom: 1px solid var(--line); }
 .inspector-content { padding: 0 14px; }

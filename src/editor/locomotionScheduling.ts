@@ -1,4 +1,4 @@
-import { resolvedMovePath, truncatePath } from '../domain/geometry/geometry'
+import { resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
 import { projectFrame } from '../domain/timeline/projectFrame'
@@ -157,7 +157,14 @@ export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: stri
 
     let path = [{ ...plan.origin }, ...tail]
     if (action.type === 'qMove') {
-      path = truncatePath(path, document.rulesSnapshot.roles[plan.actor.role].q.maxDistance)
+      const q = document.rulesSnapshot.roles[plan.actor.role].q
+      path = resolveQPath(
+        path,
+        q.maxDistance,
+        q.fixedDistance,
+        document.rulesSnapshot.field.width,
+        document.rulesSnapshot.field.height,
+      )
     }
     action.path = path
     action.startTime = plan.startTime

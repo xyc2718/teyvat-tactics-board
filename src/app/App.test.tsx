@@ -563,7 +563,13 @@ describe('App shell', () => {
     expect(container.querySelector('.pass-preview-safe')).toBeInTheDocument()
     expect(container.querySelector('.pass-preview-max')).toBeInTheDocument()
     expect(container.querySelectorAll('.pass-preview-segment')).toHaveLength(0)
-    expect(screen.getByLabelText('传球威胁图例').children).toHaveLength(6)
+    const legend = screen.getByLabelText('传球威胁图例')
+    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(6)
+    expect(legend.parentElement).toHaveClass('board-shell')
+    expect(board.closest('.board-stage')).not.toContainElement(legend)
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭传球威胁图例' }))
+    expect(screen.queryByLabelText('传球威胁图例')).not.toBeInTheDocument()
 
     fireEvent.pointerDown(board, { clientX: 736, clientY: 272, pointerId: 1, button: 0 })
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({ type: 'pass' })

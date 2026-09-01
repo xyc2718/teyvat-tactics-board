@@ -1,26 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../model/createDocument'
 import type { SceneState, TacticAction } from '../model/types'
-import { formatStepActionRange, getStepActionOwnership, stepDisplayTime } from './stepActionOwnership'
+import { formatStepActionRange, getStepActionOwnership, stepDuration } from './stepActionOwnership'
 
 function marker(id: string, time: number, snapshot: SceneState) {
   return { id, time, name: id, note: '', snapshot: structuredClone(snapshot) }
 }
 
 describe('step action ownership', () => {
-  it('uses the latest owned action end as a non-opening step display time', () => {
+  it('reports each step action span as a duration and keeps an empty next step at zero', () => {
     const document = createDefaultDocument()
-    const opening = document.stepMarkers[0]!
-    const actionStep = { id: 'action-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
-    document.stepMarkers.push(actionStep)
-    document.actions.push(
+    const snapshot = document.initialScene
+    document.stepMarkers = [
+      marker('opening', 0, snapshot),
+      marker('action-step', 0, snapshot),
+      marker('empty-step', 4.39, snapshot),
+    ]
+    document.actions = [
       { id: 'short', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 },
-      { id: 'long', type: 'wait', actorId: 'blue-fire', startTime: 0, duration: 4 },
-    )
+      { id: 'long', type: 'wait', actorId: 'blue-fire', startTime: 0, duration: 4.39 },
+      { id: 'instant', type: 'qMove', actorId: 'blue-water', startTime: 4.39, duration: 0, path: [{ x: 1, y: 1 }, { x: 2, y: 1 }] },
+    ]
 
-    expect(stepDisplayTime(document, opening.id)).toBe(0)
-    expect(stepDisplayTime(document, actionStep.id)).toBe(4)
-    expect(stepDisplayTime(document, 'missing')).toBeNull()
+    expect(stepDuration(document, 'opening')).toBe(0)
+    expect(stepDuration(document, 'action-step')).toBeCloseTo(4.39)
+    expect(stepDuration(document, 'empty-step')).toBe(0)
+    expect(stepDuration(document, 'missing')).toBeNull()
   })
 
   it('uses sorted first, middle and last half-open intervals with exact boundaries', () => {

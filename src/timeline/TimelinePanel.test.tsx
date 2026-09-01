@@ -59,19 +59,28 @@ describe('TimelinePanel player tracks', () => {
     expect(screen.queryByText('静止帧 · 仅布置位置')).not.toBeInTheDocument()
     expect(screen.queryByText('初始站位是静止帧')).not.toBeInTheDocument()
     expect(screen.getByText('初始站位').closest('.step-card')).not.toHaveTextContent('0.00s')
+    expect(screen.getByText('初始站位').closest('.step-card')).toHaveTextContent('起')
   })
 
-  it('shows and navigates to the end of the actions currently owned by a step', () => {
+  it('shows each step duration while navigation continues to use the marker start time', () => {
     const document = useTacticStore.getState().document
-    const actionStep = { id: 'display-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
-    document.stepMarkers.push(actionStep)
+    const actionStep = { id: 'display-step', time: 0, name: '步骤 1', note: '', snapshot: structuredClone(document.initialScene) }
+    const nextStep = { id: 'next-step', time: 4, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
+    document.stepMarkers.push(actionStep, nextStep)
     useTacticStore.setState({ document, activeStepId: actionStep.id, currentTime: 0 })
     render(<TimelinePanel />)
 
-    const stepCard = screen.getByText('步骤 2').closest('.step-card')
-    expect(stepCard).toHaveTextContent('4.00s')
-    fireEvent.click(stepCard!)
+    const actionStepCard = screen.getByText('步骤 1').closest('.step-card')
+    const nextStepCard = screen.getByText('步骤 2').closest('.step-card')
+    expect(actionStepCard).toHaveTextContent('01步骤 14.00s')
+    expect(nextStepCard).toHaveTextContent('02步骤 20.00s')
+    expect(screen.getByRole('button', { name: '跳到 步骤 1' })).toHaveStyle({ left: '0%' })
+    expect(screen.getByRole('button', { name: '跳到 步骤 2' })).toHaveStyle({ left: '100%' })
+
+    fireEvent.click(nextStepCard!)
     expect(useTacticStore.getState().currentTime).toBe(4)
+    fireEvent.click(actionStepCard!)
+    expect(useTacticStore.getState().currentTime).toBe(0)
   })
 
   it('jumps to that player continuation joint only when move or Q is activated', () => {

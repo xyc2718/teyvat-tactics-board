@@ -99,6 +99,44 @@ export function truncatePath(path: Vec2[], maxLength: number): Vec2[] {
   return result
 }
 
+/**
+ * Resolves an authored Q path against its distance rule. Variable-distance Q
+ * keeps the authored shape and is only truncated. Fixed-distance Q uses the
+ * click as a direction and extends to the configured distance, stopping only
+ * when the field boundary is reached.
+ */
+export function resolveQPath(
+  path: Vec2[],
+  maxDistance: number,
+  fixedDistance: boolean,
+  fieldWidth: number,
+  fieldHeight: number,
+): Vec2[] {
+  if (!fixedDistance) return truncatePath(path, maxDistance)
+  const origin = path[0]
+  const directionPoint = path.at(-1)
+  if (!origin || !directionPoint) return path.map((point) => ({ ...point }))
+  const authoredDistance = distance(origin, directionPoint)
+  if (authoredDistance <= EPSILON) return path.map((point) => ({ ...point }))
+
+  const unitX = (directionPoint.x - origin.x) / authoredDistance
+  const unitY = (directionPoint.y - origin.y) / authoredDistance
+  let availableDistance = maxDistance
+  if (unitX > EPSILON) availableDistance = Math.min(availableDistance, (fieldWidth - origin.x) / unitX)
+  if (unitX < -EPSILON) availableDistance = Math.min(availableDistance, (0 - origin.x) / unitX)
+  if (unitY > EPSILON) availableDistance = Math.min(availableDistance, (fieldHeight - origin.y) / unitY)
+  if (unitY < -EPSILON) availableDistance = Math.min(availableDistance, (0 - origin.y) / unitY)
+
+  const resolvedDistance = Math.max(0, availableDistance)
+  return [
+    { ...origin },
+    {
+      x: origin.x + unitX * resolvedDistance,
+      y: origin.y + unitY * resolvedDistance,
+    },
+  ]
+}
+
 export function angleToVector(degrees: number): Vec2 {
   const radians = (degrees * Math.PI) / 180
   return { x: Math.cos(radians), y: Math.sin(radians) }

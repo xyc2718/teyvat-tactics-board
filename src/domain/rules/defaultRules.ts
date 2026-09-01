@@ -43,6 +43,7 @@ export const defaultRules: RuleSetV1 = {
       q: {
         kind: 'blink',
         maxDistance: 2.5,
+        fixedDistance: false,
         cooldown: 7,
         duration: 0,
         turnable: true,
@@ -60,6 +61,7 @@ export const defaultRules: RuleSetV1 = {
       q: {
         kind: 'blink',
         maxDistance: 2.3,
+        fixedDistance: true,
         cooldown: 9,
         duration: 0,
         turnable: false,
@@ -73,6 +75,7 @@ export const defaultRules: RuleSetV1 = {
       q: {
         kind: 'dash',
         maxDistance: 3,
+        fixedDistance: false,
         cooldown: 7,
         duration: 1,
         turnable: false,

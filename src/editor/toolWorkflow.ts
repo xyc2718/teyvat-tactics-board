@@ -61,7 +61,8 @@ export function actorPrompt(tool: ToolId): string {
   if (tool === 'attack') return '选择任意球员查看其攻击内外范围'
   if (tool === 'shoot') return '选择射门球员；点击后自动瞄准对方球门中心'
   if (tool === 'wait') return '选择一名球员，为其动作链添加等待'
-  if (tool === 'move' || tool === 'qMove') return '第 1/2 步：选择球员；画面会自动跳到该球员的最新关键帧'
+  if (tool === 'move') return '第 1/2 步：选择球员；画面会自动跳到该球员的最新关键帧'
+  if (tool === 'qMove') return '第 1/2 步：选择球员；画面会自动跳到下一个可用 Q 起点'
   return '第 1/2 步：选择一名球员作为动作发起者'
 }
 

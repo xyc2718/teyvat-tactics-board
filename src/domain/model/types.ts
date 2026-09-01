@@ -173,6 +173,7 @@ export interface RoleRule {
   q: {
     kind: 'blink' | 'dash'
     maxDistance: number
+    fixedDistance: boolean
     cooldown: number
     duration: number
     turnable: boolean

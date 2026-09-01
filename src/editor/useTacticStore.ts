@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolvedMovePath, truncatePath } from '../domain/geometry/geometry'
+import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import { anchorPassPathToPlayer } from '../domain/model/passPath'
 import type {
@@ -18,7 +18,7 @@ import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldo
 import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
 import { projectFrame } from '../domain/timeline/projectFrame'
-import { formatStepActionRange, getStepActionOwnership, stepDisplayTime } from '../domain/timeline/stepActionOwnership'
+import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
 import { latestActorSequenceJoint, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion } from './locomotionScheduling'
@@ -136,14 +136,28 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
 
 function appendStepMarker(document: TacticDocumentV1, time: number): string {
   const id = uid('step')
+  const stepNumber = sortedStepMarkers(document)
+    .filter((step) => !isOpeningStep(document, step.id))
+    .length + 1
   document.stepMarkers.push({
     id,
     time,
-    name: `步骤 ${document.stepMarkers.length + 1}`,
+    name: `步骤 ${stepNumber}`,
     note: '',
     snapshot: sceneFromFrame(document, time),
   })
   return id
+}
+
+/** Migrates the former automatic sequence "步骤 2, 步骤 3…" without touching custom names. */
+function normalizeLegacyDefaultStepNames(document: TacticDocumentV1) {
+  const actionSteps = sortedStepMarkers(document).filter((step) => !isOpeningStep(document, step.id))
+  const isLegacySequence = actionSteps.length > 0
+    && actionSteps.every((step, index) => step.name === `步骤 ${index + 2}`)
+  if (!isLegacySequence) return
+  actionSteps.forEach((step, index) => {
+    step.name = `步骤 ${index + 1}`
+  })
 }
 
 /** Moves actions out of the opening step's ownership without changing their authored times. */
@@ -161,6 +175,12 @@ function ensureOpeningActionBoundary(document: TacticDocumentV1): string | null 
 
 function actionContinuationTime(document: TacticDocumentV1): number {
   return documentDuration(document.actions, document.stepMarkers.map((step) => step.time))
+}
+
+function actorToolPreviewTime(document: TacticDocumentV1, actorId: string, tool: ToolId): number {
+  const continuationTime = latestActorSequenceJoint(document, actorId)
+  if (tool !== 'qMove') return continuationTime
+  return planSimpleQ(document, actorId, continuationTime)?.startTime ?? continuationTime
 }
 
 function prepareTimelineEditingStep(state: TacticStore) {
@@ -218,7 +238,14 @@ function recalculateRuleDrivenActions(document: TacticDocumentV1) {
     if (action.type === 'qMove') {
       const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
       if (player) {
-        action.path = truncatePath(action.path, document.rulesSnapshot.roles[player.role].q.maxDistance)
+        const q = document.rulesSnapshot.roles[player.role].q
+        action.path = resolveQPath(
+          action.path,
+          q.maxDistance,
+          q.fixedDistance,
+          document.rulesSnapshot.field.width,
+          document.rulesSnapshot.field.height,
+        )
         action.duration = qDuration(player, document.rulesSnapshot)
       }
     }
@@ -345,6 +372,7 @@ function initialDocument(): TacticDocumentV1 {
   const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
   syncPassEndpoints(document)
   ensureOpeningActionBoundary(document)
+  normalizeLegacyDefaultStepNames(document)
   return document
 }
 
@@ -479,7 +507,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     set((state) => {
       const actorSequenceTime = state.boardMode === 'simulation'
         && (state.tool === 'move' || state.tool === 'qMove')
-        ? latestActorSequenceJoint(state.document, playerId)
+        ? actorToolPreviewTime(state.document, playerId, state.tool)
         : state.currentTime
       const currentTime = actorSequenceTime
       const frame = projectFrame(state.document, currentTime)
@@ -941,7 +969,13 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           }
           path = [{ ...origin }, midpoint, clampedTarget]
         }
-        path = truncatePath(path, roleRule.q.maxDistance)
+        path = resolveQPath(
+          path,
+          roleRule.q.maxDistance,
+          roleRule.q.fixedDistance,
+          document.rulesSnapshot.field.width,
+          document.rulesSnapshot.field.height,
+        )
         action = {
           id: uid('q'),
           type: 'qMove',
@@ -1011,7 +1045,16 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       path[index] = point
       if (action.type === 'qMove') {
         const player = draft.initialScene.players.find((candidate) => candidate.id === action.actorId)
-        if (player) action.path = truncatePath(action.path, draft.rulesSnapshot.roles[player.role].q.maxDistance)
+        if (player) {
+          const q = draft.rulesSnapshot.roles[player.role].q
+          action.path = resolveQPath(
+            action.path,
+            q.maxDistance,
+            q.fixedDistance,
+            draft.rulesSnapshot.field.width,
+            draft.rulesSnapshot.field.height,
+          )
+        }
       }
       if (action.type === 'move') action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (action.type === 'pass') action.duration = passDuration(action.path, draft.rulesSnapshot)
@@ -1172,7 +1215,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const step = document.stepMarkers.find((candidate) => candidate.id === id)
     if (!step) return
     set({ activeStepId: id })
-    get().setCurrentTime(stepDisplayTime(document, id) ?? step.time)
+    get().setCurrentTime(step.time)
   },
 
   renameStep: (id, name) => set((state) => mutateDocument(state, (draft) => {
@@ -1349,6 +1392,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const next = cloneDocument(document)
     syncPassEndpoints(next)
     ensureOpeningActionBoundary(next)
+    normalizeLegacyDefaultStepNames(next)
     return {
       ...applyDocument(state, next),
       selection: null,

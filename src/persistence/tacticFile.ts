@@ -104,6 +104,7 @@ const actionSchema = z.discriminatedUnion('type', [
 const qRuleSchema = z.object({
   kind: z.enum(['blink', 'dash']),
   maxDistance: positive,
+  fixedDistance: z.boolean().optional(),
   cooldown: nonNegative,
   duration: nonNegative,
   turnable: z.boolean(),
@@ -137,7 +138,13 @@ const roleRuleSchema = z.object({
     slowMultiplier: nonNegative.max(1).default(0.5),
     qDistanceMultiplier: nonNegative.max(1).default(0.7),
   }).optional(),
-})
+}).transform((role) => ({
+  ...role,
+  q: {
+    ...role.q,
+    fixedDistance: role.q.fixedDistance ?? role.id === 'fire',
+  },
+}))
 
 const matchupRowSchema = z.object({ water: ratingSchema, fire: ratingSchema, ice: ratingSchema })
 

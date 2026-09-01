@@ -1,6 +1,6 @@
 import type { TacticDocumentV1 } from '../model/types'
 import { actionEndTime } from './durations'
-import { isOpeningStep, sortedStepMarkers } from './steps'
+import { sortedStepMarkers } from './steps'
 
 export interface StepActionOwnership {
   stepId: string
@@ -41,16 +41,19 @@ export function formatStepActionRange(ownership: StepActionOwnership): string {
     : `动作开始 ≥ ${ownership.startTime.toFixed(2)}s`
 }
 
-/** The keyframe a step card represents after its currently owned actions finish. */
-export function stepDisplayTime(document: TacticDocumentV1, stepId: string): number | null {
-  const step = document.stepMarkers.find((candidate) => candidate.id === stepId)
-  if (!step) return null
-  if (isOpeningStep(document, stepId)) return step.time
+/**
+ * Returns the elapsed time covered by the actions authored in one step.
+ * Empty steps and steps containing only instantaneous actions last 0 seconds.
+ */
+export function stepDuration(document: TacticDocumentV1, stepId: string): number | null {
   const ownership = getStepActionOwnership(document, stepId)
-  if (!ownership?.count) return step.time
+  if (!ownership) return null
+  if (ownership.count === 0) return 0
+
   const ownedIds = new Set(ownership.actionIds)
-  return document.actions.reduce(
+  const latestEnd = document.actions.reduce(
     (latest, action) => ownedIds.has(action.id) ? Math.max(latest, actionEndTime(action)) : latest,
-    step.time,
+    ownership.startTime,
   )
+  return Math.max(0, latestEnd - ownership.startTime)
 }

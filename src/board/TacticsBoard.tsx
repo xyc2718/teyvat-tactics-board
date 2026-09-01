@@ -76,8 +76,10 @@ type DragState =
 export function TacticsBoard() {
   const svgRef = useRef<SVGSVGElement>(null)
   const boardViewportRef = useRef<HTMLDivElement>(null)
+  const knownPassActionIdsRef = useRef(new Set<string>())
   const [drag, setDrag] = useState<DragState>(null)
   const [boardZoom, setBoardZoom] = useState(1)
+  const [isPassLegendDismissed, setIsPassLegendDismissed] = useState(false)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
   const activeStepId = useTacticStore((state) => state.activeStepId)
@@ -139,6 +141,15 @@ export function TacticsBoard() {
     })
     return () => cancelAnimationFrame(frameId)
   }, [boardZoom])
+
+  useEffect(() => {
+    const nextPassActionIds = new Set(
+      document.actions.filter((action) => action.type === 'pass').map((action) => action.id),
+    )
+    const addedPass = [...nextPassActionIds].some((actionId) => !knownPassActionIdsRef.current.has(actionId))
+    knownPassActionIdsRef.current = nextPassActionIds
+    if (addedPass) setIsPassLegendDismissed(false)
+  }, [document.actions])
 
   function changeBoardZoom(direction: -1 | 1) {
     setBoardZoom((current) => Math.max(
@@ -421,6 +432,8 @@ export function TacticsBoard() {
   const zoomPercent = Math.round(boardZoom * 100)
   const zoomSurfacePercent = Math.max(1, boardZoom) * 100
   const boardRenderPercent = Math.min(1, boardZoom) * 100
+  const hasPassLegendContext = boardMode === 'simulation'
+    && Boolean(tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass'))
 
   return (
     <div
@@ -428,6 +441,10 @@ export function TacticsBoard() {
       aria-label={`${rules.field.width} 乘 ${rules.field.height} 格战术球场`}
       data-board-zoom={zoomPercent}
     >
+      {hasPassLegendContext && !isPassLegendDismissed && (
+        <PassThreatLegend onClose={() => setIsPassLegendDismissed(true)} />
+      )}
+      <div className="board-stage">
       <div ref={boardViewportRef} className="board-viewport">
         <div
           className="board-zoom-surface"
@@ -732,7 +749,6 @@ export function TacticsBoard() {
           <kbd>Esc 取消</kbd>
         </span>
       </div>}
-      {boardMode === 'simulation' && (tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass')) && <PassThreatLegend />}
       {boardMode === 'basic' && selectedStaticArrow && <button className="static-arrow-delete" onClick={() => deleteStaticMoveArrow(selectedStaticArrow.id)}>删除所选箭头</button>}
       <div className="board-scale"><span />1 格 ≈ 基础移动 1 秒</div>
       <div className="board-hint">
@@ -741,6 +757,7 @@ export function TacticsBoard() {
             ? '拖动球员调整站位 · 选择球员后使用“移动箭头” · 点击箭头可编辑或删除'
             : toolActor ? '点击球场设置移动箭头终点' : '先选择一名球员'
           : tool === 'select' ? '非播放状态只停在动作节点 · 拖动节点球员可联动前后路径' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
+      </div>
       </div>
     </div>
   )
@@ -817,10 +834,13 @@ function PassThreatLines({
   ))}</>
 }
 
-function PassThreatLegend() {
-  return <div className="pass-threat-legend" aria-label="传球威胁图例">
-    {PASS_THREAT_ORDER.map((level) => <span key={level}><i className={`threat-${level}`} />{PASS_THREAT_LABELS[level]}</span>)}
-  </div>
+function PassThreatLegend({ onClose }: { onClose: () => void }) {
+  return <section className="pass-threat-legend" aria-label="传球威胁图例">
+    <div className="pass-threat-legend-items">
+      {PASS_THREAT_ORDER.map((level) => <span className="pass-threat-legend-item" key={level}><i className={`threat-${level}`} />{PASS_THREAT_LABELS[level]}</span>)}
+    </div>
+    <button type="button" onClick={onClose} aria-label="关闭传球威胁图例" title="关闭图例">×</button>
+  </section>
 }
 
 function WaterBoostRoute({

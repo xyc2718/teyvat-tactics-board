@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { directionAngle, distance, getShootZone, normalizeAngle, pathLength, pointAlongPath, truncatePath } from './geometry'
+import { directionAngle, distance, getShootZone, normalizeAngle, pathLength, pointAlongPath, resolveQPath, truncatePath } from './geometry'
 
 describe('geometry', () => {
   it('measures and samples multi-segment paths in logical grid units', () => {
@@ -14,6 +14,18 @@ describe('geometry', () => {
     expect(path[0]).toEqual({ x: 1, y: 1 })
     expect(pathLength(path)).toBeCloseTo(2.5)
     expect(path.at(-1)).toEqual({ x: 3, y: 1.5 })
+  })
+
+  it('uses a short fire-Q click as direction while keeping the configured distance', () => {
+    const path = resolveQPath([{ x: 5, y: 7 }, { x: 5.2, y: 7 }], 2.3, true, 20, 14)
+    expect(path).toEqual([{ x: 5, y: 7 }, { x: 7.3, y: 7 }])
+    expect(pathLength(path)).toBeCloseTo(2.3)
+  })
+
+  it('clips a fixed Q at the field boundary without changing its direction', () => {
+    const path = resolveQPath([{ x: 19, y: 13 }, { x: 20, y: 14 }], 2.3, true, 20, 14)
+    expect(path.at(-1)).toEqual({ x: 20, y: 14 })
+    expect(pathLength(path)).toBeCloseTo(Math.SQRT2)
   })
 
   it('classifies small, large and outside shooting zones for both teams', () => {

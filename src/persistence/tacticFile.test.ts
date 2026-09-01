@@ -80,6 +80,23 @@ describe('tactic file boundary', () => {
     if (result.ok) expect(result.document.staticMoveArrows).toEqual([])
   })
 
+  it('restores fixed fire-Q semantics when importing an older V1 rule snapshot', () => {
+    const legacy = createDefaultDocument() as unknown as {
+      rulesSnapshot: { roles: Record<'water' | 'fire' | 'ice', { q: Record<string, unknown> }> }
+    }
+    delete legacy.rulesSnapshot.roles.water.q.fixedDistance
+    delete legacy.rulesSnapshot.roles.fire.q.fixedDistance
+    delete legacy.rulesSnapshot.roles.ice.q.fixedDistance
+
+    const result = parseTactic(JSON.stringify(legacy))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.document.rulesSnapshot.roles.water.q.fixedDistance).toBe(false)
+    expect(result.document.rulesSnapshot.roles.fire.q.fixedDistance).toBe(true)
+    expect(result.document.rulesSnapshot.roles.ice.q.fixedDistance).toBe(false)
+  })
+
   it('defaults legacy ice-zone speed and Q rules and rejects multipliers above normal', () => {
     const legacy = createDefaultDocument() as unknown as { rulesSnapshot: { roles: { ice: { e?: Record<string, unknown> } } } }
     delete legacy.rulesSnapshot.roles.ice.e?.slowMultiplier

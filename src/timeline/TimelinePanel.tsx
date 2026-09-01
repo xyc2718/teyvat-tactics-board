@@ -1,7 +1,7 @@
 import type { TacticAction } from '../domain/model/types'
 import { actionEndTime } from '../domain/timeline/durations'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
-import { formatStepActionRange, getStepActionOwnership, stepDisplayTime } from '../domain/timeline/stepActionOwnership'
+import { formatStepActionRange, getStepActionOwnership, stepDuration } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { latestActorSequenceJoint } from '../editor/locomotionScheduling'
 import { useTacticStore } from '../editor/useTacticStore'
@@ -113,7 +113,7 @@ export function TimelinePanel() {
               ))
             })}
           </div>
-          <div className="step-ticks">{duration > 0 && document.stepMarkers.map((step) => <button key={step.id} style={{ left: `${timePercent(stepDisplayTime(document, step.id) ?? step.time, duration)}%` }} className={step.id === activeStepId ? 'active' : ''} onClick={() => selectStep(step.id)} aria-label={`跳到 ${step.name}`} />)}</div>
+          <div className="step-ticks">{duration > 0 && document.stepMarkers.map((step) => <button key={step.id} style={{ left: `${timePercent(step.time, duration)}%` }} className={step.id === activeStepId ? 'active' : ''} onClick={() => selectStep(step.id)} aria-label={`跳到 ${step.name}`} />)}</div>
         </div>
         <span className="timeline-time">{duration.toFixed(2)}s</span>
         <select className="speed-select" value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))} aria-label="播放速度">
@@ -164,7 +164,7 @@ export function TimelinePanel() {
             {trackActions.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
           </div>
           <small>{trackPlayer && continuationTime !== null
-            ? `续编点 ${continuationTime.toFixed(2)}s · 点击“跑动”或“Q 技能”会先跳到这里；高级时间可在创建后手动错峰`
+            ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点`
             : '总览汇集所有球员关键帧；选择球员可切换个人轨道，不会移动播放头'}</small>
         </div>
         <div className="player-track-tabs" role="tablist" aria-label="切换球员动作轨道">
@@ -190,12 +190,16 @@ export function TimelinePanel() {
       <div className="steps-row">
         <div className="steps-label"><span className="eyebrow">讲解节点</span><strong>步骤</strong></div>
         <div className="step-cards">
-          {sortedStepMarkers(document).map((step, index) => (
-            <button key={step.id} className={`step-card ${step.id === activeStepId ? 'active' : ''}`} onClick={() => selectStep(step.id)}>
-              <span className="step-index">{String(index + 1).padStart(2, '0')}</span>
-              <span><strong>{step.name}</strong>{!isOpeningStep(document, step.id) && <small>{(stepDisplayTime(document, step.id) ?? step.time).toFixed(2)}s</small>}</span>
-            </button>
-          ))}
+          {sortedStepMarkers(document).map((step, index, steps) => {
+            const opening = isOpeningStep(document, step.id)
+            const stepNumber = steps.slice(0, index + 1).filter((candidate) => !isOpeningStep(document, candidate.id)).length
+            return (
+              <button key={step.id} className={`step-card ${step.id === activeStepId ? 'active' : ''}`} onClick={() => selectStep(step.id)}>
+                <span className="step-index">{opening ? '起' : String(stepNumber).padStart(2, '0')}</span>
+                <span><strong>{step.name}</strong>{!opening && <small>{(stepDuration(document, step.id) ?? 0).toFixed(2)}s</small>}</span>
+              </button>
+            )
+          })}
           <button className="add-step-card" onClick={addStep} title="继承当前战术末尾状态并添加讲解节点">
             <span>＋</span><span><strong>添加下一步</strong><small>继承当前战术末尾状态</small></span>
           </button>
