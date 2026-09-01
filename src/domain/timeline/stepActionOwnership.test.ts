@@ -1,13 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../model/createDocument'
 import type { SceneState, TacticAction } from '../model/types'
-import { formatStepActionRange, getStepActionOwnership } from './stepActionOwnership'
+import { formatStepActionRange, getStepActionOwnership, stepDisplayTime } from './stepActionOwnership'
 
 function marker(id: string, time: number, snapshot: SceneState) {
   return { id, time, name: id, note: '', snapshot: structuredClone(snapshot) }
 }
 
 describe('step action ownership', () => {
+  it('uses the latest owned action end as a non-opening step display time', () => {
+    const document = createDefaultDocument()
+    const opening = document.stepMarkers[0]!
+    const actionStep = { id: 'action-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
+    document.stepMarkers.push(actionStep)
+    document.actions.push(
+      { id: 'short', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 },
+      { id: 'long', type: 'wait', actorId: 'blue-fire', startTime: 0, duration: 4 },
+    )
+
+    expect(stepDisplayTime(document, opening.id)).toBe(0)
+    expect(stepDisplayTime(document, actionStep.id)).toBe(4)
+    expect(stepDisplayTime(document, 'missing')).toBeNull()
+  })
+
   it('uses sorted first, middle and last half-open intervals with exact boundaries', () => {
     const document = createDefaultDocument()
     const snapshot = document.initialScene

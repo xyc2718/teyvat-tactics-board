@@ -11,7 +11,7 @@ export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = 
   select: { label: '选择', shortcut: 'V' },
   move: { label: '跑动', shortcut: 'M' },
   wait: { label: '等待', shortcut: 'W' },
-  qMove: { label: 'Q 位移', shortcut: 'Q' },
+  qMove: { label: 'Q 技能', shortcut: 'Q' },
   pass: { label: '传球', shortcut: 'P' },
   shoot: { label: '射门', shortcut: 'S' },
   annotation: { label: '说明', shortcut: 'A' },

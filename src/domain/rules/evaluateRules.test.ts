@@ -55,8 +55,32 @@ describe('rule assistance', () => {
     const result = evaluateMatchup(document, 0, attacker.id, defender.id)
     expect(result?.base).toBe(1)
     expect(result?.facts.some((fact) => fact.includes('双方距离'))).toBe(true)
+    expect(result?.facts.some((fact) => fact.includes('距防守方球门'))).toBe(true)
     expect(result?.final).not.toBeNull()
   })
+
+  it.each([
+    ['blue', 'blue-water', 'red-water', 10.8, 14, false],
+    ['blue', 'blue-water', 'red-water', 16, 14, true],
+    ['red', 'red-water', 'blue-water', 9.2, 6, false],
+    ['red', 'red-water', 'blue-water', 4, 6, true],
+  ] as const)(
+    'uses goal-side depth for %s attacking separation instead of mutual distance',
+    (_team, attackerId, defenderId, attackerX, defenderX, expectedAdvantage) => {
+      const document = createDefaultDocument()
+      const attacker = document.initialScene.players.find((player) => player.id === attackerId)!
+      const defender = document.initialScene.players.find((player) => player.id === defenderId)!
+      attacker.position = { x: attackerX, y: 7 }
+      defender.position = { x: defenderX, y: 7 }
+
+      const result = evaluateMatchup(document, 0, attacker.id, defender.id)
+      const hasSeparationAdvantage = result?.appliedModifiers.some(
+        (modifier) => modifier.condition === 'separationAdvantage',
+      )
+
+      expect(hasSeparationAdvantage).toBe(expectedAdvantage)
+    },
+  )
 
   it('warns when an ice Q target is unreachable and when an enemy runner enters a moving ice zone', () => {
     const document = createDefaultDocument()

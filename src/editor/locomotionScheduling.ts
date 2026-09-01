@@ -21,6 +21,15 @@ export interface LocomotionPlan {
   duration: number
 }
 
+/** Latest completed position joint in one player's authored move/wait/Q chain. */
+export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: string): number {
+  return document.actions.reduce((latest, action) => (
+    isActorSequenceAction(action, actorId)
+      ? Math.max(latest, actionEndTime(action))
+      : latest
+  ), 0)
+}
+
 /**
  * Finds the first interval at or after requestedStart that does not collide
  * with this player's authored locomotion. Instant Q actions occupy their

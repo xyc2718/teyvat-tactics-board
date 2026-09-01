@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
-import { distance, normalizeAngle, pathLength, resolvedMovePath } from '../domain/geometry/geometry'
-import { evaluateMatchup, evaluateWarnings } from '../domain/rules/evaluateRules'
+import { normalizeAngle, pathLength, resolvedMovePath } from '../domain/geometry/geometry'
+import type { MoveAction } from '../domain/model/types'
+import { evaluateWarnings } from '../domain/rules/evaluateRules'
+import { evaluatePlayerSituation, type BallArrival } from '../domain/rules/playerSituation'
 import {
   evaluateShotActionPressure,
   shotPressureComparison,
@@ -23,6 +25,15 @@ export function InspectorPanel() {
   const selectedAction = selection?.kind === 'action'
     ? document.actions.find((action) => action.id === selection.id)
     : undefined
+  const latestPlayerMove = selectedPlayer
+    ? document.actions
+        .filter((action): action is MoveAction => action.type === 'move' && action.actorId === selectedPlayer.id)
+        .sort((left, right) => (
+          left.startTime + left.duration - (right.startTime + right.duration)
+          || left.startTime - right.startTime
+        ))
+        .at(-1)
+    : undefined
   const selectedShotPressure = useMemo(
     () => selectedAction?.type === 'shoot' ? evaluateShotActionPressure(document, selectedAction) : null,
     [document, selectedAction],
@@ -38,14 +49,10 @@ export function InspectorPanel() {
   const deleteAction = useTacticStore((state) => state.deleteAction)
   const select = useTacticStore((state) => state.select)
 
-  const nearestDefender = selectedPlayer
-    ? frame.players
-        .filter((player) => player.team !== selectedPlayer.team)
-        .sort((a, b) => distance(selectedPlayer.position, a.position) - distance(selectedPlayer.position, b.position))[0]
-    : undefined
-  const matchup = selectedPlayer && nearestDefender
-    ? evaluateMatchup(document, currentTime, selectedPlayer.id, nearestDefender.id)
-    : null
+  const playerSituation = useMemo(
+    () => selectedPlayer ? evaluatePlayerSituation(document, currentTime, selectedPlayer.id) : null,
+    [currentTime, document, selectedPlayer],
+  )
   const contextualWarnings = warnings.filter((warning) => {
     if (selection?.kind === 'action') return warning.actionId === selection.id
     if (selection?.kind === 'player') return warning.playerIds?.includes(selection.id)
@@ -90,12 +97,37 @@ export function InspectorPanel() {
               <Metric label="坐标" value={`${selectedPlayer.position.x.toFixed(1)}, ${selectedPlayer.position.y.toFixed(1)}`} />
             </div>
           </section>
-          {matchup && nearestDefender && <section className="inspector-section matchup-card">
-            <div className="section-title-row"><h3>最近对位</h3><span className={`rating rating-${matchup.final ?? 'none'}`}>{matchupLabel(matchup.final)}</span></div>
-            <p className="matchup-route">{document.rulesSnapshot.roles[selectedPlayer.role].shortLabel} 进攻 → {document.rulesSnapshot.roles[nearestDefender.role].shortLabel} 防守</p>
-            <p className="subtle">基础：{matchupLabel(matchup.base)} · {nearestDefender.name}</p>
-            {matchup.appliedModifiers.length > 0 && <div className="modifier-list">{matchup.appliedModifiers.map((modifier) => <span key={modifier.id}>{modifier.delta > 0 ? '+' : ''}{modifier.delta} {modifier.label}</span>)}</div>}
-            <details><summary>客观依据</summary><ul>{matchup.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul></details>
+          {latestPlayerMove && <section className="inspector-section latest-move-editor">
+            <div className="section-title-row">
+              <h3>最后一段跑动</h3>
+              <span>{latestPlayerMove.startTime.toFixed(2)}–{(latestPlayerMove.startTime + latestPlayerMove.duration).toFixed(2)}s</span>
+            </div>
+            <MovePathModeButtons
+              curved={Boolean(latestPlayerMove.curveControl)}
+              onChange={(mode) => {
+                setMovePathMode(latestPlayerMove.id, mode)
+                select({ kind: 'action', id: latestPlayerMove.id })
+              }}
+            />
+            <p className="callout">选择曲线后会选中这段跑动；拖动球场上的青色控制点即可调整弧度。</p>
+          </section>}
+          {playerSituation?.kind === 'matchup' && <section className="inspector-section matchup-card">
+            <div className="section-title-row"><h3>最近对位</h3><span className={`rating rating-${playerSituation.evaluation.final ?? 'none'}`}>{matchupLabel(playerSituation.evaluation.final)}</span></div>
+            <p className="matchup-route">{document.rulesSnapshot.roles[playerSituation.attacker.role].shortLabel} 进攻 → {document.rulesSnapshot.roles[playerSituation.defender.role].shortLabel} 防守</p>
+            <p className="subtle">{teamLabel(playerSituation.offenseTeam)}{playerSituation.possessionSource === 'carrier' ? '持球' : '传球中'} · {selectedPlayer.name}处于{playerSituation.selectedPerspective === 'attacking' ? '进攻方' : '防守方'}</p>
+            <p className="subtle">进攻方视角基础：{matchupLabel(playerSituation.evaluation.base)} · 对手 {playerSituation.opponent.name}</p>
+            {playerSituation.evaluation.appliedModifiers.length > 0 && <div className="modifier-list">{playerSituation.evaluation.appliedModifiers.map((modifier) => <span key={modifier.id}>{modifier.delta > 0 ? '+' : ''}{modifier.delta} {modifier.label}</span>)}</div>}
+            <details><summary>客观依据</summary><ul>{playerSituation.evaluation.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul></details>
+          </section>}
+          {playerSituation?.kind === 'looseBall' && <section className="inspector-section matchup-card loose-ball-card">
+            <div className="section-title-row"><h3>地面自由球争抢</h3><span className={`rating contest-${playerSituation.outcome}`}>{contestOutcomeLabel(playerSituation.outcome, playerSituation.margin)}</span></div>
+            <p className="matchup-route">{playerSituation.selectedArrival.player.name} ↔ {playerSituation.opponentArrival.player.name}</p>
+            <p className="subtle">{arrivalSummary(playerSituation.selectedArrival)} · {arrivalSummary(playerSituation.opponentArrival)}</p>
+            <details><summary>客观依据</summary><ul>
+              <li>{playerSituation.selectedArrival.player.name}距球 {playerSituation.selectedArrival.ballDistance.toFixed(2)} 格，Q 剩余 {playerSituation.selectedArrival.qCooldownAtStart.toFixed(2)}s</li>
+              <li>{playerSituation.opponentArrival.player.name}距球 {playerSituation.opponentArrival.ballDistance.toFixed(2)} 格，Q 剩余 {playerSituation.opponentArrival.qCooldownAtStart.toFixed(2)}s</li>
+              <li>按当前站位、冻结、基础移速及 Q 距离/用时/CD 估算，不含反应时间</li>
+            </ul></details>
           </section>}
         </div>
       )}
@@ -116,11 +148,11 @@ export function InspectorPanel() {
                     : <div className="inline-info"><span>动作时长</span><strong>{selectedAction.duration.toFixed(2)}s</strong></div>}
                 </>}
             {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.type === 'move' ? resolvedMovePath(selectedAction) : selectedAction.path).toFixed(2)} 格</strong></div>}
-            {selectedAction.type === 'move' && <div className="move-path-mode" role="group" aria-label="跑动路径类型">
-              <button className={!selectedAction.curveControl ? 'active' : ''} aria-pressed={!selectedAction.curveControl} onClick={() => setMovePathMode(selectedAction.id, 'straight')}>直线</button>
-              <button className={selectedAction.curveControl ? 'active' : ''} aria-pressed={Boolean(selectedAction.curveControl)} onClick={() => setMovePathMode(selectedAction.id, 'curve')}>可调曲线</button>
-            </div>}
-            {selectedAction.type === 'move' && selectedAction.curveControl && <p className="callout">拖动球场上的白色曲线控制点调整弧度；动作时长会随曲线长度自动更新。</p>}
+            {selectedAction.type === 'move' && <MovePathModeButtons
+              curved={Boolean(selectedAction.curveControl)}
+              onChange={(mode) => setMovePathMode(selectedAction.id, mode)}
+            />}
+            {selectedAction.type === 'move' && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；动作时长会随曲线长度自动更新。</p>}
             {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
             {selectedAction.type === 'shoot' && <label className="field-row"><span>蓄力等级</span>
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>
@@ -158,6 +190,36 @@ export function InspectorPanel() {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="metric"><small>{label}</small><strong>{value}</strong></div>
+}
+
+function MovePathModeButtons({
+  curved,
+  onChange,
+}: {
+  curved: boolean
+  onChange: (mode: 'straight' | 'curve') => void
+}) {
+  return <div className="move-path-mode" role="group" aria-label="跑动路径类型">
+    <button className={!curved ? 'active' : ''} aria-pressed={!curved} onClick={() => onChange('straight')}>直线</button>
+    <button className={curved ? 'active' : ''} aria-pressed={curved} onClick={() => onChange('curve')}>可调曲线</button>
+  </div>
+}
+
+function compactSeconds(value: number): string {
+  return value.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
+
+function teamLabel(team: 'blue' | 'red'): string {
+  return team === 'blue' ? '蓝方' : '红方'
+}
+
+function contestOutcomeLabel(outcome: 'ahead' | 'level' | 'behind', margin: number): string {
+  if (outcome === 'level') return '几乎同时'
+  return `${outcome === 'ahead' ? '领先' : '落后'} ${compactSeconds(margin)}s`
+}
+
+function arrivalSummary(arrival: BallArrival): string {
+  return `${arrival.player.name} ${compactSeconds(arrival.earliestTime)}s（${arrival.mode === 'q' ? 'Q 抢球' : '直跑抢球'}）`
 }
 
 function ShotPressureCard({

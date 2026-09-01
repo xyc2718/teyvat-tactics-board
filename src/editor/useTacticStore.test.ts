@@ -1,19 +1,29 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
-import { documentDuration, passDuration } from '../domain/timeline/durations'
+import { actionEndTime, documentDuration, passDuration } from '../domain/timeline/durations'
 import { projectFrame } from '../domain/timeline/projectFrame'
+import { getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
+import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from './useTacticStore'
 
 describe('tactic store timeline edits', () => {
   beforeEach(() => {
     const document = createDefaultDocument()
+    const editableStep = {
+      id: 'test-editable-step',
+      time: 0,
+      name: '步骤 2',
+      note: '',
+      snapshot: structuredClone(document.initialScene),
+    }
+    document.stepMarkers.push(editableStep)
     useTacticStore.setState({
       document,
       selection: null,
       tool: 'select',
       boardMode: 'simulation',
-      activeStepId: document.stepMarkers[0]!.id,
+      activeStepId: editableStep.id,
       currentTime: 0,
       isPlaying: false,
       showAdvancedTimeline: false,
@@ -21,6 +31,142 @@ describe('tactic store timeline edits', () => {
       past: [],
       future: [],
     })
+  })
+
+  it('automatically creates the editable next step before drawing movement from the opening frame', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    useTacticStore.setState({
+      document,
+      activeStepId: openingId,
+      currentTime: 0,
+      selection: { kind: 'player', id: 'blue-water' },
+      tool: 'select',
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().setTool('move')
+    let state = useTacticStore.getState()
+    expect(state.document.stepMarkers).toHaveLength(2)
+    expect(state.activeStepId).not.toBe(openingId)
+    expect(state.document.stepMarkers.find((step) => step.id === state.activeStepId)).toMatchObject({ time: 0, name: '步骤 2' })
+    expect(state).toMatchObject({ currentTime: 0, tool: 'move', selection: { kind: 'player', id: 'blue-water' } })
+
+    state.createAction('blue-water', { x: 7.5, y: 5 })
+    state = useTacticStore.getState()
+    expect(state.document.actions).toHaveLength(1)
+    expect(state.document.actions[0]).toMatchObject({ type: 'move', startTime: 0 })
+    expect(getStepActionOwnership(state.document, openingId)?.count).toBe(0)
+    expect(getStepActionOwnership(state.document, state.activeStepId)?.count).toBe(1)
+  })
+
+  it('automatically puts an immediate wait into the next step instead of the opening frame', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    useTacticStore.setState({
+      document,
+      activeStepId: openingId,
+      currentTime: 0,
+      selection: { kind: 'player', id: 'blue-fire' },
+      tool: 'select',
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().setTool('wait')
+    const state = useTacticStore.getState()
+    expect(state.document.stepMarkers).toHaveLength(2)
+    expect(state.document.actions[0]).toMatchObject({ type: 'wait', actorId: 'blue-fire', startTime: 0 })
+    expect(getStepActionOwnership(state.document, openingId)?.count).toBe(0)
+    expect(getStepActionOwnership(state.document, state.activeStepId)?.count).toBe(1)
+  })
+
+  it('keeps inspection and basic-board arrows in the opening frame without creating a timeline step', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    useTacticStore.setState({ document, activeStepId: openingId, selection: { kind: 'player', id: 'blue-water' } })
+
+    useTacticStore.getState().setTool('attack')
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
+
+    useTacticStore.getState().setBoardMode('basic')
+    useTacticStore.getState().setTool('move')
+    useTacticStore.getState().createAction('blue-water', { x: 8, y: 5 })
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+  })
+
+  it('repairs a legacy opening-only draft by adding an action boundary without changing action times', () => {
+    const imported = createDefaultDocument()
+    const openingId = imported.stepMarkers[0]!.id
+    imported.actions.push({ id: 'legacy-wait', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 })
+
+    useTacticStore.getState().replaceDocument(imported)
+    const state = useTacticStore.getState()
+    expect(state.document.stepMarkers).toHaveLength(2)
+    expect(state.document.actions[0]).toMatchObject({ id: 'legacy-wait', startTime: 0, duration: 2 })
+    expect(getStepActionOwnership(state.document, openingId)?.count).toBe(0)
+    expect(state.document.stepMarkers.filter((step) => !isOpeningStep(state.document, step.id))).toHaveLength(1)
+  })
+
+  it('edits only the opening position when the opening step is active at a stale later playhead', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    document.actions.push({
+      id: 'later-run',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
+    })
+    useTacticStore.setState({ document, activeStepId: openingId, currentTime: 2, past: [], future: [] })
+
+    useTacticStore.getState().moveEntity('blue-fire', { x: 4, y: 3 })
+    const state = useTacticStore.getState()
+    expect(state.currentTime).toBe(0)
+    expect(state.document.initialScene.players.find((player) => player.id === 'blue-fire')?.position).toEqual({ x: 4, y: 3 })
+    expect(state.document.actions[0]).toMatchObject({
+      type: 'move',
+      path: [{ x: 4, y: 3 }, { x: 5.5, y: 2.7 }],
+    })
+  })
+
+  it('leaves the static opening step when playback starts', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    const actionStep = { id: 'playback-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
+    document.stepMarkers.push(actionStep)
+    document.actions.push({ id: 'playback-run', type: 'move', actorId: 'blue-water', startTime: 0, duration: 2, path: [{ x: 5.5, y: 5 }, { x: 7.5, y: 5 }] })
+    useTacticStore.setState({ document, activeStepId: openingId, currentTime: 0, isPlaying: false })
+
+    useTacticStore.getState().setPlaying(true)
+    expect(useTacticStore.getState()).toMatchObject({ activeStepId: actionStep.id, isPlaying: true, currentTime: 0 })
+  })
+
+  it('starts each player from that player own sequence instead of another player global endpoint', () => {
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
+    useTacticStore.getState().setTool('move')
+    useTacticStore.getState().createAction('blue-water', { x: 9.5, y: 7 })
+    expect(useTacticStore.getState().currentTime).toBe(4)
+
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-fire' })
+    useTacticStore.getState().setTool('wait')
+    let state = useTacticStore.getState()
+    const wait = state.document.actions.find((action) => action.type === 'wait' && action.actorId === 'blue-fire')
+    expect(wait).toMatchObject({ startTime: 0, duration: 1 })
+    expect(state.currentTime).toBe(1)
+
+    state.select({ kind: 'player', id: 'blue-fire' })
+    state.setTool('move')
+    expect(useTacticStore.getState().currentTime).toBe(1)
+    useTacticStore.getState().createAction('blue-fire', { x: 5.5, y: 4.7 })
+
+    state = useTacticStore.getState()
+    const fireMove = state.document.actions.find((action) => action.type === 'move' && action.actorId === 'blue-fire')
+    expect(fireMove).toMatchObject({ startTime: 1 })
+    expect(state.document.actions.find((action) => action.type === 'move' && action.actorId === 'blue-water')).toMatchObject({ startTime: 0, duration: 4 })
   })
 
   it('changes possession at the current time without rewriting the opening state', () => {
@@ -208,6 +354,41 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
   })
 
+  it('returns a Move/Q workflow from target selection to actor selection without canceling it', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({
+      id: 'blue-fire-run',
+      type: 'move',
+      actorId: 'blue-fire',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
+    })
+    useTacticStore.setState({ document })
+    useTacticStore.getState().setTool('qMove')
+    useTacticStore.getState().chooseActorForTool('blue-fire')
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'qMove',
+      selection: { kind: 'player', id: 'blue-fire' },
+      currentTime: 2,
+    })
+
+    useTacticStore.getState().reselectToolActor()
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'qMove',
+      selection: null,
+      currentTime: 2,
+    })
+    expect(useTacticStore.getState().document.actions).toHaveLength(1)
+
+    useTacticStore.getState().chooseActorForTool('blue-ice')
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'qMove',
+      selection: { kind: 'player', id: 'blue-ice' },
+      currentTime: 0,
+    })
+  })
+
   it('keeps the opening setup as a zero-duration static frame', () => {
     useTacticStore.setState({ currentTime: 2, isPlaying: false })
     useTacticStore.getState().setPlaying(true)
@@ -318,21 +499,24 @@ describe('tactic store timeline edits', () => {
     expect(state.selection).toEqual({ kind: 'player', id: 'blue-fire' })
   })
 
-  it('continues Q from a move endpoint selected as the tool actor', () => {
+  it('jumps to the chosen player latest joint before continuing Q', () => {
     const document = createDefaultDocument()
-    document.actions.push({
-      id: 'endpoint-run',
-      type: 'move',
-      actorId: 'blue-fire',
-      startTime: 0,
-      duration: 2,
-      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
-    })
+    document.actions.push(
+      {
+        id: 'endpoint-run',
+        type: 'move',
+        actorId: 'blue-fire',
+        startTime: 0,
+        duration: 2,
+        path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+      },
+      { id: 'endpoint-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 3 },
+    )
     useTacticStore.setState({ document, tool: 'qMove', currentTime: 0, selection: null, past: [], future: [] })
 
-    useTacticStore.getState().chooseActionEndpointForTool('endpoint-run')
+    useTacticStore.getState().chooseActorForTool('blue-fire')
     expect(useTacticStore.getState()).toMatchObject({
-      currentTime: 2,
+      currentTime: 5,
       selection: { kind: 'player', id: 'blue-fire' },
       tool: 'qMove',
     })
@@ -341,12 +525,36 @@ describe('tactic store timeline edits', () => {
     const q = useTacticStore.getState().document.actions.find((action) => action.type === 'qMove')
     expect(q).toMatchObject({
       actorId: 'blue-fire',
-      startTime: 2,
+      startTime: 5,
       path: [{ x: 5.5, y: 4.7 }, { x: 7.5, y: 4.7 }],
     })
   })
 
-  it('uses a selected move action endpoint when the run tool is activated', () => {
+  it('jumps from the chosen ice player latest joint to the completed Q endpoint', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'ice-endpoint-run',
+      type: 'move',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 9.3 }, { x: 5.5, y: 9.3 }],
+    })
+    useTacticStore.setState({ document, tool: 'qMove', currentTime: 0, selection: null, past: [], future: [] })
+
+    useTacticStore.getState().chooseActorForTool('blue-ice')
+    expect(useTacticStore.getState().currentTime).toBe(2)
+
+    useTacticStore.getState().createAction('blue-ice', { x: 8.5, y: 9.3 })
+
+    const state = useTacticStore.getState()
+    const q = state.document.actions.at(-1)
+    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-ice', startTime: 2, duration: 1 })
+    expect(state.currentTime).toBe(3)
+    expect(projectFrame(state.document, state.currentTime).players.find((player) => player.id === 'blue-ice')?.position).toEqual({ x: 8.5, y: 9.3 })
+  })
+
+  it('does not treat a selected action endpoint as a move actor', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'selected-endpoint-run',
@@ -361,9 +569,39 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().setTool('move')
 
     expect(useTacticStore.getState()).toMatchObject({
-      currentTime: 2,
-      selection: { kind: 'player', id: 'blue-fire' },
+      currentTime: 0,
+      selection: null,
       tool: 'move',
+    })
+  })
+
+  it('lets target-stage locomotion switch players and follows the replacement latest joint', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'actor-a-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+      },
+      {
+        id: 'actor-b-run', type: 'move', actorId: 'blue-ice', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 9.3 }, { x: 7.5, y: 9.3 }],
+      },
+    )
+    useTacticStore.setState({ document, tool: 'move', currentTime: 0, selection: null, past: [], future: [] })
+
+    useTacticStore.getState().chooseActorForTool('blue-fire')
+    expect(useTacticStore.getState()).toMatchObject({ currentTime: 2, selection: { kind: 'player', id: 'blue-fire' } })
+
+    useTacticStore.getState().chooseActorForTool('blue-ice')
+    expect(useTacticStore.getState()).toMatchObject({ currentTime: 4, selection: { kind: 'player', id: 'blue-ice' } })
+    expect(useTacticStore.getState().document.actions).toHaveLength(2)
+
+    useTacticStore.getState().createAction('blue-ice', { x: 9.5, y: 9.3 })
+    expect(useTacticStore.getState().document.actions.at(-1)).toMatchObject({
+      type: 'move',
+      actorId: 'blue-ice',
+      startTime: 4,
+      path: [{ x: 7.5, y: 9.3 }, { x: 9.5, y: 9.3 }],
     })
   })
 
@@ -593,20 +831,17 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().document.actions.find((action) => action.id === 'plain-move')?.startTime).toBe(1.5)
   })
 
-  it('rejects advanced Q creation during cooldown and accepts the exact boundary', () => {
+  it('continues a newly drawn advanced Q at the next legal cooldown joint', () => {
     const document = useTacticStore.getState().document
     document.actions.push({ id: 'existing-q', type: 'qMove', actorId: 'blue-water', startTime: 0, duration: 0, path: [{ x: 5.5, y: 5 }, { x: 8, y: 5 }] })
     useTacticStore.setState({ document, showAdvancedTimeline: true, currentTime: 5, selection: { kind: 'player', id: 'blue-water' } })
     useTacticStore.getState().setTool('qMove')
-    useTacticStore.getState().createAction('blue-water', { x: 10, y: 5 })
-    expect(useTacticStore.getState().document.actions).toHaveLength(1)
-    expect(useTacticStore.getState().notice).toContain('还差 2.00 秒')
-
-    useTacticStore.getState().setCurrentTime(7)
-    expect(useTacticStore.getState().notice).toBeNull()
+    expect(useTacticStore.getState().currentTime).toBe(0)
     useTacticStore.getState().createAction('blue-water', { x: 10, y: 5 })
     expect(useTacticStore.getState().document.actions.filter((action) => action.type === 'qMove')).toHaveLength(2)
     expect(useTacticStore.getState().document.actions.at(-1)?.startTime).toBe(7)
+    expect(useTacticStore.getState().currentTime).toBe(7)
+    expect(useTacticStore.getState().notice).toBeNull()
   })
 
   it('reflows existing simple Q actions after cooldown or role edits', () => {
@@ -705,6 +940,51 @@ describe('tactic store timeline edits', () => {
     }
   })
 
+  it('jumps to a newly scheduled action end when it is appended beyond the current joint', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'existing-run-1',
+        type: 'move',
+        actorId: 'blue-water',
+        startTime: 0,
+        duration: 2,
+        path: [{ x: 5.5, y: 5 }, { x: 7.5, y: 5 }],
+      },
+      {
+        id: 'existing-wait',
+        type: 'wait',
+        actorId: 'blue-water',
+        startTime: 2,
+        duration: 1,
+      },
+      {
+        id: 'existing-run-2',
+        type: 'move',
+        actorId: 'blue-water',
+        startTime: 3,
+        duration: 1,
+        path: [{ x: 7.5, y: 5 }, { x: 8.5, y: 5 }],
+      },
+    )
+    useTacticStore.setState({
+      document,
+      currentTime: 2,
+      selection: { kind: 'player', id: 'blue-water' },
+      tool: 'move',
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().createAction('blue-water', { x: 10, y: 5 })
+
+    const state = useTacticStore.getState()
+    const created = state.document.actions.at(-1)
+    expect(created).toMatchObject({ type: 'move', actorId: 'blue-water', startTime: 4 })
+    if (!created) throw new Error('Expected a scheduled move')
+    expect(state.currentTime).toBe(actionEndTime(created))
+  })
+
   it('reflows simple locomotion when a role edit changes an instantaneous Q into an ice dash', () => {
     useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
     useTacticStore.getState().setTool('qMove')
@@ -720,15 +1000,22 @@ describe('tactic store timeline edits', () => {
     expect(evaluateWarnings(useTacticStore.getState().document).some((warning) => warning.title === '同一球员的位移动作重叠')).toBe(false)
   })
 
-  it('keeps explicit movement overlap and its hard warning in advanced timeline mode', () => {
+  it('chains newly drawn advanced locomotion and permits an explicit manual overlap afterward', () => {
     useTacticStore.getState().setAdvancedTimeline(true)
     useTacticStore.getState().select({ kind: 'player', id: 'blue-ice' })
     useTacticStore.getState().setTool('qMove')
     useTacticStore.getState().createAction('blue-ice', { x: 6.5, y: 7.3 })
+    useTacticStore.getState().setCurrentTime(0)
     useTacticStore.getState().setTool('move')
     useTacticStore.getState().createAction('blue-ice', { x: 5.5, y: 7.3 })
 
-    const document = useTacticStore.getState().document
+    let document = useTacticStore.getState().document
+    expect(document.actions.map((action) => action.startTime)).toEqual([0, 1])
+    expect(evaluateWarnings(document).some((warning) => warning.title === '同一球员的位移动作重叠')).toBe(false)
+
+    const move = document.actions.find((action) => action.type === 'move')!
+    useTacticStore.getState().updateActionTiming(move.id, 'startTime', 0)
+    document = useTacticStore.getState().document
     expect(document.actions.map((action) => action.startTime)).toEqual([0, 0])
     expect(evaluateWarnings(document).some((warning) => warning.title === '同一球员的位移动作重叠')).toBe(true)
   })
@@ -738,6 +1025,7 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
     useTacticStore.getState().setTool('qMove')
     useTacticStore.getState().createAction('blue-water', { x: 8, y: 5 })
+    useTacticStore.getState().setCurrentTime(0)
     useTacticStore.getState().setTool('move')
     useTacticStore.getState().createAction('blue-water', { x: 10, y: 5 })
     useTacticStore.getState().setPlayerRole('blue-water', 'ice')

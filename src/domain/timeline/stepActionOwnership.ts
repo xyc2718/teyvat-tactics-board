@@ -1,4 +1,6 @@
 import type { TacticDocumentV1 } from '../model/types'
+import { actionEndTime } from './durations'
+import { isOpeningStep, sortedStepMarkers } from './steps'
 
 export interface StepActionOwnership {
   stepId: string
@@ -16,13 +18,11 @@ export function getStepActionOwnership(
   document: TacticDocumentV1,
   stepId: string,
 ): StepActionOwnership | null {
-  const sortedSteps = document.stepMarkers
-    .map((step, originalIndex) => ({ step, originalIndex }))
-    .sort((left, right) => left.step.time - right.step.time || left.originalIndex - right.originalIndex)
-  const index = sortedSteps.findIndex(({ step }) => step.id === stepId)
-  const current = sortedSteps[index]?.step
+  const sortedSteps = sortedStepMarkers(document)
+  const index = sortedSteps.findIndex((step) => step.id === stepId)
+  const current = sortedSteps[index]
   if (!current) return null
-  const endTime = sortedSteps[index + 1]?.step.time ?? Number.POSITIVE_INFINITY
+  const endTime = sortedSteps[index + 1]?.time ?? Number.POSITIVE_INFINITY
   const actionIds = document.actions
     .filter((action) => action.startTime >= current.time && action.startTime < endTime)
     .map((action) => action.id)
@@ -39,4 +39,18 @@ export function formatStepActionRange(ownership: StepActionOwnership): string {
   return Number.isFinite(ownership.endTime)
     ? `${ownership.startTime.toFixed(2)}s ≤ 动作开始 < ${ownership.endTime.toFixed(2)}s`
     : `动作开始 ≥ ${ownership.startTime.toFixed(2)}s`
+}
+
+/** The keyframe a step card represents after its currently owned actions finish. */
+export function stepDisplayTime(document: TacticDocumentV1, stepId: string): number | null {
+  const step = document.stepMarkers.find((candidate) => candidate.id === stepId)
+  if (!step) return null
+  if (isOpeningStep(document, stepId)) return step.time
+  const ownership = getStepActionOwnership(document, stepId)
+  if (!ownership?.count) return step.time
+  const ownedIds = new Set(ownership.actionIds)
+  return document.actions.reduce(
+    (latest, action) => ownedIds.has(action.id) ? Math.max(latest, actionEndTime(action)) : latest,
+    step.time,
+  )
 }

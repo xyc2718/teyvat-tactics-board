@@ -15,12 +15,13 @@ import type {
 } from '../domain/model/types'
 import { cloneDefaultRules } from '../domain/rules/defaultRules'
 import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
-import { actionEndTime, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
+import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
 import { projectFrame } from '../domain/timeline/projectFrame'
-import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
+import { formatStepActionRange, getStepActionOwnership, stepDisplayTime } from '../domain/timeline/stepActionOwnership'
+import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
-import { planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion } from './locomotionScheduling'
+import { latestActorSequenceJoint, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion } from './locomotionScheduling'
 import { isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
 
 type Selection =
@@ -53,7 +54,7 @@ interface TacticStore extends HistoryState {
   setTool: (tool: ToolId) => void
   setBoardMode: (mode: BoardMode) => void
   chooseActorForTool: (playerId: string) => void
-  chooseActionEndpointForTool: (actionId: string) => void
+  reselectToolActor: () => void
   cancelTool: () => void
   setCurrentTime: (time: number) => void
   setPlaying: (playing: boolean) => void
@@ -120,6 +121,68 @@ function sceneFromFrame(document: TacticDocumentV1, time: number): SceneState {
     players: frame.players.map((player) => ({ ...player, position: { ...player.position } })),
     ball: { ...frame.ball, position: { ...frame.ball.position } },
     statuses: frame.statuses.map((status) => ({ ...status })),
+  }
+}
+
+const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
+  'move',
+  'wait',
+  'qMove',
+  'pass',
+  'shoot',
+  'annotation',
+  'eZone',
+])
+
+function appendStepMarker(document: TacticDocumentV1, time: number): string {
+  const id = uid('step')
+  document.stepMarkers.push({
+    id,
+    time,
+    name: `步骤 ${document.stepMarkers.length + 1}`,
+    note: '',
+    snapshot: sceneFromFrame(document, time),
+  })
+  return id
+}
+
+/** Moves actions out of the opening step's ownership without changing their authored times. */
+function ensureOpeningActionBoundary(document: TacticDocumentV1): string | null {
+  const opening = openingStep(document)
+  if (!opening) return null
+  const ownership = getStepActionOwnership(document, opening.id)
+  if (!ownership?.count) return null
+  const ownedIds = new Set(ownership.actionIds)
+  const boundaryTime = Math.min(
+    ...document.actions.filter((action) => ownedIds.has(action.id)).map((action) => action.startTime),
+  )
+  return appendStepMarker(document, boundaryTime)
+}
+
+function actionContinuationTime(document: TacticDocumentV1): number {
+  return documentDuration(document.actions, document.stepMarkers.map((step) => step.time))
+}
+
+function prepareTimelineEditingStep(state: TacticStore) {
+  if (state.boardMode !== 'simulation' || !isOpeningStep(state.document, state.activeStepId)) return null
+
+  const next = cloneDocument(state.document)
+  const repairedStepId = ensureOpeningActionBoundary(next)
+  let laterSteps = sortedStepMarkers(next).filter((step) => !isOpeningStep(next, step.id))
+  let createdStepId = repairedStepId
+
+  if (laterSteps.length === 0) {
+    createdStepId = appendStepMarker(next, Math.max(FIRST_ACTION_STEP_TIME, actionContinuationTime(next)))
+    laterSteps = sortedStepMarkers(next).filter((step) => !isOpeningStep(next, step.id))
+  }
+
+  const target = laterSteps.at(-1)
+  if (!target) return null
+  return {
+    document: next,
+    targetStepId: target.id,
+    time: Math.max(target.time, actionContinuationTime(next)),
+    changed: createdStepId !== null,
   }
 }
 
@@ -281,6 +344,7 @@ function editPlayerJoint(
 function initialDocument(): TacticDocumentV1 {
   const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
   syncPassEndpoints(document)
+  ensureOpeningActionBoundary(document)
   return document
 }
 
@@ -316,35 +380,37 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     if (
       current.boardMode === 'simulation'
-      && (tool === 'move' || tool === 'qMove')
-      && current.selection?.kind === 'action'
+      && TIMELINE_WRITING_TOOLS.has(tool)
+      && isOpeningStep(current.document, current.activeStepId)
     ) {
-      const selectedAction = current.document.actions.find((action) => action.id === current.selection?.id)
-      if (selectedAction?.type === 'move' || selectedAction?.type === 'qMove') {
-        set({ tool, isPlaying: false })
-        get().chooseActionEndpointForTool(selectedAction.id)
-        return
+      if (tool === 'pass') {
+        const continuationTime = actionContinuationTime(current.document)
+        if (!projectFrame(current.document, continuationTime).ball.carrierId) {
+          set({ tool, selection: null, notice: '当前没有持球者；请先回到选择模式设置球权。', isPlaying: false })
+          return
+        }
       }
+      set((state) => {
+        const prepared = prepareTimelineEditingStep(state)
+        if (!prepared) return {}
+        return {
+          ...(prepared.changed ? applyDocument(state, prepared.document) : {}),
+          activeStepId: prepared.targetStepId,
+          currentTime: prepared.time,
+          isPlaying: false,
+          notice: null,
+        }
+      })
+      current = get()
     }
-    if (tool === 'shoot' && current.selection?.kind === 'player') {
-      const frame = projectFrame(current.document, current.currentTime)
-      const shooter = frame.players.find((player) => player.id === current.selection?.id)
-      if (shooter && isToolActorEligible(tool, shooter, frame, current.document.rulesSnapshot)) {
-        get().createShot(shooter.id)
-        return
-      }
-    }
-    if (tool === 'wait' && current.selection?.kind === 'player') {
-      get().createWait(current.selection.id)
+    if (
+      current.boardMode === 'simulation'
+      && (tool === 'move' || tool === 'qMove' || tool === 'wait' || tool === 'shoot' || tool === 'eZone')
+      && current.selection?.kind === 'player'
+    ) {
+      set({ tool, isPlaying: false })
+      get().chooseActorForTool(current.selection.id)
       return
-    }
-    if (tool === 'eZone' && current.selection?.kind === 'player') {
-      const frame = projectFrame(current.document, current.currentTime)
-      const actor = frame.players.find((player) => player.id === current.selection?.id)
-      if (actor && isToolActorEligible(tool, actor, frame, current.document.rulesSnapshot)) {
-        get().createEZone(actor.id)
-        return
-      }
     }
     set((state) => {
       if (tool === 'select') return { tool, notice: null, isPlaying: false }
@@ -390,20 +456,33 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     notice: null,
   })),
   chooseActorForTool: (playerId) => {
-    if (get().tool === 'wait') {
-      get().createWait(playerId)
-      return
-    }
-    if (get().tool === 'shoot') {
-      get().createShot(playerId)
-      return
-    }
-    if (get().tool === 'eZone') {
-      get().createEZone(playerId)
+    const immediateTool = get().tool
+    if (immediateTool === 'wait' || immediateTool === 'shoot' || immediateTool === 'eZone') {
+      const state = get()
+      const currentTime = latestActorSequenceJoint(state.document, playerId)
+      const frame = projectFrame(state.document, currentTime)
+      const player = frame.players.find((candidate) => candidate.id === playerId)
+      if (!player) return
+      if (!isToolActorEligible(immediateTool, player, frame, state.document.rulesSnapshot)) {
+        set({
+          selection: immediateTool === 'eZone' ? null : state.selection,
+          notice: immediateTool === 'eZone' ? '冰圈只能由霜役施放。' : '该球员不能执行当前动作。',
+        })
+        return
+      }
+      set({ currentTime, selection: { kind: 'player', id: playerId }, isPlaying: false, notice: null })
+      if (immediateTool === 'wait') get().createWait(playerId)
+      if (immediateTool === 'shoot') get().createShot(playerId)
+      if (immediateTool === 'eZone') get().createEZone(playerId)
       return
     }
     set((state) => {
-      const frame = projectFrame(state.document, state.currentTime)
+      const actorSequenceTime = state.boardMode === 'simulation'
+        && (state.tool === 'move' || state.tool === 'qMove')
+        ? latestActorSequenceJoint(state.document, playerId)
+        : state.currentTime
+      const currentTime = actorSequenceTime
+      const frame = projectFrame(state.document, currentTime)
       const player = frame.players.find((candidate) => candidate.id === playerId)
       if (!player) return {}
       if (state.tool === 'select') return { selection: { kind: 'player' as const, id: player.id } }
@@ -415,26 +494,21 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
             : '该球员不能执行当前动作。'
         return { notice }
       }
-      return { selection: { kind: 'player' as const, id: player.id }, notice: null }
+      return {
+        currentTime,
+        selection: { kind: 'player' as const, id: player.id },
+        isPlaying: false,
+        notice: null,
+      }
     })
   },
-  chooseActionEndpointForTool: (actionId) => set((state) => {
-    if (state.boardMode !== 'simulation' || (state.tool !== 'move' && state.tool !== 'qMove')) {
-      return { notice: '动作端点只用于续接跑动或 Q 位移。' }
-    }
-    const action = state.document.actions.find((candidate) => candidate.id === actionId)
-    if (!action || (action.type !== 'move' && action.type !== 'qMove')) {
-      return { notice: '请选择跑动或 Q 位移的终点。' }
-    }
-    const currentTime = actionEndTime(action)
-    const frame = projectFrame(state.document, currentTime)
-    const actor = frame.players.find((player) => player.id === action.actorId)
-    if (!actor || !isToolActorEligible(state.tool, actor, frame, state.document.rulesSnapshot)) {
-      return { notice: '该动作终点无法继续执行当前动作。' }
-    }
+  reselectToolActor: () => set((state) => {
+    if (
+      state.boardMode !== 'simulation'
+      || (state.tool !== 'move' && state.tool !== 'qMove')
+    ) return {}
     return {
-      currentTime,
-      selection: { kind: 'player' as const, id: actor.id },
+      selection: null,
       isPlaying: false,
       notice: null,
     }
@@ -470,9 +544,13 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (state.boardMode === 'basic') return { isPlaying: false, notice: '基础模式没有时间轴播放。' }
     const duration = timelineDuration(state.document)
     if (duration <= JOINT_EPSILON) return { isPlaying: false, currentTime: 0, tool: 'select' as const, notice: '当前只有静态初始帧；添加动作后即可播放。' }
+    const playbackStep = isOpeningStep(state.document, state.activeStepId)
+      ? sortedStepMarkers(state.document).find((step) => !isOpeningStep(state.document, step.id))
+      : undefined
     return {
       isPlaying: true,
       currentTime: state.currentTime >= duration ? 0 : state.currentTime,
+      activeStepId: playbackStep?.id ?? state.activeStepId,
       tool: 'select' as const,
       notice: null,
     }
@@ -498,11 +576,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
 
   moveEntity: (id, rawPosition) =>
     set((state) => {
+      const editTime = state.boardMode === 'simulation' && isOpeningStep(state.document, state.activeStepId)
+        ? 0
+        : state.currentTime
       if (state.boardMode === 'simulation' && id !== 'ball') {
         const movingNow = actorSequence(state.document, id).some(
           (action) => action.type !== 'wait'
-            && action.startTime + JOINT_EPSILON < state.currentTime
-            && actionEndTimeSafe(action) - JOINT_EPSILON > state.currentTime,
+            && action.startTime + JOINT_EPSILON < editTime
+            && actionEndTimeSafe(action) - JOINT_EPSILON > editTime,
         )
         if (movingNow) return { notice: '当前球员正在动作途中；请跳到该动作的开始或结束节点后再拖动。' }
       }
@@ -555,10 +636,12 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
 
       if (!draft.initialScene.players.some((player) => player.id === id)) return
-      jointResult = editPlayerJoint(draft, id, state.currentTime, position)
+      jointResult = editPlayerJoint(draft, id, editTime, position)
       })
       const committedJoint = jointResult as JointEditResult | null
-      if (!committedJoint?.ok || !committedJoint.anchorActionId) return patch
+      if (!committedJoint?.ok || !committedJoint.anchorActionId) {
+        return editTime === 0 && state.currentTime !== 0 ? { ...patch, currentTime: 0 } : patch
+      }
       const anchor = patch.document.actions.find((action) => action.id === committedJoint.anchorActionId)
       if (!anchor) return patch
       return {
@@ -699,6 +782,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       ...applyDocument(state, next),
       tool: 'select' as const,
       selection: { kind: 'action' as const, id: action.id },
+      currentTime: actionEndTime(action),
       isPlaying: false,
       notice: '已添加 1 秒等待；可在右侧修改时长。',
     }
@@ -824,15 +908,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       } else if (!isToolActorEligible(state.tool, actor, frame, document.rulesSnapshot)) {
         return { notice: state.tool === 'pass' ? '传球者必须是当前持球者。' : '当前球员不能执行该动作。' }
       } else if (state.tool === 'move') {
-        const plan = state.showAdvancedTimeline
-          ? null
-          : planSimpleLocomotion(
-              document,
-              actor.id,
-              state.currentTime,
-              (scheduledActor) => movementDuration([scheduledActor.position, clampedTarget], document.rulesSnapshot),
-            )
-        const origin = plan?.origin ?? actor.position
+        const plan = planSimpleLocomotion(
+          document,
+          actor.id,
+          state.currentTime,
+          (scheduledActor) => movementDuration([scheduledActor.position, clampedTarget], document.rulesSnapshot),
+        )
+        if (!plan) return { notice: '无法为该球员找到可用的跑动时间。' }
+        const origin = plan.origin
         const path = [{ ...origin }, clampedTarget]
         if (pathLength(path) < 0.05) return { notice: '目标位置与球员当前位置重合。' }
         action = {
@@ -840,20 +923,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           type: 'move',
           actorId: actor.id,
           path,
-          startTime: plan?.startTime ?? state.currentTime,
-          duration: plan?.duration ?? movementDuration(path, document.rulesSnapshot),
+          startTime: plan.startTime,
+          duration: plan.duration,
         }
       } else if (state.tool === 'qMove') {
-        if (state.showAdvancedTimeline) {
-          const cooldownValidation = validateQStart(document, actor.id, state.currentTime)
-          if (!cooldownValidation.valid) return { notice: qCooldownConflictNotice(cooldownValidation) }
-        }
-        const roleRule = document.rulesSnapshot.roles[actor.role]
-        const plan = state.showAdvancedTimeline
-          ? null
-          : planSimpleQ(document, actor.id, state.currentTime)
-        const scheduledActor = plan?.actor ?? actor
-        const origin = plan?.origin ?? actor.position
+        const plan = planSimpleQ(document, actor.id, state.currentTime)
+        if (!plan) return { notice: '无法为该球员找到满足冷却的 Q 时间。' }
+        const scheduledActor = plan.actor
+        const roleRule = document.rulesSnapshot.roles[scheduledActor.role]
+        const origin = plan.origin
         let path = [{ ...origin }, clampedTarget]
         if (pathLength(path) < 0.05) return { notice: 'Q 目标不能与施法者当前位置重合。' }
         if (roleRule.q.turnable && distance(origin, clampedTarget) > 0.4) {
@@ -872,8 +950,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           targetId: targetPlayerId && frame.players.find((player) => player.id === targetPlayerId)?.team !== actor.team
             ? targetPlayerId
             : undefined,
-          startTime: plan?.startTime ?? state.currentTime,
-          duration: plan?.duration ?? qDuration(scheduledActor, document.rulesSnapshot),
+          startTime: plan.startTime,
+          duration: plan.duration,
         }
       } else if (state.tool === 'pass') {
         const targetPlayer = targetPlayerId ? frame.players.find((player) => player.id === targetPlayerId) : undefined
@@ -913,6 +991,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         ...applyDocument(state, next),
         tool: 'select' as const,
         selection: actor ? { kind: 'player' as const, id: actor.id } : null,
+        currentTime: action.type === 'move' || action.type === 'qMove'
+          ? actionEndTime(action)
+          : action.startTime,
         notice: null,
       }
     }),
@@ -1071,17 +1152,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
 
   addStep: () => set((state) => {
     const next = cloneDocument(state.document)
-    const maxStep = Math.max(...next.stepMarkers.map((step) => step.time), 0)
-    const maxAction = Math.max(...next.actions.map(actionEndTimeSafe), 0)
-    const time = Math.max(maxStep, maxAction)
-    const id = uid('step')
-    next.stepMarkers.push({
-      id,
-      time,
-      name: `步骤 ${next.stepMarkers.length + 1}`,
-      note: '',
-      snapshot: sceneFromFrame(next, time),
-    })
+    const time = Math.max(
+      actionContinuationTime(next),
+      isOpeningStep(next, state.activeStepId) ? FIRST_ACTION_STEP_TIME : 0,
+    )
+    const id = appendStepMarker(next, time)
     return {
       ...applyDocument(state, next),
       activeStepId: id,
@@ -1093,10 +1168,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   }),
 
   selectStep: (id) => {
-    const step = get().document.stepMarkers.find((candidate) => candidate.id === id)
+    const document = get().document
+    const step = document.stepMarkers.find((candidate) => candidate.id === id)
     if (!step) return
     set({ activeStepId: id })
-    get().setCurrentTime(step.time)
+    get().setCurrentTime(stepDisplayTime(document, id) ?? step.time)
   },
 
   renameStep: (id, name) => set((state) => mutateDocument(state, (draft) => {
@@ -1272,6 +1348,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   replaceDocument: (document) => set((state) => {
     const next = cloneDocument(document)
     syncPassEndpoints(next)
+    ensureOpeningActionBoundary(next)
     return {
       ...applyDocument(state, next),
       selection: null,

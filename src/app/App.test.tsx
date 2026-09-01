@@ -66,7 +66,7 @@ describe('App shell', () => {
   it('keeps tactical coordinates accurate after enlarging the board', () => {
     render(<App />)
     fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 41, button: 0 })
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
     fireEvent.click(screen.getByRole('button', { name: '放大球场' }))
 
     const board = screen.getByRole('application', { name: '战术编辑球场' })
@@ -94,6 +94,43 @@ describe('App shell', () => {
     expect(useTacticStore.getState().document.initialScene.ball.carrierId).toBe(carrier.id)
   })
 
+  it('assigns the matchup direction from possession instead of the selected player', () => {
+    const document = createDefaultDocument()
+    const selected = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const carrier = document.initialScene.players.find((player) => player.id === 'red-fire')!
+    selected.position = { x: 10, y: 7 }
+    carrier.position = { x: 11, y: 7 }
+    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 18, y: 3 }
+    document.initialScene.players.find((player) => player.id === 'red-ice')!.position = { x: 18, y: 11 }
+    for (const player of document.initialScene.players) player.hasBall = player.id === carrier.id
+    document.initialScene.ball = { carrierId: carrier.id, position: { ...carrier.position }, isFree: false }
+    useTacticStore.setState({ document, selection: { kind: 'player', id: selected.id } })
+
+    render(<App />)
+
+    expect(screen.getByText('火 进攻 → 水 防守')).toBeInTheDocument()
+    expect(screen.getByText('红方持球 · 蓝方 1处于防守方')).toBeInTheDocument()
+  })
+
+  it('shows a grounded loose-ball race instead of an attacking matchup', () => {
+    const document = createDefaultDocument()
+    const selected = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    selected.position = { x: 3.5, y: 4.7 }
+    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 9.8, y: 4.7 }
+    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 18, y: 2 }
+    document.initialScene.players.find((player) => player.id === 'red-ice')!.position = { x: 18, y: 12 }
+    for (const player of document.initialScene.players) player.hasBall = false
+    document.initialScene.ball = { carrierId: null, position: { x: 5.8, y: 4.7 }, isFree: true }
+    useTacticStore.setState({ document, selection: { kind: 'player', id: selected.id } })
+
+    render(<App />)
+
+    expect(screen.getByText('地面自由球争抢')).toBeInTheDocument()
+    expect(screen.getByText('领先 1.5s')).toBeInTheDocument()
+    expect(screen.getByText(/蓝方 2 0s（Q 抢球）/)).toBeInTheDocument()
+    expect(screen.queryByText(/进攻 →/)).not.toBeInTheDocument()
+  })
+
   it('switches to a player-only basic board with persistent static move arrows and no timeline', () => {
     const document = createDefaultDocument()
     document.actions.push({
@@ -108,7 +145,7 @@ describe('App shell', () => {
     expect(useTacticStore.getState().boardMode).toBe('basic')
     expect(screen.getByRole('button', { name: '基础模式' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '移动箭头' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Q 位移' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Q 技能' })).not.toBeInTheDocument()
     expect(container.querySelector('.timeline-panel')).not.toBeInTheDocument()
     expect(container.querySelector('.roster-panel')).not.toBeInTheDocument()
     expect(container.querySelector('.inspector-panel')).not.toBeInTheDocument()
@@ -165,7 +202,7 @@ describe('App shell', () => {
     expect(screen.getByText('等待时长')).toBeInTheDocument()
   })
 
-  it('hides unrelated future arrows while paused and reveals the path at its joint', () => {
+  it('keeps later player locomotion visible from an earlier paused joint', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'future-path', type: 'move', actorId: 'blue-fire', startTime: 5, duration: 2,
@@ -173,15 +210,46 @@ describe('App shell', () => {
     })
     useTacticStore.setState({ document, currentTime: 0 })
     const { container } = render(<App />)
-    expect(container.querySelector('[data-action-id="future-path"]')).not.toBeInTheDocument()
+    expect(container.querySelector('[data-action-id="future-path"] .action-move')).toBeInTheDocument()
 
     act(() => useTacticStore.getState().setCurrentTime(5))
     expect(container.querySelector('[data-action-id="future-path"] .action-move')).toBeInTheDocument()
   })
 
+  it('lets a selected player turn the latest run into an editable curve directly', () => {
+    const document = createDefaultDocument()
+    const actionStep = {
+      id: 'curve-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene),
+    }
+    document.stepMarkers.push(actionStep)
+    document.actions.push({
+      id: 'discoverable-curve', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+    })
+    useTacticStore.setState({
+      document,
+      activeStepId: actionStep.id,
+      currentTime: 2,
+      selection: { kind: 'player', id: 'blue-fire' },
+    })
+    render(<App />)
+
+    expect(screen.getByText('最后一段跑动')).toBeInTheDocument()
+    expect(screen.getByText('0.00–2.00s')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '可调曲线' }))
+
+    const move = useTacticStore.getState().document.actions.find((action) => action.id === 'discoverable-curve')
+    expect(move).toMatchObject({ type: 'move' })
+    if (move?.type !== 'move') throw new Error('Expected move action')
+    expect(move.curveControl).toBeDefined()
+    expect(move.duration).toBeGreaterThan(2)
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'action', id: move.id })
+    expect(screen.getByRole('slider', { name: '调整跑动曲线' })).toBeInTheDocument()
+  })
+
   it('guides a tool-first Q workflow without a virtual arrow and resets after creation', () => {
     const { container } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
     expect(screen.getByRole('status')).toHaveTextContent('1 / 2')
 
     fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { pointerId: 1, button: 0 })
@@ -204,7 +272,7 @@ describe('App shell', () => {
     expect(container.querySelector('.board-workflow-guide')).not.toBeInTheDocument()
   })
 
-  it('lets the actor-selection stage choose an existing move endpoint as its actor node', () => {
+  it('selects the player itself and jumps to that player latest keyframe', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'clickable-run-end',
@@ -217,8 +285,9 @@ describe('App shell', () => {
     useTacticStore.setState({ document, currentTime: 0, selection: null })
     render(<App />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
-    fireEvent.pointerDown(screen.getByRole('button', { name: '从跑动终点续接Q 位移' }), { button: 0, pointerId: 31 })
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
+    expect(screen.queryByRole('button', { name: /从跑动终点续接/ })).not.toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { button: 0, pointerId: 31 })
 
     expect(useTacticStore.getState()).toMatchObject({
       currentTime: 2,
@@ -228,34 +297,104 @@ describe('App shell', () => {
     expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
   })
 
-  it('does not let another action endpoint intercept a chosen water Q landing point', () => {
+  it('returns from 2/2 to actor selection and switches the player track with board selection', () => {
     const document = createDefaultDocument()
     document.actions.push({
-      id: 'other-player-run-end',
+      id: 'fire-latest-frame',
       type: 'move',
       actorId: 'blue-fire',
       startTime: 0,
       duration: 2,
-      path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+      path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
     })
-    useTacticStore.setState({
-      document,
-      currentTime: 0,
-      selection: { kind: 'player', id: 'blue-water' },
-    })
+    useTacticStore.setState({ document, currentTime: 0, selection: null })
     render(<App />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { button: 0, pointerId: 35 })
     expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
-    expect(screen.queryByRole('button', { name: '从跑动终点续接Q 位移' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('蓝方 2动作轨道')).toBeInTheDocument()
+    expect(useTacticStore.getState().currentTime).toBe(2)
+
+    fireEvent.click(screen.getByRole('button', { name: '返回第 1/2 步重新选择球员' }))
+    expect(screen.getByRole('status')).toHaveTextContent('1 / 2')
+    expect(useTacticStore.getState()).toMatchObject({ tool: 'qMove', selection: null, currentTime: 2 })
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { button: 0, pointerId: 36 })
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
+    expect(screen.getByLabelText('蓝方 3动作轨道')).toBeInTheDocument()
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'qMove',
+      selection: { kind: 'player', id: 'blue-ice' },
+      currentTime: 0,
+    })
+  })
+
+  it('continues an ice Q after selecting the player and lands on the Q end joint', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'clickable-ice-run-end',
+      type: 'move',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 2,
+      path: [{ x: 3.5, y: 9.3 }, { x: 5.5, y: 9.3 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0, selection: null })
+    const { container } = render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { button: 0, pointerId: 33 })
+    expect(useTacticStore.getState().currentTime).toBe(2)
 
     const board = screen.getByRole('application', { name: '战术编辑球场' })
     mockBoardRect(board)
-    fireEvent.pointerDown(board, { clientX: 311, clientY: 257, pointerId: 32, button: 0 })
+    fireEvent.pointerDown(board, { clientX: 461, clientY: 487, pointerId: 34, button: 0 })
 
-    const q = useTacticStore.getState().document.actions.at(-1)
-    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-water' })
-    if (q?.type === 'qMove') expect(q.path.at(-1)).toEqual({ x: 5.5, y: 4.7 })
+    const state = useTacticStore.getState()
+    const q = state.document.actions.at(-1)
+    expect(q).toMatchObject({ type: 'qMove', actorId: 'blue-ice', startTime: 2, duration: 1 })
+    expect(state.currentTime).toBe(3)
+    expect(container.querySelector(`[data-action-id="${q?.id}"] .action-qMove`)).toBeInTheDocument()
+  })
+
+  it('lets step two switch to another player before creating locomotion', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'first-player-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+      },
+      {
+        id: 'replacement-player-run', type: 'move', actorId: 'blue-ice', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 9.3 }, { x: 7.5, y: 9.3 }],
+      },
+    )
+    useTacticStore.setState({ document, currentTime: 0, selection: null })
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: '跑动' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { button: 0, pointerId: 31 })
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
+    expect(useTacticStore.getState().currentTime).toBe(2)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { button: 0, pointerId: 32 })
+    expect(useTacticStore.getState()).toMatchObject({
+      currentTime: 4,
+      selection: { kind: 'player', id: 'blue-ice' },
+      tool: 'move',
+    })
+    expect(useTacticStore.getState().document.actions).toHaveLength(2)
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    fireEvent.pointerDown(board, { clientX: 570, clientY: 487, pointerId: 33, button: 0 })
+
+    expect(useTacticStore.getState().document.actions.at(-1)).toMatchObject({
+      type: 'move',
+      actorId: 'blue-ice',
+      startTime: 4,
+    })
   })
 
   it('saves a cooldown-delayed Q from the projected final origin without a virtual arrow', () => {
@@ -266,16 +405,19 @@ describe('App shell', () => {
     )
     useTacticStore.setState({ document, selection: { kind: 'player', id: 'blue-water' } })
     const { container } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
     const board = screen.getByRole('application', { name: '战术编辑球场' })
     mockBoardRect(board)
     fireEvent.pointerMove(board, { clientX: 736, clientY: 272, pointerId: 1 })
 
     expect(container.querySelector('.q-preview-path')).not.toBeInTheDocument()
     fireEvent.pointerDown(board, { clientX: 736, clientY: 272, pointerId: 1, button: 0 })
-    const saved = useTacticStore.getState().document.actions.at(-1)
+    const state = useTacticStore.getState()
+    const saved = state.document.actions.at(-1)
     expect(saved).toMatchObject({ type: 'qMove', startTime: 7 })
     if (saved?.type === 'qMove') expect(saved.path[0]).toEqual({ x: 12, y: 5 })
+    expect(state.currentTime).toBe(7)
+    expect(container.querySelector(`[data-action-id="${saved?.id}"] .action-qMove`)).toBeInTheDocument()
   })
 
   it('auto-selects the ball carrier and highlights only teammate pass targets', () => {
@@ -323,7 +465,9 @@ describe('App shell', () => {
       path: [{ x: 5, y: 5 }, { x: 9, y: 5 }],
     }
     document.actions.push(zone, move)
-    useTacticStore.setState({ document, currentTime: 2 })
+    const projectedStep = { id: 'projected-zone-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
+    document.stepMarkers.push(projectedStep)
+    useTacticStore.setState({ document, activeStepId: projectedStep.id, currentTime: 2 })
     const { container } = render(<App />)
 
     const renderedZone = container.querySelector('.ice-zone.active')
@@ -351,26 +495,29 @@ describe('App shell', () => {
     if (savedQ?.type === 'qMove') expect(savedQ.path.at(-1)).toEqual({ x: 7.3, y: 5 })
   })
 
-  it('supports completing the second workflow step from the keyboard', () => {
+  it('supports switching the locomotion actor and completing a point target from the keyboard', () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
 
     fireEvent.keyDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { key: 'Enter' })
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
     fireEvent.keyDown(screen.getByRole('button', { name: /红方 1，水灵/ }), { key: 'Enter' })
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'red-water' })
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+
+    fireEvent.keyDown(screen.getByRole('button', { name: '足球' }), { key: 'Enter' })
 
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({
       type: 'qMove',
-      actorId: 'blue-fire',
-      targetId: 'red-water',
+      actorId: 'red-water',
     })
     expect(useTacticStore.getState().tool).toBe('select')
-    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'red-water' })
   })
 
   it('lets Escape cancel an unfinished tool while a form field is focused', () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Q 位移' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
     const title = screen.getByRole('textbox', { name: '战术名称' })
     title.focus()
     fireEvent.keyDown(title, { key: 'Escape' })
@@ -645,7 +792,9 @@ describe('App shell', () => {
       id: 'projected-handle-move', type: 'move', actorId: 'blue-water', startTime: 0, duration: 2,
       path: [{ x: 5.5, y: 7 }, { x: 7.5, y: 7 }],
     })
-    useTacticStore.setState({ document, currentTime: 1, selection: { kind: 'player', id: 'blue-water' } })
+    const projectedStep = { id: 'projected-facing-step', time: 0, name: '步骤 2', note: '', snapshot: structuredClone(document.initialScene) }
+    document.stepMarkers.push(projectedStep)
+    useTacticStore.setState({ document, activeStepId: projectedStep.id, currentTime: 1, selection: { kind: 'player', id: 'blue-water' } })
     render(<App />)
     const handle = screen.getByRole('slider', { name: '调整蓝方 1面向' })
 
@@ -737,13 +886,16 @@ describe('App shell', () => {
 
   it('clears the active frame in one click and refreshes count, narrative, warnings, undo and redo', () => {
     const document = createDefaultDocument()
-    const firstStep = document.stepMarkers[0]!
+    const currentStep = {
+      id: 'current-step', time: 1, name: '当前推进', note: '此步骤应清空', snapshot: structuredClone(document.initialScene),
+    }
+    document.stepMarkers.push(currentStep)
     document.stepMarkers.push({
       id: 'later-step', time: 5, name: '后续推进', note: '此步骤应保留', snapshot: structuredClone(document.initialScene),
     })
     document.actions.push(
       {
-        id: 'frame-pass', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1.2,
+        id: 'frame-pass', type: 'pass', actorId: 'blue-water', startTime: 1, duration: 1.2,
         path: [{ x: 5.5, y: 5 }, { x: 15, y: 5 }],
       },
       {
@@ -751,20 +903,20 @@ describe('App shell', () => {
         path: [{ x: 3.5, y: 2.7 }, { x: 4.5, y: 2.7 }],
       },
     )
-    useTacticStore.setState({ document, activeStepId: firstStep.id, currentTime: 0 })
+    useTacticStore.setState({ document, activeStepId: currentStep.id, currentTime: 1 })
     render(<App />)
 
     let clearButton = screen.getByRole('button', { name: '清空当前帧，共 1 个动作' })
     expect(clearButton).toBeEnabled()
     expect(clearButton).toHaveClass('clear-frame-button')
     expect(screen.getAllByRole('button', { name: /清空当前帧/ })).toHaveLength(1)
-    expect(screen.getByText(/0.00s ≤ 动作开始 < 5.00s/)).toHaveTextContent('步骤本身保留，可撤销')
-    expect(screen.getAllByRole('button', { name: /跳到/ })).toHaveLength(2)
+    expect(screen.getByText(/1.00s ≤ 动作开始 < 5.00s/)).toHaveTextContent('步骤本身保留，可撤销')
+    expect(screen.getAllByRole('button', { name: /跳到/ })).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: '跳到 后续推进' }))
     expect(screen.getByText(/动作开始 ≥ 5.00s/)).toHaveTextContent('仅删除在此范围内开始的动作')
     expect(screen.getByRole('button', { name: '清空当前帧，共 1 个动作' })).toBeEnabled()
-    fireEvent.click(screen.getByRole('button', { name: '跳到 初始站位' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳到 当前推进' }))
 
     fireEvent.click(screen.getByRole('button', { name: '逻辑说明' }))
     expect(screen.getByRole('dialog', { name: '逻辑说明' })).toHaveTextContent('传球 · 蓝方 1')
@@ -778,7 +930,7 @@ describe('App shell', () => {
     expect(screen.getByRole('dialog', { name: '逻辑说明' })).not.toHaveTextContent('传球 · 蓝方 1')
     expect(screen.getByRole('dialog', { name: '逻辑说明' })).not.toHaveTextContent('传球超出有效距离')
     expect(screen.getByRole('dialog', { name: '逻辑说明' })).toHaveTextContent('跑动 · 蓝方 2')
-    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(2)
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: '撤销' }))
     expect(useTacticStore.getState().document.actions.map((action) => action.id)).toEqual(['frame-pass', 'later-move'])

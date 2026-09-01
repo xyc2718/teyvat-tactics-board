@@ -52,7 +52,7 @@ export function isToolTargetPlayerEligible(
   if (target.id === actor.id) return false
   if (tool === 'pass') return target.team === actor.team
   if (tool === 'attack') return true
-  return tool === 'qMove'
+  return false
 }
 
 export function actorPrompt(tool: ToolId): string {
@@ -61,16 +61,17 @@ export function actorPrompt(tool: ToolId): string {
   if (tool === 'attack') return '选择任意球员查看其攻击内外范围'
   if (tool === 'shoot') return '选择射门球员；点击后自动瞄准对方球门中心'
   if (tool === 'wait') return '选择一名球员，为其动作链添加等待'
-  if (tool === 'move' || tool === 'qMove') return '第 1/2 步：选择球员，或点击已有跑动/Q 的终点续接'
+  if (tool === 'move' || tool === 'qMove') return '第 1/2 步：选择球员；画面会自动跳到该球员的最新关键帧'
   return '第 1/2 步：选择一名球员作为动作发起者'
 }
 
 export function targetPrompt(tool: ToolId): string {
-  if (tool === 'qMove') return '第 2/2 步：参考距离圈，点击目标或落点'
+  if (tool === 'qMove') return '第 2/2 步：参考距离圈点击落点；可直接改选球员或返回第 1 步'
   if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈，点击队友或空地'
   if (tool === 'eZone') return '冰圈始终以霜役为圆心并随其移动'
   if (tool === 'attack') return '点击其他球员可连续切换攻击范围查看对象'
   if (tool === 'shoot') return '选择射门球员；无需指定落点'
   if (tool === 'wait') return '选择球员后立即添加 1 秒等待，并可在右侧修改时长'
+  if (tool === 'move') return '第 2/2 步：点击球场目标位置；可直接改选球员或返回第 1 步'
   return '点击球场上的目标位置'
 }

@@ -13,6 +13,7 @@ import {
 } from '../domain/rules/shotPressure'
 import { waterQMoveBoost } from '../domain/timeline/movementEffects'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from '../domain/timeline/projectFrame'
+import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
   actorPrompt,
@@ -43,8 +44,20 @@ function actionPath(action: TacticAction): Vec2[] | null {
 }
 
 function openingFrame(document: TacticDocumentV1): ProjectedFrame {
+  const carrier = document.initialScene.ball.carrierId
+    ? document.initialScene.players.find((player) => player.id === document.initialScene.ball.carrierId)
+    : undefined
   return {
     ...document.initialScene,
+    players: document.initialScene.players.map((player) => ({
+      ...player,
+      position: { ...player.position },
+      hasBall: player.id === document.initialScene.ball.carrierId,
+    })),
+    ball: {
+      ...document.initialScene.ball,
+      position: carrier ? { ...carrier.position } : { ...document.initialScene.ball.position },
+    },
     statuses: [],
     time: 0,
     cooldowns: Object.fromEntries(document.initialScene.players.map((player) => [player.id, { q: 0, e: 0 }])),
@@ -67,13 +80,14 @@ export function TacticsBoard() {
   const [boardZoom, setBoardZoom] = useState(1)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const activeStepId = useTacticStore((state) => state.activeStepId)
   const isPlaying = useTacticStore((state) => state.isPlaying)
   const selection = useTacticStore((state) => state.selection)
   const tool = useTacticStore((state) => state.tool)
   const boardMode = useTacticStore((state) => state.boardMode)
   const select = useTacticStore((state) => state.select)
   const chooseActor = useTacticStore((state) => state.chooseActorForTool)
-  const chooseActionEndpoint = useTacticStore((state) => state.chooseActionEndpointForTool)
+  const reselectToolActor = useTacticStore((state) => state.reselectToolActor)
   const setNotice = useTacticStore((state) => state.setNotice)
   const moveEntity = useTacticStore((state) => state.moveEntity)
   const setPlayerFacing = useTacticStore((state) => state.setPlayerFacing)
@@ -84,8 +98,10 @@ export function TacticsBoard() {
   const updateStaticMoveArrowTarget = useTacticStore((state) => state.updateStaticMoveArrowTarget)
   const deleteStaticMoveArrow = useTacticStore((state) => state.deleteStaticMoveArrow)
   const frame = useMemo(
-    () => boardMode === 'basic' ? openingFrame(document) : projectFrame(document, currentTime),
-    [boardMode, document, currentTime],
+    () => boardMode === 'basic' || (isOpeningStep(document, activeStepId) && !isPlaying)
+      ? openingFrame(document)
+      : projectFrame(document, currentTime),
+    [activeStepId, boardMode, currentTime, document, isPlaying],
   )
   const rules = document.rulesSnapshot
   const fieldWidth = rules.field.width * SCALE
@@ -158,6 +174,10 @@ export function TacticsBoard() {
       if (tool === 'attack') {
         if (id === 'ball') setNotice('攻击范围模式请点击一名球员。')
         else chooseActor(id)
+        return
+      }
+      if ((tool === 'move' || tool === 'qMove') && id !== 'ball') {
+        chooseActor(id)
         return
       }
       if (toolNeedsActor(tool) && !toolActor) {
@@ -280,10 +300,11 @@ export function TacticsBoard() {
       ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
       : null
     const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? resolvedMovePath(moveAction) : path
-    const renderedEnd = renderedPath.at(-1)
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
-    if (!elevated && !(isPlaying ? isCurrent : atJoint)) return null
+    const remainingLocomotion = (action.type === 'move' || action.type === 'qMove')
+      && action.startTime + action.duration >= currentTime - 1e-5
+    if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingLocomotion)) return null
     const waterBoost = action.type === 'move' ? waterQMoveBoost(document, action) : null
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
@@ -313,35 +334,6 @@ export function TacticsBoard() {
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel action={action} evaluation={shotPressure} />}
-        {!isPlaying
-          && (tool === 'move' || tool === 'qMove')
-          && !toolActor
-          && (action.type === 'move' || action.type === 'qMove')
-          && renderedEnd
-          && <circle
-            cx={renderedEnd.x * SCALE}
-            cy={renderedEnd.y * SCALE}
-            r="12"
-            className="action-chain-endpoint"
-            pointerEvents="all"
-            role="button"
-            tabIndex={0}
-            aria-label={`从${action.type === 'qMove' ? 'Q 位移' : '跑动'}终点续接${tool === 'qMove' ? 'Q 位移' : '跑动'}`}
-            data-action-endpoint={action.id}
-            onPointerDown={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              chooseActionEndpoint(action.id)
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return
-              event.preventDefault()
-              event.stopPropagation()
-              chooseActionEndpoint(action.id)
-            }}
-          >
-            <title>从这里续接{tool === 'qMove' ? 'Q 位移' : '跑动'}</title>
-          </circle>}
         {elevated && action.type !== 'shoot' && path.map((point, index) => (
           <circle
             key={`${action.id}-handle-${index}`}
@@ -567,8 +559,10 @@ export function TacticsBoard() {
           const facing = angleToVector(renderedFacing)
           const selected = selection?.kind === 'player' && selection.id === player.id
           const actorCandidate = tool === 'attack'
-            || (tool !== 'select' && !toolActor && isToolActorEligible(tool, player, frame, rules))
-          const targetCandidate = tool !== 'select' && tool !== 'attack' && toolActor
+            || (tool !== 'select'
+              && (!toolActor || tool === 'move' || tool === 'qMove')
+              && isToolActorEligible(tool, player, frame, rules))
+          const targetCandidate = tool !== 'select' && tool !== 'attack' && tool !== 'move' && tool !== 'qMove' && toolActor
             ? isToolTargetPlayerEligible(tool, toolActor, player)
             : false
           const workflowDimmed = tool !== 'select' && tool !== 'attack' && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
@@ -595,6 +589,8 @@ export function TacticsBoard() {
                   chooseActor(player.id)
                 } else if (tool === 'shoot') {
                   createShot(player.id)
+                } else if (tool === 'move' || tool === 'qMove') {
+                  chooseActor(player.id)
                 } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {
                   chooseActor(player.id)
                 } else if (tool !== 'select') {
@@ -726,7 +722,15 @@ export function TacticsBoard() {
       {tool !== 'select' && <div className="board-workflow-guide" role="status">
         <span className="guide-step">{tool === 'attack' ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
         <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : tool === 'attack' ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
-        <kbd>Esc 取消</kbd>
+        <span className="guide-actions">
+          {boardMode === 'simulation' && toolActor && (tool === 'move' || tool === 'qMove') && <button
+            type="button"
+            className="guide-back-button"
+            onClick={reselectToolActor}
+            aria-label="返回第 1/2 步重新选择球员"
+          >← 重选球员</button>}
+          <kbd>Esc 取消</kbd>
+        </span>
       </div>}
       {boardMode === 'simulation' && (tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass')) && <PassThreatLegend />}
       {boardMode === 'basic' && selectedStaticArrow && <button className="static-arrow-delete" onClick={() => deleteStaticMoveArrow(selectedStaticArrow.id)}>删除所选箭头</button>}

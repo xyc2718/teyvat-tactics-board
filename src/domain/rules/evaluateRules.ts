@@ -1,6 +1,7 @@
 import {
   clampPoint,
   distance,
+  goalCenter,
   getShootZone,
   oppositeFacingOffset,
   pathLength,
@@ -55,6 +56,9 @@ export function evaluateMatchup(
     rules.field.largePenaltyRadius,
   )
   const gap = distance(attacker.position, defender.position)
+  const attackingGoal = goalCenter(attacker.team, rules.field.width, rules.field.height)
+  const attackerGoalDistance = distance(attacker.position, attackingGoal)
+  const defenderGoalDistance = distance(defender.position, attackingGoal)
   const attackerControlled = frame.statuses.some(
     (status) => status.playerId === attacker.id && (status.kind === 'frozen' || status.kind === 'slowed'),
   )
@@ -71,7 +75,7 @@ export function evaluateMatchup(
     defenderQUnavailable: (frame.cooldowns[defender.id]?.q ?? 0) > 0,
     attackerControlled,
     defenderControlled,
-    separationAdvantage: gap > rules.roles[defender.role].attackRadius + 0.5,
+    separationAdvantage: attackerGoalDistance < defenderGoalDistance,
     longPass: passDistance > rules.passing.safeDistance,
     badFacing:
       attacker.role === 'ice' &&
@@ -97,6 +101,7 @@ export function evaluateMatchup(
 
   const facts = [
     `双方距离 ${gap.toFixed(2)} 格`,
+    `距防守方球门：进攻方 ${attackerGoalDistance.toFixed(2)} 格，防守方 ${defenderGoalDistance.toFixed(2)} 格`,
     `进攻方 Q ${conditions.attackerQUnavailable ? '冷却中' : '可用'}`,
     `防守方 Q ${conditions.defenderQUnavailable ? '冷却中' : '可用'}`,
   ]

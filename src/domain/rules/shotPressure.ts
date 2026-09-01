@@ -1,32 +1,20 @@
 import { distance } from '../geometry/geometry'
 import type { PlayerState, ProjectedFrame, RuleSetV1, ShootAction, TacticDocumentV1 } from '../model/types'
 import { projectFrame } from '../timeline/projectFrame'
+import { evaluateReachTiming, type ReachMode, type ReachTiming } from './reachTime'
 
 const EPSILON = 1e-6
 
-export type ShotPressureMode = 'direct' | 'q'
+export type ShotPressureMode = ReachMode
 export type AttackRangeRelation = 'tooClose' | 'inside' | 'outside'
 
-export interface DefenderShotPressure {
+export interface DefenderShotPressure extends ReachTiming {
   defender: PlayerState
-  mode: ShotPressureMode
   rangeRelation: AttackRangeRelation
   gap: number
   attackInnerRadius: number
   attackOuterRadius: number
   radialEntryDistance: number
-  frozenDelay: number
-  qCooldownAtStart: number
-  qCooldownAfterFreeze: number
-  cooldownWalkTime: number
-  walkDuringCooldown: number
-  qMaxDistance: number
-  qDuration: number
-  qDistanceUsed: number
-  residualWalkDistance: number
-  directTime: number
-  qTime: number
-  earliestTime: number
 }
 
 export interface ShotPressureEvaluation {
@@ -66,46 +54,21 @@ export function evaluateShotPressure(
 ): ShotPressureEvaluation | null {
   const shooter = frame.players.find((player) => player.id === shooterId)
   if (!shooter) return null
-  const speed = Math.max(EPSILON, rules.field.baseMoveSpeed)
   const defenders = frame.players
     .filter((player) => player.team !== shooter.team)
     .map((defender): DefenderShotPressure => {
       const role = rules.roles[defender.role]
       const gap = distance(defender.position, shooter.position)
       const annulus = radialDistanceToAttackAnnulus(gap, role.attackInnerRadius ?? 0, role.attackRadius)
-      const frozenDelay = frame.statuses
-        .filter((status) => status.playerId === defender.id && status.kind === 'frozen')
-        .reduce((latest, status) => Math.max(latest, status.endsAt - frame.time), 0)
-      const qCooldownAtStart = Math.max(0, frame.cooldowns[defender.id]?.q ?? 0)
-      const qCooldownAfterFreeze = Math.max(0, qCooldownAtStart - frozenDelay)
-      const cooldownWalkTime = qCooldownAfterFreeze
-      const walkDuringCooldown = Math.min(annulus.distance, cooldownWalkTime * speed)
-      const remainingBeforeQ = Math.max(0, annulus.distance - walkDuringCooldown)
-      const qDistanceUsed = Math.min(remainingBeforeQ, role.q.maxDistance)
-      const residualWalkDistance = Math.max(0, remainingBeforeQ - qDistanceUsed)
-      const directTime = frozenDelay + annulus.distance / speed
-      const qTime = frozenDelay + cooldownWalkTime + role.q.duration + residualWalkDistance / speed
-      const mode: ShotPressureMode = directTime <= qTime + EPSILON ? 'direct' : 'q'
+      const timing = evaluateReachTiming(frame, defender, annulus.distance, rules)
       return {
+        ...timing,
         defender,
-        mode,
         rangeRelation: annulus.relation,
         gap,
         attackInnerRadius: annulus.innerRadius,
         attackOuterRadius: annulus.outerRadius,
         radialEntryDistance: annulus.distance,
-        frozenDelay,
-        qCooldownAtStart,
-        qCooldownAfterFreeze,
-        cooldownWalkTime,
-        walkDuringCooldown,
-        qMaxDistance: role.q.maxDistance,
-        qDuration: role.q.duration,
-        qDistanceUsed,
-        residualWalkDistance,
-        directTime,
-        qTime,
-        earliestTime: mode === 'direct' ? directTime : qTime,
       }
     })
     .sort((left, right) => left.earliestTime - right.earliestTime || left.defender.id.localeCompare(right.defender.id))

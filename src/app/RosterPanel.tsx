@@ -34,6 +34,10 @@ export function RosterPanel() {
       createShot(player.id)
       return
     }
+    if (tool === 'move' || tool === 'qMove') {
+      chooseActor(player.id)
+      return
+    }
     if (toolNeedsActor(tool) && !actor) {
       chooseActor(player.id)
       return
@@ -55,8 +59,10 @@ export function RosterPanel() {
             const selected = selection?.kind === 'player' && selection.id === player.id
             const statuses = frame.statuses.filter((status) => status.playerId === player.id)
             const actorCandidate = tool === 'attack'
-              || (tool !== 'select' && !actor && isToolActorEligible(tool, player, frame, document.rulesSnapshot))
-            const targetCandidate = tool !== 'select' && tool !== 'attack' && actor
+              || (tool !== 'select'
+                && (!actor || tool === 'move' || tool === 'qMove')
+                && isToolActorEligible(tool, player, frame, document.rulesSnapshot))
+            const targetCandidate = tool !== 'select' && tool !== 'attack' && tool !== 'move' && tool !== 'qMove' && actor
               ? isToolTargetPlayerEligible(tool, actor, player)
               : false
             const workflowDimmed = tool !== 'select' && tool !== 'attack' && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || tool === 'pass' || tool === 'qMove')
