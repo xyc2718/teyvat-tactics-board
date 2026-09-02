@@ -60,7 +60,7 @@ describe('pass reception solver', () => {
     const solved = solvePassReception(document, pass)
 
     expect(solved.received).toBe(false)
-    expect(solved.path[0]).toEqual({ x: 5.5, y: 7 })
+    expect(solved.path[0]).toEqual({ x: 5.5, y: 4.7 })
     expect(solved.path.at(-1)).toEqual({ x: 9, y: 6 })
   })
 

@@ -59,6 +59,8 @@ describe('tactic narrative', () => {
     const defender = document.initialScene.players.find((player) => player.id === 'red-water')!
     shooter.position = { x: 17, y: 7 }
     defender.position = { x: 18.5, y: 7 }
+    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 10, y: 0 }
+    document.initialScene.players.find((player) => player.id === 'red-ice')!.position = { x: 10, y: 14 }
     const shot: ShootAction = {
       id: 'pressure-narrative', type: 'shoot', actorId: shooter.id, charge: 'yellow', startTime: 0, duration: 0.4,
       path: [{ ...shooter.position }, { x: 20, y: 7 }],

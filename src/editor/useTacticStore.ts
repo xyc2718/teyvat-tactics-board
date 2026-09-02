@@ -102,6 +102,7 @@ interface TacticStore extends HistoryState {
   setModifier: (id: string, field: 'enabled' | 'delta', value: boolean | number) => void
   resetRules: () => void
   replaceDocument: (document: TacticDocumentV1) => void
+  openDocument: (document: TacticDocumentV1, notice?: string) => void
   newDocument: () => void
   undo: () => void
   redo: () => void
@@ -1529,6 +1530,26 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       currentTime: 0,
       isPlaying: false,
       notice: '战术文件已导入。',
+    }
+  }),
+
+  openDocument: (document, notice = '已打开战术。') => set(() => {
+    const next = cloneDocument(document)
+    syncPassEndpoints(next)
+    ensureOpeningActionBoundary(next)
+    normalizeLegacyDefaultStepNames(next)
+    saveDraft(next)
+    return {
+      document: next,
+      past: [],
+      future: [],
+      selection: null,
+      tool: 'select' as const,
+      boardMode: 'simulation' as const,
+      activeStepId: next.stepMarkers[0]?.id ?? '',
+      currentTime: 0,
+      isPlaying: false,
+      notice,
     }
   }),
 

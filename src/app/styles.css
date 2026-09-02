@@ -76,6 +76,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .icon-button:disabled { opacity: .32; cursor: default; }
 .quiet-button, .accent-button { height: 34px; padding: 0 12px; font-size: 12px; white-space: nowrap; }
 .quiet-button:hover, .icon-button:hover:not(:disabled) { background: #183129; border-color: var(--line-strong); }
+.quiet-button:disabled, .accent-button:disabled { opacity:.38; cursor:default; filter:none; transform:none; }
 .quiet-button.active { color: var(--gold-light); border-color: rgba(223, 189, 114, .5); background: rgba(223, 189, 114, .12); }
 .quiet-button.compact { padding: 0 10px; }
 .accent-button { color: #192017; font-weight: 700; border-color: #e9ce8a; background: linear-gradient(135deg, #f0d590, #cba75f); box-shadow: 0 5px 16px rgba(223, 189, 114, .12); }
@@ -345,6 +346,34 @@ details summary { cursor: pointer; color: #abc0b8; font-size: 10px; } details ul
 .logic-drawer { width:min(540px, 60vw); height:100%; display:grid; grid-template-rows:auto 1fr; background:#0b1b17; border-left:1px solid var(--line-strong); box-shadow:-25px 0 60px rgba(0,0,0,.4); }
 .logic-drawer-body { overflow:auto; padding:0 28px 32px; }
 .logic-drawer-body h3 { margin:12px 0; font-size:12px; color:var(--gold-light); }
+
+.library-drawer { width:min(650px, 76vw); height:100%; display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; background:#0b1b17; border-left:1px solid var(--line-strong); box-shadow:-25px 0 60px rgba(0,0,0,.4); }
+.library-head { border-bottom:1px solid var(--line); }
+.library-actions { display:flex; gap:8px; padding:14px 28px; border-bottom:1px solid var(--line); background:#091713; }
+.library-actions button:disabled, .library-card-actions button:disabled, .snapshot-row button:disabled { opacity:.38; cursor:default; }
+.library-body { min-height:0; overflow:auto; padding:18px 28px 28px; scrollbar-width:thin; scrollbar-color:#2b4b40 transparent; }
+.library-empty { padding:40px 18px; text-align:center; color:var(--muted); font-size:11px; }
+.library-list { display:grid; gap:10px; }
+.library-card { overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#091713; }
+.library-card.active { border-color:rgba(223,189,114,.52); box-shadow:inset 3px 0 0 var(--gold); }
+.library-card-main { width:100%; padding:14px 16px 10px; border:0; color:var(--text); background:transparent; text-align:left; cursor:pointer; }
+.library-card-main > span:last-child { display:block; margin-top:5px; color:var(--muted); font-size:9px; }
+.library-title-row { display:flex; align-items:center; gap:9px; }
+.library-title-row strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.library-title-row em { flex:0 0 auto; padding:2px 6px; border-radius:12px; color:var(--gold-light); background:rgba(223,189,114,.12); font-size:8px; font-style:normal; }
+.library-card-actions { display:flex; gap:6px; padding:0 16px 12px; }
+.library-card-actions button, .snapshot-row button { height:27px; padding:0 10px; border:1px solid var(--line); border-radius:6px; color:#b9cec6; background:#10211d; font-size:9px; cursor:pointer; }
+.library-card-actions button:hover:not(:disabled), .snapshot-row button:hover:not(:disabled) { border-color:var(--line-strong); background:#183129; }
+.library-card-actions .danger { margin-left:auto; color:#ff9a94; }
+.snapshot-list { padding:13px 16px 15px; border-top:1px solid var(--line); background:#071410; }
+.snapshot-list h3 { margin:0 0 9px; color:var(--gold-light); font-size:10px; }
+.snapshot-list > p { margin:0; color:var(--muted); font-size:9px; }
+.snapshot-row { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:5px 0; border-top:1px solid rgba(191,224,207,.08); }
+.snapshot-row:first-of-type { border-top:0; }
+.snapshot-row span { display:flex; flex-direction:column; gap:2px; }
+.snapshot-row strong { font-size:9px; font-weight:600; }
+.snapshot-row small { color:var(--muted); font-size:8px; }
+.library-footer { padding:13px 28px; border-top:1px solid var(--line); color:var(--muted); background:#091713; font-size:9px; text-align:center; }
 .logic-timeline { list-style:none; margin:0; padding:0; display:grid; gap:7px; }
 .logic-entry { display:grid; grid-template-columns:54px 1fr; gap:10px; padding:10px; border:1px solid var(--line); border-radius:7px; background:rgba(255,255,255,.018); }
 .logic-entry.kind-step { border-color:rgba(223,189,114,.35); background:rgba(223,189,114,.06); }

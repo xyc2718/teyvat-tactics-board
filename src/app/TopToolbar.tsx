@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { ToolId } from '../domain/model/types'
+import type { TacticDocumentV1, ToolId } from '../domain/model/types'
 import { useTacticStore } from '../editor/useTacticStore'
 import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
@@ -8,7 +8,15 @@ const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 's
 const basicTools: ToolId[] = ['select', 'move', 'attack', 'strikeRange']
 const advancedTools: ToolId[] = ['attack', 'strikeRange', 'eZone']
 
-export function TopToolbar() {
+interface TopToolbarProps {
+  libraryReady: boolean
+  libraryBusy: boolean
+  onOpenLibrary: () => void
+  onCreateDocument: () => Promise<void>
+  onImportDocument: (document: TacticDocumentV1) => Promise<void>
+}
+
+export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateDocument, onImportDocument }: TopToolbarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const document = useTacticStore((state) => state.document)
   const boardMode = useTacticStore((state) => state.boardMode)
@@ -23,9 +31,7 @@ export function TopToolbar() {
   const setLogicOpen = useTacticStore((state) => state.setLogicOpen)
   const showRules = useTacticStore((state) => state.showRules)
   const showLogic = useTacticStore((state) => state.showLogic)
-  const replaceDocument = useTacticStore((state) => state.replaceDocument)
   const setNotice = useTacticStore((state) => state.setNotice)
-  const newDocument = useTacticStore((state) => state.newDocument)
   const undo = useTacticStore((state) => state.undo)
   const redo = useTacticStore((state) => state.redo)
   const canUndo = useTacticStore((state) => state.past.length > 0)
@@ -39,7 +45,7 @@ export function TopToolbar() {
       return
     }
     const result = parseTactic(await file.text())
-    if (result.ok) replaceDocument(result.document)
+    if (result.ok) await onImportDocument(result.document)
     else setNotice(`导入失败：${result.error}`)
   }
 
@@ -92,10 +98,11 @@ export function TopToolbar() {
           <button className="quiet-button" onClick={() => setRulesOpen(true)} aria-haspopup="dialog" aria-expanded={showRules}>规则设置</button>
         </>}
         <div className="file-menu">
-          <button className="quiet-button" onClick={() => inputRef.current?.click()}>导入</button>
+          <button className="quiet-button" onClick={onOpenLibrary} aria-haspopup="dialog">我的战术</button>
+          <button className="quiet-button" disabled={!libraryReady || libraryBusy} onClick={() => inputRef.current?.click()}>导入</button>
           <input ref={inputRef} type="file" accept=".json,.teyvat-tactic.json,application/json" hidden onChange={(event) => { void importFile(event.target.files?.[0]); event.currentTarget.value = '' }} />
           <button className="accent-button" onClick={() => downloadTactic(document)}>导出战术</button>
-          <button className="icon-button" onClick={newDocument} aria-label="新建战术" title="新建战术">＋</button>
+          <button className="icon-button" disabled={!libraryReady || libraryBusy} onClick={() => void onCreateDocument()} aria-label="新建战术" title="新建战术">＋</button>
         </div>
       </div>
     </header>

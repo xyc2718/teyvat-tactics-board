@@ -9,8 +9,11 @@ import { LogicDrawer } from '../inspector/LogicDrawer'
 import { TimelinePanel } from '../timeline/TimelinePanel'
 import { RosterPanel } from './RosterPanel'
 import { TopToolbar } from './TopToolbar'
+import { TacticLibraryDrawer } from './TacticLibraryDrawer'
+import { useTacticLibraryController } from './useTacticLibraryController'
 
 export function App() {
+  const library = useTacticLibraryController()
   const document = useTacticStore((state) => state.document)
   const boardMode = useTacticStore((state) => state.boardMode)
   const isPlaying = useTacticStore((state) => state.isPlaying)
@@ -88,7 +91,13 @@ export function App() {
 
   return (
     <div className={`app-shell ${boardMode === 'basic' ? 'basic-mode' : ''}`}>
-      <TopToolbar />
+      <TopToolbar
+        libraryReady={library.ready}
+        libraryBusy={library.busy}
+        onOpenLibrary={() => library.setOpen(true)}
+        onCreateDocument={library.createNew}
+        onImportDocument={library.importDocument}
+      />
       <div className="document-bar">
         <label><span className="status-dot" />本地草稿已自动保存</label>
         <input className="tactic-title-input" maxLength={120} value={document.meta.title} onChange={(event) => updateMeta('title', event.target.value)} aria-label="战术名称" />
@@ -107,6 +116,7 @@ export function App() {
       {boardMode === 'simulation' && <TimelinePanel />}
       <RulesDrawer />
       <LogicDrawer />
+      <TacticLibraryDrawer controller={library} />
       <div className="version-badge" aria-label={`Version ${packageJson.version}, Developer ${packageJson.author}`}>
         v{packageJson.version} · Developer: {packageJson.author}
       </div>

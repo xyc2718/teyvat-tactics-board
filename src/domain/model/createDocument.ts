@@ -15,18 +15,18 @@ function player(
 
 export function createInitialScene(): SceneState {
   const players = [
-    player('blue-water', '蓝方 1', 'blue', 'water', 5.5, 7, 0),
-    player('blue-fire', '蓝方 2', 'blue', 'fire', 3.5, 4.7, 0),
-    player('blue-ice', '蓝方 3', 'blue', 'ice', 3.5, 9.3, 0),
-    player('red-water', '红方 1', 'red', 'water', 14.5, 7, 180),
-    player('red-fire', '红方 2', 'red', 'fire', 16.5, 4.7, 180),
-    player('red-ice', '红方 3', 'red', 'ice', 16.5, 9.3, 180),
+    player('blue-water', '蓝方 1', 'blue', 'water', 5.5, 4.7, 0),
+    player('blue-fire', '蓝方 2', 'blue', 'fire', 3.5, 7, 0),
+    player('blue-ice', '蓝方 3', 'blue', 'ice', 5.5, 9.3, 0),
+    player('red-water', '红方 1', 'red', 'water', 14.5, 4.7, 180),
+    player('red-fire', '红方 2', 'red', 'fire', 16.5, 7, 180),
+    player('red-ice', '红方 3', 'red', 'ice', 14.5, 9.3, 180),
   ]
   const carrier = players[0]
   if (carrier) carrier.hasBall = true
   return {
     players,
-    ball: { position: { x: 5.85, y: 7 }, carrierId: carrier?.id ?? null, isFree: false },
+    ball: { position: { x: 5.85, y: 4.7 }, carrierId: carrier?.id ?? null, isFree: false },
     statuses: [],
   }
 }

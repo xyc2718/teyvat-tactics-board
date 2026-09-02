@@ -228,7 +228,7 @@ describe('tactic store timeline edits', () => {
   it('starts each player from that player own sequence instead of another player global endpoint', () => {
     useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
     useTacticStore.getState().setTool('move')
-    useTacticStore.getState().createAction('blue-water', { x: 9.5, y: 7 })
+    useTacticStore.getState().createAction('blue-water', { x: 9.5, y: 4.7 })
     expect(useTacticStore.getState().currentTime).toBe(4)
 
     useTacticStore.getState().select({ kind: 'player', id: 'blue-fire' })
@@ -241,7 +241,7 @@ describe('tactic store timeline edits', () => {
     state.select({ kind: 'player', id: 'blue-fire' })
     state.setTool('move')
     expect(useTacticStore.getState().currentTime).toBe(1)
-    useTacticStore.getState().createAction('blue-fire', { x: 5.5, y: 4.7 })
+    useTacticStore.getState().createAction('blue-fire', { x: 5.5, y: 7 })
 
     state = useTacticStore.getState()
     const fireMove = state.document.actions.find((action) => action.type === 'move' && action.actorId === 'blue-fire')
@@ -262,6 +262,20 @@ describe('tactic store timeline edits', () => {
     const released = useTacticStore.getState().document
     expect(released.initialScene.ball.carrierId).toBe('blue-water')
     expect(projectFrame(released, 3).ball.isFree).toBe(true)
+  })
+
+  it('opens a library tactic without carrying undo history across documents', () => {
+    useTacticStore.getState().moveEntity('blue-water', { x: 7, y: 5 })
+    expect(useTacticStore.getState().past).toHaveLength(1)
+    const opened = createDefaultDocument()
+    opened.meta.title = '历史战术'
+
+    useTacticStore.getState().openDocument(opened)
+
+    expect(useTacticStore.getState().document.meta.title).toBe('历史战术')
+    expect(useTacticStore.getState().past).toEqual([])
+    expect(useTacticStore.getState().future).toEqual([])
+    expect(useTacticStore.getState().currentTime).toBe(0)
   })
 
   it('keeps the carried ball attached when a stale player flag disagrees with the carrier id', () => {
@@ -318,7 +332,7 @@ describe('tactic store timeline edits', () => {
     let pass = useTacticStore.getState().document.actions[0]
     expect(pass).toMatchObject({ type: 'pass' })
     if (pass?.type !== 'pass') throw new Error('Expected pass action')
-    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 3.5, y: 4.7 }])
+    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 3.5, y: 7 }])
     expect(pass.duration).toBeCloseTo(passDuration(pass.path, document.rulesSnapshot))
 
     useTacticStore.getState().moveEntity('blue-fire', { x: 8, y: 5 })
@@ -330,7 +344,7 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().undo()
     const restored = useTacticStore.getState().document.actions[0]
     if (restored?.type !== 'pass') throw new Error('Expected pass action')
-    expect(restored.path.at(-1)).toEqual({ x: 3.5, y: 4.7 })
+    expect(restored.path.at(-1)).toEqual({ x: 3.5, y: 7 })
   })
 
   it('moves only the origin of a pass to a free landing point', () => {
@@ -414,7 +428,7 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().moveEntity('blue-water', { x: 7, y: 4 })
     const current = useTacticStore.getState().document
     expect(current.initialScene.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 7, y: 4 })
-    expect(current.stepMarkers.find((step) => step.id === later.id)?.snapshot.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 7 })
+    expect(current.stepMarkers.find((step) => step.id === later.id)?.snapshot.players.find((player) => player.id === 'blue-water')?.position).toEqual({ x: 5.5, y: 4.7 })
     expect(current.actions).toHaveLength(0)
   })
 
@@ -502,21 +516,21 @@ describe('tactic store timeline edits', () => {
   it('chains run, wait, and Q and reconnects both sides when the wait-start joint moves', () => {
     const document = useTacticStore.getState().document
     document.actions.push(
-      { id: 'joint-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] },
+      { id: 'joint-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }] },
       { id: 'joint-wait', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 1 },
-      { id: 'joint-q', type: 'qMove', actorId: 'blue-fire', startTime: 3, duration: 0, path: [{ x: 5.5, y: 4.7 }, { x: 7.5, y: 4.7 }] },
+      { id: 'joint-q', type: 'qMove', actorId: 'blue-fire', startTime: 3, duration: 0, path: [{ x: 5.5, y: 7 }, { x: 7.5, y: 7 }] },
     )
     useTacticStore.setState({ document, currentTime: 2, past: [], future: [] })
 
-    useTacticStore.getState().moveEntity('blue-fire', { x: 6.5, y: 4.7 })
+    useTacticStore.getState().moveEntity('blue-fire', { x: 6.5, y: 7 })
     const actions = useTacticStore.getState().document.actions
     const move = actions.find((action) => action.id === 'joint-run')
     const wait = actions.find((action) => action.id === 'joint-wait')
     const q = actions.find((action) => action.id === 'joint-q')
-    expect(move).toMatchObject({ type: 'move', duration: 3, path: [{ x: 3.5, y: 4.7 }, { x: 6.5, y: 4.7 }] })
+    expect(move).toMatchObject({ type: 'move', duration: 3, path: [{ x: 3.5, y: 7 }, { x: 6.5, y: 7 }] })
     expect(wait).toMatchObject({ type: 'wait', startTime: 3, duration: 1 })
     expect(q).toMatchObject({ type: 'qMove', startTime: 4 })
-    if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 4.7 })
+    if (q?.type === 'qMove') expect(q.path[0]).toEqual({ x: 6.5, y: 7 })
     expect(useTacticStore.getState().currentTime).toBe(3)
   })
 
@@ -557,7 +571,7 @@ describe('tactic store timeline edits', () => {
 
   it('adds an editable wait after the selected player locomotion chain', () => {
     const document = useTacticStore.getState().document
-    document.actions.push({ id: 'before-wait', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] })
+    document.actions.push({ id: 'before-wait', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }] })
     useTacticStore.setState({ document, selection: { kind: 'player', id: 'blue-fire' } })
 
     useTacticStore.getState().setTool('wait')
@@ -573,7 +587,7 @@ describe('tactic store timeline edits', () => {
 
   it('switches a run between straight and adjustable curved projection', () => {
     const document = useTacticStore.getState().document
-    document.actions.push({ id: 'curved-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 4.7 }] })
+    document.actions.push({ id: 'curved-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2, path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }] })
     useTacticStore.setState({ document, currentTime: 2 })
 
     useTacticStore.getState().setMovePathMode('curved-run', 'curve')
@@ -583,7 +597,7 @@ describe('tactic store timeline edits', () => {
     expect(move.curveControl).toBeDefined()
     expect(move.duration).toBeGreaterThan(2)
     expect(useTacticStore.getState().currentTime).toBe(move.duration)
-    expect(projectFrame(useTacticStore.getState().document, move.duration / 2).players.find((player) => player.id === 'blue-fire')?.position.y).toBeGreaterThan(4.7)
+    expect(projectFrame(useTacticStore.getState().document, move.duration / 2).players.find((player) => player.id === 'blue-fire')?.position.y).toBeGreaterThan(7)
 
     useTacticStore.getState().setMovePathMode('curved-run', 'straight')
     move = useTacticStore.getState().document.actions.find((action) => action.id === 'curved-run')
@@ -611,13 +625,13 @@ describe('tactic store timeline edits', () => {
   it('treats a short fire-Q target click as direction and saves the fixed rule distance', () => {
     useTacticStore.getState().setTool('qMove')
     useTacticStore.getState().chooseActorForTool('blue-fire')
-    useTacticStore.getState().createAction('blue-fire', { x: 3.7, y: 4.7 })
+    useTacticStore.getState().createAction('blue-fire', { x: 3.7, y: 7 })
 
     const action = useTacticStore.getState().document.actions.find((candidate) => candidate.type === 'qMove')
     expect(action).toMatchObject({
       type: 'qMove',
       actorId: 'blue-fire',
-      path: [{ x: 3.5, y: 4.7 }, { x: 5.8, y: 4.7 }],
+      path: [{ x: 3.5, y: 7 }, { x: 5.8, y: 7 }],
     })
   })
 
@@ -926,7 +940,7 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({
       type: 'eZone',
       actorId: 'blue-ice',
-      center: { x: 3.5, y: 9.3 },
+      center: { x: 5.5, y: 9.3 },
     })
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-ice' })

@@ -6,8 +6,8 @@ describe('tactic file boundary', () => {
   it('creates a centered 20 by 14 default field', () => {
     const document = createDefaultDocument()
     expect(document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-2', field: { width: 20, height: 14 } })
-    expect(document.initialScene.players.find((player) => player.id === 'blue-water')?.position.y).toBe(7)
-    expect(document.initialScene.ball.position.y).toBe(7)
+    expect(document.initialScene.players.find((player) => player.id === 'blue-fire')?.position.y).toBe(7)
+    expect(document.initialScene.ball.position.y).toBe(4.7)
   })
 
   it('migrates an untouched legacy 20 by 10 field by translating every saved Y coordinate', () => {
@@ -35,7 +35,7 @@ describe('tactic file boundary', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-2', field: { width: 20, height: 14 } })
-    expect(result.document.initialScene.players.find((player) => player.id === 'blue-water')?.position.y).toBe(7)
+    expect(result.document.initialScene.players.find((player) => player.id === 'blue-water')?.position.y).toBe(4.7)
     expect(result.document.staticMoveArrows[0]?.target.y).toBe(8)
     expect(result.document.actions[0]).toMatchObject({
       path: [{ x: 3.5, y: 4.7 }, { x: 5.5, y: 6 }],
