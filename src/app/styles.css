@@ -80,6 +80,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .quiet-button.compact { padding: 0 10px; }
 .accent-button { color: #192017; font-weight: 700; border-color: #e9ce8a; background: linear-gradient(135deg, #f0d590, #cba75f); box-shadow: 0 5px 16px rgba(223, 189, 114, .12); }
 .accent-button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.reset-trigger { color:#e2aaa5; }
+.reset-trigger:hover { color:#ffc0ba; border-color:rgba(255,107,103,.38); background:rgba(255,107,103,.08); }
+
+.confirm-backdrop { position:fixed; inset:0; z-index:140; display:grid; place-items:center; padding:24px; background:rgba(0,0,0,.64); backdrop-filter:blur(4px); }
+.reset-dialog { width:min(430px, calc(100vw - 48px)); padding:24px; border:1px solid rgba(223,189,114,.38); border-radius:12px; background:#0b1b17; box-shadow:0 24px 70px rgba(0,0,0,.56); }
+.reset-dialog.final-stage { border-color:rgba(255,107,103,.44); }
+.reset-dialog h2 { margin:7px 0 9px; font-size:20px; }
+.reset-dialog p { margin:0; color:#9ab3aa; font-size:11px; line-height:1.75; }
+.reset-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:22px; }
+.confirm-danger-button { height:34px; padding:0 14px; border:1px solid rgba(255,107,103,.56); border-radius:8px; color:#ffd0cc; background:rgba(255,107,103,.15); cursor:pointer; font-size:12px; font-weight:700; }
+.confirm-danger-button:hover { border-color:rgba(255,136,129,.82); background:rgba(255,107,103,.24); }
 
 .document-bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; min-height: 36px; padding: 0 18px; background: #091714; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; }
 .document-bar > label { display: flex; align-items: center; gap: 6px; }

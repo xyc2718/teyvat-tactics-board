@@ -1,8 +1,9 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { TacticDocumentV1, ToolId } from '../domain/model/types'
 import { useTacticStore } from '../editor/useTacticStore'
 import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
+import { ResetTacticDialog } from './ResetTacticDialog'
 
 const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation', 'attack', 'strikeRange', 'eZone']
 const basicTools: ToolId[] = ['select', 'move', 'attack', 'strikeRange']
@@ -17,6 +18,8 @@ interface TopToolbarProps {
 
 export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateDocument, onImportDocument }: TopToolbarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const resetButtonRef = useRef<HTMLButtonElement>(null)
+  const [resetStage, setResetStage] = useState<0 | 1 | 2>(0)
   const document = useTacticStore((state) => state.document)
   const boardMode = useTacticStore((state) => state.boardMode)
   const setBoardMode = useTacticStore((state) => state.setBoardMode)
@@ -29,11 +32,13 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
   const showRules = useTacticStore((state) => state.showRules)
   const showLogic = useTacticStore((state) => state.showLogic)
   const setNotice = useTacticStore((state) => state.setNotice)
+  const resetTactic = useTacticStore((state) => state.resetTactic)
   const undo = useTacticStore((state) => state.undo)
   const redo = useTacticStore((state) => state.redo)
   const canUndo = useTacticStore((state) => state.past.length > 0)
   const canRedo = useTacticStore((state) => state.future.length > 0)
   const displayedTools = boardMode === 'basic' ? basicTools : simulationTools
+  const activeResetStage = resetStage === 0 ? null : resetStage
 
   async function importFile(file: File | undefined) {
     if (!file) return
@@ -44,6 +49,16 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
     const result = parseTactic(await file.text())
     if (result.ok) await onImportDocument(result.document)
     else setNotice(`导入失败：${result.error}`)
+  }
+
+  function closeResetDialog() {
+    setResetStage(0)
+    window.setTimeout(() => resetButtonRef.current?.focus(), 0)
+  }
+
+  function confirmReset() {
+    resetTactic()
+    closeResetDialog()
   }
 
   return (
@@ -91,9 +106,19 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
           <button className="quiet-button" disabled={!libraryReady || libraryBusy} onClick={() => inputRef.current?.click()}>导入</button>
           <input ref={inputRef} type="file" accept=".json,.teyvat-tactic.json,application/json" hidden onChange={(event) => { void importFile(event.target.files?.[0]); event.currentTarget.value = '' }} />
           <button className="accent-button" onClick={() => downloadTactic(document)}>导出战术</button>
+          <button ref={resetButtonRef} className="quiet-button reset-trigger" onClick={() => setResetStage(1)} aria-haspopup="dialog">重置</button>
           <button className="icon-button" disabled={!libraryReady || libraryBusy} onClick={() => void onCreateDocument()} aria-label="新建战术" title="新建战术">＋</button>
         </div>
       </div>
+      {activeResetStage !== null && (
+        <ResetTacticDialog
+          stage={activeResetStage}
+          onCancel={closeResetDialog}
+          onContinue={() => setResetStage(2)}
+          onBack={() => setResetStage(1)}
+          onConfirm={confirmReset}
+        />
+      )}
     </header>
   )
 }

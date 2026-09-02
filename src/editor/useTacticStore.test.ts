@@ -278,6 +278,69 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().currentTime).toBe(0)
   })
 
+  it('resets the current tactic content while preserving its library-facing title', () => {
+    const document = createDefaultDocument()
+    document.meta.title = '边路反击'
+    document.meta.author = '测试作者'
+    document.meta.notes = '待清除说明'
+    document.initialScene.players[0]!.position = { x: 9, y: 6 }
+    document.initialScene.ball = { carrierId: null, position: { x: 10, y: 7 }, isFree: true }
+    document.initialScene.players.forEach((player) => { player.hasBall = false })
+    document.staticMoveArrows.push({ id: 'reset-arrow', playerId: 'blue-water', target: { x: 12, y: 7 } })
+    document.actions.push({ id: 'reset-wait', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 })
+    document.stepMarkers.push({
+      id: 'reset-step',
+      time: 2,
+      name: '压迫',
+      note: '待清除节点',
+      snapshot: structuredClone(document.initialScene),
+    })
+    document.rulesSnapshot.field.width = 18
+    document.view.analysis = true
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'action', id: 'reset-wait' },
+      tool: 'qMove',
+      boardMode: 'basic',
+      activeStepId: 'reset-step',
+      currentTime: 2,
+      isPlaying: true,
+      playbackSpeed: 2,
+      showAdvancedTimeline: true,
+      showRules: true,
+      showLogic: true,
+      past: [createDefaultDocument()],
+      future: [createDefaultDocument()],
+    })
+
+    useTacticStore.getState().resetTactic()
+
+    const state = useTacticStore.getState()
+    const defaults = createDefaultDocument()
+    expect(state.document.meta).toMatchObject({ title: '边路反击', author: '', notes: '' })
+    expect(state.document.initialScene).toEqual(defaults.initialScene)
+    expect(state.document.rulesSnapshot).toEqual(defaults.rulesSnapshot)
+    expect(state.document.staticMoveArrows).toEqual([])
+    expect(state.document.actions).toEqual([])
+    expect(state.document.stepMarkers).toEqual(defaults.stepMarkers)
+    expect(state.document.view).toEqual({ analysis: false })
+    expect(state).toMatchObject({
+      selection: null,
+      tool: 'select',
+      boardMode: 'basic',
+      activeStepId: 'step-opening',
+      currentTime: 0,
+      isPlaying: false,
+      playbackSpeed: 1,
+      showAdvancedTimeline: false,
+      showRules: false,
+      showLogic: false,
+      notice: '当前战术已重置。',
+      past: [],
+      future: [],
+    })
+  })
+
   it('keeps the carried ball attached when a stale player flag disagrees with the carrier id', () => {
     const document = createDefaultDocument()
     const carrier = document.initialScene.players.find((player) => player.id === 'red-fire')!

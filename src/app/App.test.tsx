@@ -53,6 +53,53 @@ describe('App shell', () => {
     expect(screen.queryByRole('dialog', { name: '我的战术' })).not.toBeInTheDocument()
   })
 
+  it('requires two confirmations before resetting the current tactic', () => {
+    const document = createDefaultDocument()
+    document.meta.title = '双确认测试'
+    document.actions.push({ id: 'kept-until-final-confirm', type: 'wait', actorId: 'blue-water', startTime: 0, duration: 2 })
+    document.stepMarkers.push({
+      id: 'action-step',
+      time: 0,
+      name: '步骤 1',
+      note: '',
+      snapshot: structuredClone(document.initialScene),
+    })
+    useTacticStore.setState({ document, activeStepId: 'action-step', currentTime: 2 })
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重置' }))
+    expect(screen.getByRole('dialog', { name: '重置当前战术？' })).toHaveTextContent('1/2')
+    expect(screen.getByRole('button', { name: '继续' })).toHaveFocus()
+    expect(useTacticStore.getState().document.actions).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '继续' }))
+    expect(screen.getByRole('dialog', { name: '最后确认' })).toHaveTextContent('2/2')
+    expect(screen.getByRole('button', { name: '返回上一步' })).toHaveFocus()
+    expect(useTacticStore.getState().document.actions).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '返回上一步' }))
+    expect(screen.getByRole('dialog', { name: '重置当前战术？' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '继续' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认重置' }))
+
+    expect(screen.queryByRole('dialog', { name: '最后确认' })).not.toBeInTheDocument()
+    expect(useTacticStore.getState().document.actions).toEqual([])
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
+    expect(useTacticStore.getState().document.meta.title).toBe('双确认测试')
+    expect(useTacticStore.getState()).toMatchObject({ currentTime: 0, tool: 'select', selection: null })
+  })
+
+  it('cancels reset without changing the current tactic', () => {
+    const before = useTacticStore.getState().document
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: '重置' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(screen.queryByRole('dialog', { name: '重置当前战术？' })).not.toBeInTheDocument()
+    expect(useTacticStore.getState().document).toBe(before)
+  })
+
   it('zooms the board view locally without changing the tactic document', () => {
     const document = useTacticStore.getState().document
     const { container } = render(<App />)

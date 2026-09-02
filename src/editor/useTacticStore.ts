@@ -102,6 +102,7 @@ interface TacticStore extends HistoryState {
   replaceDocument: (document: TacticDocumentV1) => void
   openDocument: (document: TacticDocumentV1, notice?: string) => void
   newDocument: () => void
+  resetTactic: () => void
   undo: () => void
   redo: () => void
 }
@@ -1605,6 +1606,27 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       currentTime: 0,
       isPlaying: false,
       notice: '已新建战术。',
+    }
+  }),
+
+  resetTactic: () => set((state) => {
+    const document = createDefaultDocument()
+    document.meta.title = state.document.meta.title
+    saveDraft(document)
+    return {
+      document,
+      past: [],
+      future: [],
+      selection: null,
+      tool: 'select' as const,
+      activeStepId: document.stepMarkers[0]?.id ?? '',
+      currentTime: 0,
+      isPlaying: false,
+      playbackSpeed: 1,
+      showAdvancedTimeline: false,
+      showRules: false,
+      showLogic: false,
+      notice: '当前战术已重置。',
     }
   }),
 
