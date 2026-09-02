@@ -19,7 +19,6 @@ describe('App shell', () => {
       isPlaying: false,
       showRules: false,
       showLogic: false,
-      showAdvancedTools: false,
       showAdvancedTimeline: false,
       notice: null,
       past: [],
@@ -34,6 +33,10 @@ describe('App shell', () => {
     expect(container.querySelector('.pitch')).toHaveAttribute('height', '700')
     expect(screen.getAllByRole('button', { name: /蓝方/ })).toHaveLength(6)
     expect(screen.getByRole('button', { name: '跑动' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '攻击范围' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '打击范围' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '冰圈' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument()
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '推演模式' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
@@ -547,7 +550,6 @@ describe('App shell', () => {
 
   it('highlights only Frost actors for ice E and activates the follow zone in one click', () => {
     const { container } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /更多/ }))
     fireEvent.click(screen.getByRole('button', { name: '冰圈' }))
 
     expect(container.querySelectorAll('.player-token.tool-eligible')).toHaveLength(2)
@@ -648,7 +650,6 @@ describe('App shell', () => {
 
   it('keeps attack range inspection active, switches players, and never writes an action', () => {
     const { container } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /更多/ }))
     fireEvent.click(screen.getByRole('button', { name: '攻击范围' }))
     expect(screen.getByRole('status')).toHaveTextContent('选择任意球员')
 
@@ -667,7 +668,6 @@ describe('App shell', () => {
 
   it('shows Q plus attack reach as a separate non-writing range inspection', () => {
     const { container } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /更多/ }))
     fireEvent.click(screen.getByRole('button', { name: '打击范围' }))
     expect(screen.getByRole('status')).toHaveTextContent('Q 技能加攻击的最大打击范围')
 

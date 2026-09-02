@@ -4,9 +4,8 @@ import { useTacticStore } from '../editor/useTacticStore'
 import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
 
-const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation']
+const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation', 'attack', 'strikeRange', 'eZone']
 const basicTools: ToolId[] = ['select', 'move', 'attack', 'strikeRange']
-const advancedTools: ToolId[] = ['attack', 'strikeRange', 'eZone']
 
 interface TopToolbarProps {
   libraryReady: boolean
@@ -25,8 +24,6 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
   const setTool = useTacticStore((state) => state.setTool)
   const analysis = document.view.analysis
   const setAnalysis = useTacticStore((state) => state.setAnalysis)
-  const advanced = useTacticStore((state) => state.showAdvancedTools)
-  const setAdvanced = useTacticStore((state) => state.setAdvancedTools)
   const setRulesOpen = useTacticStore((state) => state.setRulesOpen)
   const setLogicOpen = useTacticStore((state) => state.setLogicOpen)
   const showRules = useTacticStore((state) => state.showRules)
@@ -75,14 +72,6 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
           >
             <ToolIcon tool={item} />
             <span>{boardMode === 'basic' && item === 'move' ? '移动箭头' : toolLabels[item].label}</span>
-          </button>
-        ))}
-        {boardMode === 'simulation' && <button className={`tool-button compact ${advanced ? 'active' : ''}`} onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
-          <span className="tool-symbol">•••</span><span>更多</span>
-        </button>}
-        {boardMode === 'simulation' && advanced && advancedTools.map((item) => (
-          <button key={item} className={`tool-button ${tool === item ? 'active' : ''}`} onClick={() => setTool(tool === item ? 'select' : item)} aria-pressed={tool === item}>
-            <ToolIcon tool={item} /><span>{toolLabels[item].label}</span>
           </button>
         ))}
       </nav>

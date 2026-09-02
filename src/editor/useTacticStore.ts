@@ -45,7 +45,6 @@ interface TacticStore extends HistoryState {
   currentTime: number
   isPlaying: boolean
   playbackSpeed: number
-  showAdvancedTools: boolean
   showAdvancedTimeline: boolean
   showRules: boolean
   showLogic: boolean
@@ -59,7 +58,6 @@ interface TacticStore extends HistoryState {
   setCurrentTime: (time: number) => void
   setPlaying: (playing: boolean) => void
   setPlaybackSpeed: (speed: number) => void
-  setAdvancedTools: (show: boolean) => void
   setAdvancedTimeline: (show: boolean) => void
   setRulesOpen: (show: boolean) => void
   setLogicOpen: (show: boolean) => void
@@ -513,7 +511,6 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   currentTime: 0,
   isPlaying: false,
   playbackSpeed: 1,
-  showAdvancedTools: false,
   showAdvancedTimeline: false,
   showRules: false,
   showLogic: false,
@@ -602,7 +599,6 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     selection: null,
     currentTime: nearestTimelineJoint(state.document, state.currentTime),
     isPlaying: false,
-    showAdvancedTools: false,
     showRules: false,
     showLogic: false,
     notice: null,
@@ -708,7 +704,6 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
   }),
   setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed }),
-  setAdvancedTools: (showAdvancedTools) => set({ showAdvancedTools }),
   setAdvancedTimeline: (showAdvancedTimeline) => set({ showAdvancedTimeline }),
   setRulesOpen: (showRules) => set({ showRules, ...(showRules ? { showLogic: false } : {}) }),
   setLogicOpen: (showLogic) => set({ showLogic, ...(showLogic ? { showRules: false } : {}) }),
