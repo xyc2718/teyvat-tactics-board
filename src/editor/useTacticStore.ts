@@ -135,6 +135,8 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
   'eZone',
 ])
 
+const MIN_AUTHORED_PATH_LENGTH = 0.05
+
 function appendStepMarker(document: TacticDocumentV1, time: number): string {
   const id = uid('step')
   const stepNumber = sortedStepMarkers(document)
@@ -336,6 +338,30 @@ function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
   )
 }
 
+/**
+ * Repairs a historical editor bug where clicking (without dragging) the ball on
+ * a later step created a zero-length generated pass and cleared possession.
+ * Explicit user-authored passes are left intact; only the editor-owned
+ * `auto-pass-*` records can be removed by this compatibility repair.
+ */
+function removeDegenerateAutomaticPasses(document: TacticDocumentV1): boolean {
+  const passIds = new Set(
+    document.actions
+      .filter(
+        (action) => action.type === 'pass'
+          && action.id.startsWith('auto-pass-')
+          && pathLength(action.path) < MIN_AUTHORED_PATH_LENGTH,
+      )
+      .map((action) => action.id),
+  )
+  if (passIds.size === 0) return false
+  document.actions = document.actions.filter(
+    (action) => !passIds.has(action.id)
+      && !(action.type === 'receive' && action.sourceActionId && passIds.has(action.sourceActionId)),
+  )
+  return true
+}
+
 function passPairActionIds(document: TacticDocumentV1, actionIds: Iterable<string>): Set<string> {
   const expanded = new Set(actionIds)
   for (const action of document.actions) {
@@ -467,9 +493,12 @@ function editPlayerJoint(
 
 function initialDocument(): TacticDocumentV1 {
   const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
+  const repairedDegeneratePass = removeDegenerateAutomaticPasses(document)
   syncPassEndpoints(document)
+  if (repairedDegeneratePass) refreshStepSnapshots(document)
   ensureOpeningActionBoundary(document)
   normalizeLegacyDefaultStepNames(document)
+  if (repairedDegeneratePass) saveDraft(document)
   return document
 }
 
@@ -702,6 +731,19 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const editTime = state.boardMode === 'simulation' && isOpeningStep(state.document, state.activeStepId)
         ? 0
         : state.currentTime
+      const boundedPosition = clampPoint(
+        rawPosition,
+        state.document.rulesSnapshot.field.width,
+        state.document.rulesSnapshot.field.height,
+      )
+      const editFrame = projectFrame(state.document, editTime)
+      const currentPosition = id === 'ball'
+        ? editFrame.ball.position
+        : editFrame.players.find((player) => player.id === id)?.position
+      // Pointer-down selects an entity and also arms dragging. A matching
+      // pointer-up is only a click, so it must not enter the document/history
+      // command path (and, for the ball, must never synthesize a pass).
+      if (currentPosition && distance(currentPosition, boundedPosition) < MIN_AUTHORED_PATH_LENGTH) return {}
       if (state.boardMode === 'simulation' && id !== 'ball') {
         const movingNow = actorSequence(state.document, id).some(
           (action) => action.type !== 'wait'
@@ -712,7 +754,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       let jointResult: JointEditResult | null = null
       const patch = mutateDocument(state, (draft) => {
-      const position = clampPoint(rawPosition, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
+      const position = boundedPosition
       if (state.boardMode === 'basic') {
         const player = draft.initialScene.players.find((candidate) => candidate.id === id)
         if (!player) return
@@ -983,7 +1025,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           ? document.initialScene.players.find((player) => player.id === actorId)
           : undefined
         if (!actor) return { notice: '请先选择一名球员。' }
-        if (distance(actor.position, clampedTarget) < 0.05) return { notice: '箭头目标不能与球员当前位置重合。' }
+        if (distance(actor.position, clampedTarget) < MIN_AUTHORED_PATH_LENGTH) return { notice: '箭头目标不能与球员当前位置重合。' }
         const next = cloneDocument(document)
         const existing = next.staticMoveArrows.find((arrow) => arrow.playerId === actor.id)
         next.staticMoveArrows = next.staticMoveArrows.filter((arrow) => arrow.playerId !== actor.id)
@@ -1047,7 +1089,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         if (!plan) return { notice: '无法为该球员找到可用的跑动时间。' }
         const origin = plan.origin
         const path = [{ ...origin }, clampedTarget]
-        if (pathLength(path) < 0.05) return { notice: '目标位置与球员当前位置重合。' }
+        if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: '目标位置与球员当前位置重合。' }
         action = {
           id: uid('move'),
           type: 'move',
@@ -1063,7 +1105,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         const roleRule = document.rulesSnapshot.roles[scheduledActor.role]
         const origin = plan.origin
         let path = [{ ...origin }, clampedTarget]
-        if (pathLength(path) < 0.05) return { notice: 'Q 目标不能与施法者当前位置重合。' }
+        if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: 'Q 目标不能与施法者当前位置重合。' }
         if (roleRule.q.turnable && distance(origin, clampedTarget) > 0.4) {
           const midpoint = {
             x: (origin.x + clampedTarget.x) / 2,
@@ -1096,7 +1138,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         }
         const endpoint = targetPlayer?.position ?? clampedTarget
         const path = [{ ...actor.position }, { ...endpoint }]
-        if (pathLength(path) < 0.05) return { notice: '传球目标与持球者位置重合。' }
+        if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: '传球目标与持球者位置重合。' }
         action = {
           id: uid('pass'),
           type: 'pass',
@@ -1297,7 +1339,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (!arrow) return {}
     const target = clampPoint(rawTarget, state.document.rulesSnapshot.field.width, state.document.rulesSnapshot.field.height)
     const player = state.document.initialScene.players.find((candidate) => candidate.id === arrow.playerId)
-    if (!player || distance(player.position, target) < 0.05) return { notice: '箭头目标不能与球员当前位置重合。' }
+    if (!player || distance(player.position, target) < MIN_AUTHORED_PATH_LENGTH) return { notice: '箭头目标不能与球员当前位置重合。' }
     return mutateDocument(state, (draft) => {
       const candidate = draft.staticMoveArrows.find((item) => item.id === arrowId)
       if (candidate) candidate.target = target
@@ -1518,7 +1560,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
 
   replaceDocument: (document) => set((state) => {
     const next = cloneDocument(document)
+    const repairedDegeneratePass = removeDegenerateAutomaticPasses(next)
     syncPassEndpoints(next)
+    if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)
     normalizeLegacyDefaultStepNames(next)
     return {
@@ -1535,7 +1579,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
 
   openDocument: (document, notice = '已打开战术。') => set(() => {
     const next = cloneDocument(document)
+    const repairedDegeneratePass = removeDegenerateAutomaticPasses(next)
     syncPassEndpoints(next)
+    if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)
     normalizeLegacyDefaultStepNames(next)
     saveDraft(next)

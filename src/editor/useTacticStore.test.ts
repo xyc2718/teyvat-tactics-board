@@ -393,6 +393,42 @@ describe('tactic store timeline edits', () => {
     }))
   })
 
+  it('repairs saved zero-length generated passes without deleting explicit passes', () => {
+    const document = createDefaultDocument()
+    document.stepMarkers.push({
+      id: 'damaged-step',
+      name: '步骤 1',
+      note: '',
+      time: 0,
+      snapshot: structuredClone(document.initialScene),
+    })
+    document.actions.push(
+      {
+        id: 'auto-pass-damaged-step',
+        type: 'pass',
+        actorId: 'blue-water',
+        path: [{ x: 5.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+        startTime: 0,
+        duration: 0,
+      },
+      {
+        id: 'explicit-zero-pass',
+        type: 'pass',
+        actorId: 'blue-water',
+        path: [{ x: 5.5, y: 4.7 }, { x: 5.5, y: 4.7 }],
+        startTime: 3,
+        duration: 0,
+      },
+    )
+
+    useTacticStore.getState().openDocument(document)
+
+    const repaired = useTacticStore.getState().document
+    expect(repaired.actions.map((action) => action.id)).toEqual(['explicit-zero-pass'])
+    expect(projectFrame(repaired, 0).ball.carrierId).toBe('blue-water')
+    expect(repaired.stepMarkers.find((step) => step.id === 'damaged-step')?.snapshot.ball.carrierId).toBe('blue-water')
+  })
+
   it('creates one replaceable static move arrow per player without adding timeline actions', () => {
     const state = useTacticStore.getState()
     state.setBoardMode('basic')
@@ -815,6 +851,45 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().setTool('pass')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
     expect(useTacticStore.getState().notice).toBeNull()
+  })
+
+  it('keeps possession through simultaneous Fire and Water Q actions before a named pass', () => {
+    useTacticStore.getState().givePossession('blue-fire')
+
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-fire' })
+    useTacticStore.getState().setTool('qMove')
+    useTacticStore.getState().createAction('blue-fire', { x: 5.8, y: 7 })
+
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
+    useTacticStore.getState().setTool('qMove')
+    useTacticStore.getState().createAction('blue-water', { x: 8, y: 4.7 })
+
+    const frameBeforePass = projectFrame(useTacticStore.getState().document, 0)
+    expect(frameBeforePass.ball.carrierId).toBe('blue-fire')
+
+    // A click on the ball at the shared zero-second action step must remain a
+    // selection-only gesture. It used to create a zero-length automatic pass,
+    // which immediately cleared possession before the real pass tool opened.
+    useTacticStore.getState().moveEntity('ball', frameBeforePass.ball.position)
+    expect(useTacticStore.getState().document.actions.filter((action) => action.type === 'pass')).toHaveLength(0)
+
+    useTacticStore.getState().setTool('pass')
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'pass',
+      selection: { kind: 'player', id: 'blue-fire' },
+      notice: null,
+    })
+
+    useTacticStore.getState().createAction('blue-fire', { x: 8, y: 4.7 }, 'blue-water')
+    const state = useTacticStore.getState()
+    const pass = state.document.actions.find((action) => action.type === 'pass')
+    expect(pass).toMatchObject({
+      type: 'pass',
+      actorId: 'blue-fire',
+      targetPlayerId: 'blue-water',
+    })
+    expect(pass && actionEndTime(pass)).toBeGreaterThan(0)
+    expect(projectFrame(state.document, state.currentTime).ball.carrierId).toBe('blue-water')
   })
 
   it('solves a moving receiver catch and creates linked keyframes on both player tracks', () => {

@@ -471,6 +471,70 @@ describe('App shell', () => {
     expect(useTacticStore.getState().tool).toBe('pass')
   })
 
+  it('does not turn a held-ball click after simultaneous Q actions into a zero-length pass', () => {
+    const document = createDefaultDocument()
+    const fire = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    for (const player of document.initialScene.players) player.hasBall = player.id === fire.id
+    document.initialScene.ball = { carrierId: fire.id, position: { ...fire.position }, isFree: false }
+    document.stepMarkers[0]!.snapshot = structuredClone(document.initialScene)
+    document.stepMarkers.push({
+      id: 'simultaneous-q-step',
+      name: '步骤 1',
+      note: '',
+      time: 0,
+      snapshot: structuredClone(document.initialScene),
+    })
+    document.actions.push(
+      {
+        id: 'fire-q-before-pass',
+        type: 'qMove',
+        actorId: fire.id,
+        path: [{ ...fire.position }, { x: 5.8, y: 7 }],
+        startTime: 0,
+        duration: 0,
+      },
+      {
+        id: 'water-q-before-pass',
+        type: 'qMove',
+        actorId: 'blue-water',
+        path: [{ x: 5.5, y: 4.7 }, { x: 8, y: 4.7 }],
+        startTime: 0,
+        duration: 0,
+      },
+    )
+    useTacticStore.setState({
+      document,
+      activeStepId: 'simultaneous-q-step',
+      currentTime: 0,
+      selection: null,
+      tool: 'select',
+      past: [],
+      future: [],
+    })
+    render(<App />)
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    const ball = screen.getByRole('button', { name: '足球' })
+    fireEvent.pointerDown(ball, { pointerId: 71, button: 0 })
+    fireEvent.pointerUp(board, { pointerId: 71, button: 0 })
+
+    expect(useTacticStore.getState().document.actions.filter((action) => action.type === 'pass')).toHaveLength(0)
+    expect(useTacticStore.getState().past).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '传球' }))
+    expect(useTacticStore.getState()).toMatchObject({
+      selection: { kind: 'player', id: fire.id },
+      notice: null,
+    })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: /蓝方 1，水灵，可选目标/ }),
+      { pointerId: 72, button: 0 },
+    )
+
+    const pass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')
+    expect(pass).toMatchObject({ actorId: fire.id, targetPlayerId: 'blue-water' })
+  })
+
   it('highlights only Frost actors for ice E and activates the follow zone in one click', () => {
     const { container } = render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /更多/ }))
