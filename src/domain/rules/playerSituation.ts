@@ -1,4 +1,4 @@
-import { distance, pathLength } from '../geometry/geometry'
+import { distance } from '../geometry/geometry'
 import type {
   MatchupEvaluation,
   PassAction,
@@ -53,10 +53,7 @@ function nearestOpponent(frame: ProjectedFrame, selected: PlayerState): PlayerSt
 }
 
 function passStillFlying(document: TacticDocumentV1, pass: PassAction, time: number): boolean {
-  const length = pathLength(pass.path)
-  const maxProgress = Math.min(1, document.rulesSnapshot.passing.maxDistance / Math.max(length, 0.001))
-  const flightEnd = pass.startTime + Math.max(0, pass.duration) * maxProgress
-  return time + EPSILON >= pass.startTime && time < flightEnd - EPSILON && time < actionEndTime(pass) - EPSILON
+  return time + EPSILON >= pass.startTime && time < actionEndTime(pass) - EPSILON
 }
 
 function latestFlyingPass(

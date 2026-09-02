@@ -81,7 +81,7 @@ describe('player possession and loose-ball situation', () => {
       actorId: 'blue-water',
       path: [{ x: 5.5, y: 7 }, { x: 17.5, y: 7 }],
       startTime: 0,
-      duration: 1.5,
+      duration: 1,
     })
 
     const result = evaluatePlayerSituation(document, 1.2, 'red-water')

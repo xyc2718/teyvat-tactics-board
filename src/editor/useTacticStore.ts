@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import { createDefaultDocument } from '../domain/model/createDocument'
-import { anchorPassPathToPlayer } from '../domain/model/passPath'
 import type {
   BoardMode,
   MatchupRating,
@@ -17,6 +16,7 @@ import { cloneDefaultRules } from '../domain/rules/defaultRules'
 import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
 import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
+import { solvePassReception } from '../domain/timeline/passReception'
 import { projectFrame } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
@@ -234,7 +234,6 @@ function firstQCooldownViolation(document: TacticDocumentV1, actorIds: string[])
 function recalculateRuleDrivenActions(document: TacticDocumentV1) {
   for (const action of document.actions) {
     if (action.type === 'move') action.duration = movementDuration(resolvedMovePath(action), document.rulesSnapshot)
-    if (action.type === 'pass') action.duration = passDuration(action.path, document.rulesSnapshot)
     if (action.type === 'qMove') {
       const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
       if (player) {
@@ -262,6 +261,7 @@ function recalculateRuleDrivenActions(document: TacticDocumentV1) {
       }
     }
   }
+  syncPassEndpoints(document)
 }
 
 function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
@@ -274,16 +274,62 @@ function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
     .sort((left, right) => left.startTime - right.startTime)
 
   for (const action of passes) {
-    const frame = projectFrame(document, action.startTime)
-    const attachedPlayerIds = playerId === undefined
-      ? [...new Set([action.actorId, action.targetPlayerId].filter((id): id is string => id !== undefined))]
-      : [playerId]
-    for (const attachedPlayerId of attachedPlayerIds) {
-      const player = frame.players.find((candidate) => candidate.id === attachedPlayerId)
-      if (player) action.path = anchorPassPathToPlayer(action, attachedPlayerId, player.position)
+    const resolution = solvePassReception(document, action)
+    action.path = resolution.path
+    action.duration = resolution.duration
+
+    const linkedReceives = document.actions.filter(
+      (candidate): candidate is Extract<TacticAction, { type: 'receive' }> =>
+        candidate.type === 'receive' && candidate.sourceActionId === action.id,
+    )
+    const primaryReceive = linkedReceives[0]
+    if (resolution.received && action.targetPlayerId) {
+      if (primaryReceive) {
+        primaryReceive.actorId = action.targetPlayerId
+        primaryReceive.startTime = resolution.arrivalTime
+        primaryReceive.duration = 0
+      } else {
+        document.actions.push({
+          id: uid('receive'),
+          type: 'receive',
+          actorId: action.targetPlayerId,
+          sourceActionId: action.id,
+          startTime: resolution.arrivalTime,
+          duration: 0,
+        })
+      }
+      if (linkedReceives.length > 1) {
+        const duplicateIds = new Set(linkedReceives.slice(1).map((receive) => receive.id))
+        document.actions = document.actions.filter((candidate) => !duplicateIds.has(candidate.id))
+      }
+    } else if (linkedReceives.length > 0) {
+      const linkedIds = new Set(linkedReceives.map((receive) => receive.id))
+      document.actions = document.actions.filter((candidate) => !linkedIds.has(candidate.id))
     }
-    action.duration = passDuration(action.path, document.rulesSnapshot)
   }
+
+  const passIds = new Set(document.actions.filter((action) => action.type === 'pass').map((action) => action.id))
+  document.actions = document.actions.filter(
+    (action) => action.type !== 'receive' || !action.sourceActionId || passIds.has(action.sourceActionId),
+  )
+}
+
+function passPairActionIds(document: TacticDocumentV1, actionIds: Iterable<string>): Set<string> {
+  const expanded = new Set(actionIds)
+  for (const action of document.actions) {
+    if (action.type === 'pass' && expanded.has(action.id)) {
+      for (const receive of document.actions) {
+        if (receive.type === 'receive' && receive.sourceActionId === action.id) expanded.add(receive.id)
+      }
+    }
+    if (action.type === 'receive' && action.sourceActionId && expanded.has(action.id)) {
+      expanded.add(action.sourceActionId)
+      for (const receive of document.actions) {
+        if (receive.type === 'receive' && receive.sourceActionId === action.sourceActionId) expanded.add(receive.id)
+      }
+    }
+  }
+  return expanded
 }
 
 function syncShotOrigins(document: TacticDocumentV1, playerId?: string) {
@@ -304,6 +350,17 @@ function syncShotOrigins(document: TacticDocumentV1, playerId?: string) {
 }
 
 const JOINT_EPSILON = 1e-5
+
+function missingPassCarrierNotice(document: TacticDocumentV1, time: number): string {
+  const passInFlight = document.actions.some(
+    (action) => action.type === 'pass'
+      && time + JOINT_EPSILON >= action.startTime
+      && time < actionEndTime(action) - JOINT_EPSILON,
+  )
+  return passInFlight
+    ? '球正在传球途中；请跳到传球结束关键帧后再继续传球。'
+    : '当前没有持球者；请先回到选择模式设置球权。'
+}
 
 type ActorSequenceAction = Extract<TacticAction, { type: 'move' | 'qMove' | 'wait' }> & { actorId: string }
 
@@ -432,7 +489,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (tool === 'pass') {
         const continuationTime = actionContinuationTime(current.document)
         if (!projectFrame(current.document, continuationTime).ball.carrierId) {
-          set({ tool, selection: null, notice: '当前没有持球者；请先回到选择模式设置球权。', isPlaying: false })
+          set({ tool, selection: null, notice: missingPassCarrierNotice(current.document, continuationTime), isPlaying: false })
           return
         }
       }
@@ -468,7 +525,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           : undefined
         return carrier
           ? { tool, selection: { kind: 'player' as const, id: carrier.id }, notice: null, isPlaying: false }
-          : { tool, selection: null, notice: '当前没有持球者；请先回到选择模式设置球权。', isPlaying: false }
+          : { tool, selection: null, notice: missingPassCarrierNotice(state.document, state.currentTime), isPlaying: false }
       }
 
       if (state.selection?.kind === 'player') {
@@ -582,7 +639,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           currentTime,
           isPlaying: false,
           selection: null,
-          notice: '当前没有持球者；请先回到选择模式设置球权。',
+          notice: missingPassCarrierNotice(state.document, currentTime),
         }
   }),
   setPlaying: (isPlaying) => set((state) => {
@@ -706,7 +763,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       update(draft.initialScene)
       draft.stepMarkers.forEach((step) => update(step.snapshot))
       recalculateRuleDrivenActions(draft)
-      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, id)
+      if (!state.showAdvancedTimeline) {
+        reflowSimpleLocomotion(draft, id)
+        syncPassEndpoints(draft, id)
+      }
     })
     const selectedActorLostEligibility = state.tool === 'eZone'
       && state.selection?.kind === 'player'
@@ -771,7 +831,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
 
       draft.actions = draft.actions.filter((action) => {
-        const isPossessionEdit = action.type === 'receive' || action.type === 'possession'
+        const isPossessionEdit = action.type === 'possession'
+          || (action.type === 'receive' && !action.sourceActionId)
         return !isPossessionEdit || action.startTime !== state.currentTime
       })
       if (id) {
@@ -836,7 +897,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   }),
 
   createShot: (actorId) => set((state) => {
-    const frame = projectFrame(state.document, state.currentTime)
+    const shotTime = latestActorSequenceJoint(state.document, actorId)
+    const frame = projectFrame(state.document, shotTime)
     const shooter = frame.players.find((player) => player.id === actorId)
     if (!shooter) return { notice: '未找到可射门的球员。' }
     const target = goalCenter(
@@ -850,7 +912,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       actorId: shooter.id,
       charge: 'yellow',
       path: [{ ...shooter.position }, target],
-      startTime: state.currentTime,
+      startTime: shotTime,
       duration: shotDuration(shooter, 'yellow', state.document.rulesSnapshot),
     }
     const next = cloneDocument(state.document)
@@ -859,6 +921,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       ...applyDocument(state, next),
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: shooter.id },
+      currentTime: shotTime,
       notice: null,
       isPlaying: false,
     }
@@ -1040,11 +1103,13 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (!action) return {}
       const next = cloneDocument(document)
       next.actions.push(action)
+      if (action.type === 'pass') syncPassEndpoints(next)
+      refreshStepSnapshots(next)
       return {
         ...applyDocument(state, next),
         tool: 'select' as const,
         selection: actor ? { kind: 'player' as const, id: actor.id } : null,
-        currentTime: action.type === 'move' || action.type === 'qMove'
+        currentTime: action.type === 'move' || action.type === 'qMove' || action.type === 'pass'
           ? actionEndTime(action)
           : action.startTime,
         notice: null,
@@ -1076,7 +1141,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         }
       }
       if (action.type === 'move') action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
-      if (action.type === 'pass') action.duration = passDuration(action.path, draft.rulesSnapshot)
+      if (action.type === 'pass') syncPassEndpoints(draft)
       if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
         reflowSimpleLocomotion(draft, action.actorId)
       }
@@ -1111,6 +1176,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncPassEndpoints(draft, action.actorId)
       refreshStepSnapshots(draft)
     })
     return { ...patch, currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
@@ -1124,6 +1190,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       action.curveControl = clampPoint(rawPoint, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
       action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncPassEndpoints(draft, action.actorId)
       refreshStepSnapshots(draft)
     })
     return { ...patch, currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
@@ -1132,12 +1199,19 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   updateActionTiming: (actionId, field, value) => set((state) => {
     const action = state.document.actions.find((candidate) => candidate.id === actionId)
     const safeValue = Math.max(0, value)
+    if (action?.type === 'receive' && action.sourceActionId) {
+      return { notice: '该接球节点由对应传球自动解算，不能单独修改时间。' }
+    }
+    if (action?.type === 'pass' && action.targetPlayerId && field === 'duration') {
+      return { notice: '传球飞行时间由出球时刻与接球队员轨迹自动解算。' }
+    }
     if (action?.type === 'wait' && !state.showAdvancedTimeline) {
       const patch = mutateDocument(state, (draft) => {
         const candidate = draft.actions.find((item) => item.id === actionId)
         if (!candidate || candidate.type !== 'wait') return
         if (field === 'duration') candidate.duration = safeValue
         reflowSimpleLocomotion(draft, candidate.actorId ?? '')
+        syncPassEndpoints(draft, candidate.actorId)
         refreshStepSnapshots(draft)
       })
       return { ...patch, currentTime: timeAfterActionEdit(action, patch.document.actions.find((item) => item.id === actionId), patch.document, state.currentTime) }
@@ -1148,15 +1222,24 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       return {
         ...mutateDocument(state, (draft) => {
           const candidate = draft.actions.find((item) => item.id === actionId)
-          if (candidate) candidate.startTime = safeValue
+          if (candidate && candidate.type === 'qMove') {
+            candidate.startTime = safeValue
+            syncPassEndpoints(draft, candidate.actorId)
+            refreshStepSnapshots(draft)
+          }
         }),
         notice: null,
       }
     }
-    return mutateDocument(state, (draft) => {
+    const patch = mutateDocument(state, (draft) => {
       const candidate = draft.actions.find((item) => item.id === actionId)
-      if (candidate) candidate[field] = safeValue
+      if (!candidate) return
+      candidate[field] = safeValue
+      if (candidate.type === 'pass') syncPassEndpoints(draft)
+      else if ('actorId' in candidate && candidate.actorId) syncPassEndpoints(draft, candidate.actorId)
+      refreshStepSnapshots(draft)
     })
+    return { ...patch, notice: null }
   }),
 
   setShotCharge: (actionId, charge) => set((state) => mutateDocument(state, (draft) => {
@@ -1170,18 +1253,20 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
 
   deleteAction: (actionId) => set((state) => {
     const removed = state.document.actions.find((action) => action.id === actionId)
+    const removedIds = passPairActionIds(state.document, [actionId])
     const patch = mutateDocument(state, (draft) => {
-      draft.actions = draft.actions.filter((action) => action.id !== actionId)
+      draft.actions = draft.actions.filter((action) => !removedIds.has(action.id))
       if (!state.showAdvancedTimeline && removed && 'actorId' in removed && removed.actorId
         && (removed.type === 'move' || removed.type === 'qMove' || removed.type === 'wait')) {
         reflowSimpleLocomotion(draft, removed.actorId)
       }
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return {
       ...patch,
       currentTime: nearestTimelineJoint(patch.document, state.currentTime),
-      selection: state.selection?.kind === 'action' && state.selection.id === actionId
+      selection: state.selection?.kind === 'action' && removedIds.has(state.selection.id)
         ? null
         : state.selection,
     }
@@ -1293,10 +1378,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   clearStepActions: (id) => set((state) => {
     const ownership = getStepActionOwnership(state.document, id)
     if (!ownership || ownership.count === 0) return {}
-    const removedIds = new Set(ownership.actionIds)
+    const removedIds = passPairActionIds(state.document, ownership.actionIds)
     const step = state.document.stepMarkers.find((candidate) => candidate.id === id)
     const next = cloneDocument(state.document)
     next.actions = next.actions.filter((action) => !removedIds.has(action.id))
+    syncPassEndpoints(next)
     const nextDuration = timelineDuration(next)
     const selection = state.selection?.kind === 'action' && !next.actions.some((action) => action.id === state.selection?.id)
       ? null
@@ -1322,6 +1408,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     recalculateRuleDrivenActions(draft)
     if (!state.showAdvancedTimeline && key === 'baseMoveSpeed') {
       for (const player of draft.initialScene.players) reflowSimpleLocomotion(draft, player.id)
+      syncPassEndpoints(draft)
     }
   })),
   updatePassingRule: (key, value) => set((state) => mutateDocument(state, (draft) => {
@@ -1353,6 +1440,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         for (const player of draft.initialScene.players.filter((candidate) => candidate.role === role)) {
           reflowSimpleLocomotion(draft, player.id)
         }
+        syncPassEndpoints(draft)
       }
     })
     if (!state.showAdvancedTimeline || key !== 'qCooldown') return documentPatch
@@ -1404,6 +1492,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     recalculateRuleDrivenActions(draft)
     if (!state.showAdvancedTimeline) {
       for (const player of draft.initialScene.players) reflowSimpleLocomotion(draft, player.id)
+      syncPassEndpoints(draft)
     }
   })),
 

@@ -19,6 +19,12 @@ function timePercent(time: number, duration: number): number {
   return Math.min(100, Math.max(0, (time / duration) * 100))
 }
 
+function actorKeyframes(action: TacticAction): Array<{ edge: 'start' | 'end' | 'instant'; time: number }> {
+  if (action.type === 'pass') return [{ edge: 'instant', time: action.startTime }]
+  if (action.duration <= INSTANT_ACTION_EPSILON) return [{ edge: 'instant', time: action.startTime }]
+  return [{ edge: 'start', time: action.startTime }, { edge: 'end', time: actionEndTime(action) }]
+}
+
 export function TimelinePanel() {
   const document = useTacticStore((state) => state.document)
   const selection = useTacticStore((state) => state.selection)
@@ -67,9 +73,7 @@ export function TimelinePanel() {
     : null
   const trackKeyframeTimes = Array.from(new Set([
     0,
-    ...trackActions.flatMap((action) => action.duration <= INSTANT_ACTION_EPSILON
-      ? [action.startTime]
-      : [action.startTime, actionEndTime(action)]),
+    ...trackActions.flatMap((action) => actorKeyframes(action).map(({ time }) => time)),
   ])).sort((left, right) => left - right)
 
   function togglePlayback() {
@@ -100,9 +104,7 @@ export function TimelinePanel() {
               const actorId = actionActorId(action)
               const player = document.initialScene.players.find((candidate) => candidate.id === actorId)
               if (!player) return []
-              const times = action.duration <= INSTANT_ACTION_EPSILON
-                ? [{ edge: 'instant', time: action.startTime }]
-                : [{ edge: 'start', time: action.startTime }, { edge: 'end', time: actionEndTime(action) }]
+              const times = actorKeyframes(action)
               return times.map(({ edge, time }) => (
                 <i
                   key={`${action.id}-${edge}`}
@@ -156,7 +158,7 @@ export function TimelinePanel() {
                 key={`track-keyframe-${time}`}
                 className={`player-track-keyframe-marker ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''}`}
                 style={{ left: `${percent}%` }}
-                title={isContinuation ? `下一段跑动或 Q 从 ${time.toFixed(2)}s 继续` : `关键帧 ${time.toFixed(2)}s`}
+                title={isContinuation ? `下一项个人动作从 ${time.toFixed(2)}s 继续` : `关键帧 ${time.toFixed(2)}s`}
               >
                 <i aria-hidden="true" />
                 {trackPlayer && <b>{time.toFixed(2)}s{isContinuation ? ' · 续接' : ''}</b>}
@@ -165,7 +167,7 @@ export function TimelinePanel() {
             {trackActions.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
           </div>
           <small>{trackPlayer && continuationTime !== null
-            ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点`
+            ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点；出球与接球也会形成个人节点`
             : '总览汇集所有球员关键帧；选择球员可切换个人轨道，不会移动播放头'}</small>
         </div>
         <div className="player-track-tabs" role="tablist" aria-label="切换球员动作轨道">
@@ -239,8 +241,8 @@ export function TimelinePanel() {
             {trackActions.map((action) => (
               <div className={`action-row ${selection?.kind === 'action' && selection.id === action.id ? 'selected' : ''}`} key={action.id} data-timeline-action-id={action.id}>
                 <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{actionLabels[action.type]}</button>
-                <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
-                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
+                <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId)} title={action.type === 'receive' && action.sourceActionId ? '由对应传球自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
+                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId)) || (action.type === 'pass' && Boolean(action.targetPlayerId))} title={(action.type === 'receive' && action.sourceActionId) || (action.type === 'pass' && action.targetPlayerId) ? '由传球与接球队员轨迹自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
                 <div className="mini-track"><span style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${Math.max(timePercent(action.duration, sliderMax), 1.5)}%` }} /></div>
                 <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${actionLabels[action.type]}`}>×</button>
               </div>

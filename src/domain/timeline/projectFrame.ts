@@ -22,7 +22,7 @@ import type {
   TacticDocumentV1,
 } from '../model/types'
 import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
-import { actionEndTime } from './durations'
+import { actionEndTime, passPathProgress } from './durations'
 import { waterQGainAtTime, waterQMoveBoost } from './movementEffects'
 
 type IceQHitMap = Map<string, IceQHit[]>
@@ -396,9 +396,7 @@ function projectSceneCore(
     if (action.type === 'pass') {
       if (!actor || action.path.length < 2) continue
       const length = pathLength(action.path)
-      const effectiveProgress = clamp((time - action.startTime) / Math.max(action.duration, 0.001), 0, 1)
-      const maxProgress = Math.min(1, rules.passing.maxDistance / Math.max(length, 0.001))
-      const progress = Math.min(effectiveProgress, maxProgress)
+      const progress = passPathProgress(action.path, time - action.startTime, action.duration, rules)
       ball.carrierId = null
       ball.isFree = true
       ball.position = pointAlongPath(action.path, progress)

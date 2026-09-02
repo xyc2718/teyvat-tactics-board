@@ -172,4 +172,42 @@ describe('TimelinePanel player tracks', () => {
     expect(labels).toEqual(['0.00s', '4.00s · 续接'])
     expect(container.querySelector('.player-track-keyframe-marker.continuation')).toHaveTextContent('4.00s · 续接')
   })
+
+  it('shows an automatic catch on the receiver track and locks its derived timing', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'linked-pass',
+        type: 'pass',
+        actorId: 'blue-water',
+        targetPlayerId: 'blue-fire',
+        path: [{ x: 5.5, y: 7 }, { x: 3.5, y: 4.7 }],
+        startTime: 0,
+        duration: 0.3,
+      },
+      {
+        id: 'linked-catch',
+        type: 'receive',
+        actorId: 'blue-fire',
+        sourceActionId: 'linked-pass',
+        startTime: 0.3,
+        duration: 0,
+      },
+    )
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'player', id: 'blue-fire' },
+      currentTime: 0,
+      showAdvancedTimeline: true,
+    })
+
+    const { container } = render(<TimelinePanel />)
+
+    expect(container.querySelector('.player-track-action.type-receive')).toBeInTheDocument()
+    expect(container.querySelector('.player-track-keyframe-marker.continuation')).toHaveTextContent('0.30s · 续接')
+    expect(container.querySelectorAll('.global-player-ticks [data-timeline-action-id="linked-pass"]')).toHaveLength(1)
+    expect(container.querySelectorAll('.global-player-ticks [data-timeline-action-id="linked-catch"]')).toHaveLength(1)
+    const row = container.querySelector('.action-row[data-timeline-action-id="linked-catch"]')
+    expect(row?.querySelectorAll('input:disabled')).toHaveLength(2)
+  })
 })

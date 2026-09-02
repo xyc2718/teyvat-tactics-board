@@ -1,5 +1,6 @@
 import { distance, pathLength, pointAlongPath } from '../geometry/geometry'
 import type { ProjectedFrame, RuleSetV1, TeamId, Vec2 } from '../model/types'
+import { passArrivalTimeAtDistance } from '../timeline/durations'
 
 const SAMPLE_SPACING = 0.2
 const EPSILON = 1e-6
@@ -39,9 +40,21 @@ function corridorWidth(distanceFromStart: number, rules: RuleSetV1): number {
     + (rules.passing.interceptEndWidth - rules.passing.interceptStartWidth) * progress
 }
 
+function frozenDelayAtFrame(frame: ProjectedFrame, playerId: string): number {
+  return frame.statuses
+    .filter(
+      (status) => status.playerId === playerId
+        && status.kind === 'frozen'
+        && status.startsAt <= frame.time
+        && status.endsAt > frame.time,
+    )
+    .reduce((latest, status) => Math.max(latest, status.endsAt - frame.time), 0)
+}
+
 function classifyPoint(
   point: Vec2,
   distanceFromStart: number,
+  path: Vec2[],
   passerTeam: TeamId,
   frame: ProjectedFrame,
   rules: RuleSetV1,
@@ -60,9 +73,20 @@ function classifyPoint(
     return { level: 'direct', opponentIds: direct.map((player) => player.id) }
   }
 
+  const ballArrivalTime = passArrivalTimeAtDistance(path, distanceFromStart, rules)
   const qReachable = opponents.filter((player) => {
-    if ((frame.cooldowns[player.id]?.q ?? 0) > EPSILON) return false
-    return distance(player.position, point) <= rules.roles[player.role].q.maxDistance + width
+    const qRule = rules.roles[player.role].q
+    const requiredQDistance = Math.max(0, distance(player.position, point) - width)
+    if (requiredQDistance > qRule.maxDistance + EPSILON) return false
+
+    // Cooldown keeps ticking while frozen, but Q cannot begin until both
+    // cooldown and freeze have ended. A player already standing in the
+    // corridor was handled above and can still intercept in place.
+    const qAvailableDelay = Math.max(
+      Math.max(0, frame.cooldowns[player.id]?.q ?? 0),
+      frozenDelayAtFrame(frame, player.id),
+    )
+    return qAvailableDelay + qRule.duration <= ballArrivalTime + EPSILON
   })
   if (qReachable.length > 1) {
     return { level: 'qMultiple', opponentIds: qReachable.map((player) => player.id) }
@@ -119,6 +143,7 @@ export function classifyPassThreat(
     const classification = classifyPoint(
       pointAlongPath(path, midpoint / total),
       midpoint,
+      path,
       passerTeam,
       frame,
       rules,

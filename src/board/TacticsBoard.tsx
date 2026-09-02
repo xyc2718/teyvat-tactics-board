@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
-import { anchorPassPathToPlayer } from '../domain/model/passPath'
 import {
   classifyPassThreat,
   PASS_THREAT_LABELS,
@@ -95,7 +94,6 @@ export function TacticsBoard() {
   const setNotice = useTacticStore((state) => state.setNotice)
   const moveEntity = useTacticStore((state) => state.moveEntity)
   const setPlayerFacing = useTacticStore((state) => state.setPlayerFacing)
-  const createShot = useTacticStore((state) => state.createShot)
   const createAction = useTacticStore((state) => state.createAction)
   const updateActionPathPoint = useTacticStore((state) => state.updateActionPathPoint)
   const updateMoveCurveControl = useTacticStore((state) => state.updateMoveCurveControl)
@@ -180,7 +178,7 @@ export function TacticsBoard() {
     if (tool !== 'select') {
       if (tool === 'shoot') {
         if (id === 'ball') setNotice('射门只需选择一名球员。')
-        else createShot(id)
+        else chooseActor(id)
         return
       }
       if (isRangeInspectionTool(tool)) {
@@ -280,7 +278,9 @@ export function TacticsBoard() {
       return path.map((point, index) => index === drag.index ? drag.point : point)
     }
     if (action.type === 'pass' && drag?.kind === 'entity' && drag.id !== 'ball') {
-      return anchorPassPathToPlayer(action, drag.id, drag.point)
+      return action.actorId === drag.id
+        ? path.map((point, index) => index === 0 ? drag.point : point)
+        : path
     }
     if (action.type === 'shoot' && drag?.kind === 'entity' && drag.id === action.actorId) {
       return path.map((point, index) => index === 0 ? drag.point : point)
@@ -349,7 +349,7 @@ export function TacticsBoard() {
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
-        {elevated && action.type !== 'shoot' && path.map((point, index) => (
+        {elevated && action.type !== 'shoot' && !(action.type === 'pass' && action.targetPlayerId) && path.map((point, index) => (
           <circle
             key={`${action.id}-handle-${index}`}
             cx={point.x * SCALE}
@@ -622,7 +622,7 @@ export function TacticsBoard() {
                 if (isRangeInspectionTool(tool)) {
                   chooseActor(player.id)
                 } else if (tool === 'shoot') {
-                  createShot(player.id)
+                  chooseActor(player.id)
                 } else if (tool === 'move' || tool === 'qMove') {
                   chooseActor(player.id)
                 } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {

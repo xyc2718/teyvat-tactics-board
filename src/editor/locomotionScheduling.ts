@@ -21,11 +21,15 @@ export interface LocomotionPlan {
   duration: number
 }
 
-/** Latest completed position joint in one player's authored move/wait/Q chain. */
+/** Latest authored continuation joint, including pass-start and receive events. */
 export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: string): number {
   return document.actions.reduce((latest, action) => (
     isActorSequenceAction(action, actorId)
       ? Math.max(latest, actionEndTime(action))
+      : action.type === 'pass' && action.actorId === actorId
+        ? Math.max(latest, action.startTime)
+        : action.type === 'receive' && action.actorId === actorId
+          ? Math.max(latest, action.startTime)
       : latest
   ), 0)
 }

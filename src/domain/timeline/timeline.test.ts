@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
-import { movementDuration, passDuration, shotDuration } from './durations'
+import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from './projectFrame'
 import { waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
-  it('uses 1 grid/s movement and 8 grid/s passing', () => {
+  it('uses 1 grid/s movement and an 8-grid, 1-second decelerating pass', () => {
     const document = createDefaultDocument()
+    const passPath = [{ x: 0, y: 0 }, { x: 8, y: 0 }]
     expect(movementDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBe(4)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBe(0.5)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 8, y: 0 }], document.rulesSnapshot)).toBe(1)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBeCloseTo(1 - Math.sqrt(0.5))
+    expect(passDuration(passPath, document.rulesSnapshot)).toBe(1)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 12, y: 0 }], document.rulesSnapshot)).toBe(1)
+    expect(passArrivalTimeAtDistance(passPath, 6, document.rulesSnapshot)).toBeCloseTo(0.5)
+    expect(passArrivalTimeAtDistance(passPath, 8, document.rulesSnapshot)).toBeCloseTo(1)
   })
 
   it('uses inner and outer shooting charge times', () => {
@@ -26,6 +30,28 @@ describe('timeline defaults', () => {
 })
 
 describe('projectFrame', () => {
+  it('projects a pass with linearly decreasing speed', () => {
+    const document = createDefaultDocument()
+    const action: PassAction = {
+      id: 'decelerating-pass', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1,
+      path: [{ x: 5.5, y: 5 }, { x: 13.5, y: 5 }],
+    }
+    document.actions.push(action)
+
+    expect(projectFrame(document, 0.5).ball.position.x).toBeCloseTo(11.5)
+    expect(projectFrame(document, 1).ball.position.x).toBeCloseTo(13.5)
+
+    const short = createDefaultDocument()
+    const shortPath = [{ x: 5.5, y: 5 }, { x: 9.5, y: 5 }]
+    const shortDuration = passDuration(shortPath, short.rulesSnapshot)
+    short.actions.push({
+      id: 'short-decelerating-pass', type: 'pass', actorId: 'blue-water', startTime: 0,
+      duration: shortDuration, path: shortPath,
+    })
+    expect(projectFrame(short, shortDuration / 2).ball.position.x).toBeCloseTo(7.6716, 3)
+    expect(projectFrame(short, shortDuration).ball.position.x).toBeCloseTo(9.5)
+  })
+
   it('normalizes possession flags from the ball carrier and attaches the ball to that player', () => {
     const document = createDefaultDocument()
     const carrier = document.initialScene.players.find((player) => player.id === 'red-fire')!
@@ -384,10 +410,12 @@ describe('projectFrame', () => {
   it('turns overlong passes into a free ball at the configured maximum distance', () => {
     const document = createDefaultDocument()
     const action: PassAction = {
-      id: 'pass-long', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1.5,
+      id: 'pass-long', type: 'pass', actorId: 'blue-water', startTime: 0,
+      duration: passDuration([{ x: 5.5, y: 5 }, { x: 17.5, y: 5 }], document.rulesSnapshot),
       path: [{ x: 5.5, y: 5 }, { x: 17.5, y: 5 }],
     }
     document.actions.push(action)
+    expect(action.duration).toBe(1)
     const frame = projectFrame(document, 2)
     expect(frame.ball.isFree).toBe(true)
     expect(frame.ball.carrierId).toBeNull()

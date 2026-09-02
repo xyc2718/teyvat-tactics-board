@@ -74,7 +74,7 @@ export function actorPrompt(tool: ToolId): string {
 
 export function targetPrompt(tool: ToolId): string {
   if (tool === 'qMove') return '第 2/2 步：参考距离圈点击落点；可直接改选球员或返回第 1 步'
-  if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈，点击队友或空地'
+  if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈；点击队友后系统按其移动轨迹解算接球点，也可点击空地'
   if (tool === 'eZone') return '冰圈始终以霜役为圆心并随其移动'
   if (tool === 'attack') return '点击其他球员可连续切换攻击范围查看对象'
   if (tool === 'strikeRange') return '点击其他球员可连续切换打击范围查看对象'

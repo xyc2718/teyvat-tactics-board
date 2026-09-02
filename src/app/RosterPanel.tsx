@@ -9,7 +9,6 @@ export function RosterPanel() {
   const tool = useTacticStore((state) => state.tool)
   const select = useTacticStore((state) => state.select)
   const chooseActor = useTacticStore((state) => state.chooseActorForTool)
-  const createShot = useTacticStore((state) => state.createShot)
   const createAction = useTacticStore((state) => state.createAction)
   const frame = projectFrame(document, currentTime)
   const selectedPlayer = selection?.kind === 'player'
@@ -31,7 +30,7 @@ export function RosterPanel() {
       return
     }
     if (tool === 'shoot') {
-      createShot(player.id)
+      chooseActor(player.id)
       return
     }
     if (tool === 'move' || tool === 'qMove') {

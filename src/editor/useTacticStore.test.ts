@@ -249,7 +249,7 @@ describe('tactic store timeline edits', () => {
     expect(projectFrame(document, 2).ball).toMatchObject({ carrierId: 'red-fire', position: { x: 11, y: 6 }, isFree: false })
   })
 
-  it('keeps authored pass endpoints attached to the passer and named receiver', () => {
+  it('keeps named passes solved between the passer and receiver', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'anchored-pass',
@@ -266,19 +266,19 @@ describe('tactic store timeline edits', () => {
     let pass = useTacticStore.getState().document.actions[0]
     expect(pass).toMatchObject({ type: 'pass' })
     if (pass?.type !== 'pass') throw new Error('Expected pass action')
-    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 4.5, y: 4 }, { x: 3.5, y: 2.7 }])
+    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 3.5, y: 4.7 }])
     expect(pass.duration).toBeCloseTo(passDuration(pass.path, document.rulesSnapshot))
 
     useTacticStore.getState().moveEntity('blue-fire', { x: 8, y: 5 })
     pass = useTacticStore.getState().document.actions[0]
     if (pass?.type !== 'pass') throw new Error('Expected pass action')
-    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 4.5, y: 4 }, { x: 8, y: 5 }])
+    expect(pass.path).toEqual([{ x: 6.5, y: 5 }, { x: 8, y: 5 }])
     expect(pass.duration).toBeCloseTo(passDuration(pass.path, document.rulesSnapshot))
 
     useTacticStore.getState().undo()
     const restored = useTacticStore.getState().document.actions[0]
     if (restored?.type !== 'pass') throw new Error('Expected pass action')
-    expect(restored.path.at(-1)).toEqual({ x: 3.5, y: 2.7 })
+    expect(restored.path.at(-1)).toEqual({ x: 3.5, y: 4.7 })
   })
 
   it('moves only the origin of a pass to a free landing point', () => {
@@ -316,8 +316,15 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().replaceDocument(imported)
     const pass = useTacticStore.getState().document.actions[0]
     if (pass?.type !== 'pass') throw new Error('Expected pass action')
-    expect(pass.path).toEqual([{ x: 7, y: 5 }, { x: 6, y: 4 }, { x: 8, y: 5 }])
+    expect(pass.path).toEqual([{ x: 7, y: 5 }, { x: 8, y: 5 }])
     expect(pass.duration).toBeCloseTo(passDuration(pass.path, imported.rulesSnapshot))
+    expect(useTacticStore.getState().document.actions).toContainEqual(expect.objectContaining({
+      type: 'receive',
+      actorId: 'blue-fire',
+      sourceActionId: pass.id,
+      startTime: actionEndTime(pass),
+      duration: 0,
+    }))
   })
 
   it('creates one replaceable static move arrow per player without adding timeline actions', () => {
@@ -736,6 +743,122 @@ describe('tactic store timeline edits', () => {
     expect(action).toMatchObject({ type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-fire' })
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
+    expect(useTacticStore.getState().currentTime).toBeCloseTo(actionEndTime(action!))
+    expect(projectFrame(useTacticStore.getState().document, useTacticStore.getState().currentTime).ball.carrierId).toBe('blue-fire')
+
+    useTacticStore.getState().setTool('pass')
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-fire' })
+    expect(useTacticStore.getState().notice).toBeNull()
+  })
+
+  it('solves a moving receiver catch and creates linked keyframes on both player tracks', () => {
+    const document = createDefaultDocument()
+    const receiver = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    document.actions.push({
+      id: 'moving-receiver',
+      type: 'move',
+      actorId: receiver.id,
+      path: [{ ...receiver.position }, { x: receiver.position.x + 4, y: receiver.position.y }],
+      startTime: 0,
+      duration: 4,
+    })
+    document.stepMarkers.push({
+      id: 'pass-step', name: '步骤 1', note: '', time: 0, snapshot: structuredClone(document.initialScene),
+    })
+    useTacticStore.setState({
+      document,
+      activeStepId: 'pass-step',
+      currentTime: 0,
+      tool: 'select',
+      selection: null,
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-water', receiver.position, receiver.id)
+
+    const state = useTacticStore.getState()
+    const pass = state.document.actions.find((action) => action.type === 'pass')
+    const receive = state.document.actions.find(
+      (action) => action.type === 'receive' && action.sourceActionId === pass?.id,
+    )
+    if (!pass || pass.type !== 'pass') throw new Error('Expected pass action')
+    expect(pass.path.at(-1)?.x).toBeGreaterThan(receiver.position.x)
+    expect(receive).toMatchObject({
+      type: 'receive',
+      actorId: receiver.id,
+      sourceActionId: pass.id,
+      startTime: actionEndTime(pass),
+      duration: 0,
+    })
+    expect(projectFrame(state.document, actionEndTime(pass)).ball.carrierId).toBe(receiver.id)
+
+    useTacticStore.getState().updateActionPathPoint('moving-receiver', 1, {
+      x: receiver.position.x,
+      y: receiver.position.y + 4,
+    })
+    const updated = useTacticStore.getState().document
+    const updatedPass = updated.actions.find((action) => action.id === pass.id)
+    const updatedReceive = updated.actions.find(
+      (action) => action.type === 'receive' && action.sourceActionId === pass.id,
+    )
+    if (!updatedPass || updatedPass.type !== 'pass') throw new Error('Expected updated pass action')
+    expect(updatedPass.path.at(-1)?.y).toBeGreaterThan(receiver.position.y)
+    expect(updatedReceive?.startTime).toBeCloseTo(actionEndTime(updatedPass))
+  })
+
+  it('deletes an automatic pass/receive pair as one semantic action', () => {
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-water', { x: 3.5, y: 4.7 }, 'blue-fire')
+    const pass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')
+    const receive = useTacticStore.getState().document.actions.find(
+      (action) => action.type === 'receive' && action.sourceActionId === pass?.id,
+    )
+    expect(pass).toBeDefined()
+    expect(receive).toBeDefined()
+
+    useTacticStore.getState().deleteAction(receive!.id)
+
+    expect(useTacticStore.getState().document.actions.some(
+      (action) => action.id === pass?.id || action.id === receive?.id,
+    )).toBe(false)
+  })
+
+  it('keeps solved pass duration and linked receive timing read-only', () => {
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-water', { x: 3.5, y: 4.7 }, 'blue-fire')
+    const pass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')!
+    const receive = useTacticStore.getState().document.actions.find(
+      (action) => action.type === 'receive' && action.sourceActionId === pass.id,
+    )!
+    const duration = pass.duration
+    const arrival = receive.startTime
+
+    useTacticStore.getState().updateActionTiming(pass.id, 'duration', 9)
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === pass.id)?.duration).toBe(duration)
+    expect(useTacticStore.getState().notice).toContain('自动解算')
+
+    useTacticStore.getState().updateActionTiming(receive.id, 'startTime', 9)
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === receive.id)?.startTime).toBe(arrival)
+    expect(useTacticStore.getState().notice).toContain('自动解算')
+  })
+
+  it('describes a flying pass instead of reporting a generic missing carrier', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'flying-pass', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-fire', startTime: 0, duration: 1,
+      path: [{ x: 5.5, y: 5 }, { x: 3.5, y: 2.7 }],
+    })
+    document.stepMarkers.push({
+      id: 'action-step', name: '步骤 1', note: '', time: 0, snapshot: structuredClone(document.initialScene),
+    })
+    useTacticStore.setState({ document, activeStepId: 'action-step', currentTime: 0.5, past: [], future: [] })
+
+    useTacticStore.getState().setTool('pass')
+
+    expect(useTacticStore.getState().selection).toBeNull()
+    expect(useTacticStore.getState().notice).toContain('传球途中')
   })
 
   it('only allows Frost players to activate a centered follow ice zone', () => {
@@ -843,6 +966,23 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().createShot('red-water')
     shot = useTacticStore.getState().document.actions.at(-1)
     if (shot?.type === 'shoot') expect(shot.path.at(-1)).toEqual({ x: 0, y: 7 })
+  })
+
+  it('jumps shooting to the actor latest locomotion keyframe before creating the shot', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({
+      id: 'future-shot-move', type: 'move', actorId: 'blue-fire', startTime: 1, duration: 3,
+      path: [{ x: 3.5, y: 4.7 }, { x: 17, y: 7 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0 })
+
+    useTacticStore.getState().createShot('blue-fire')
+
+    const state = useTacticStore.getState()
+    const shot = state.document.actions.at(-1)
+    expect(shot).toMatchObject({ type: 'shoot', actorId: 'blue-fire', startTime: 4 })
+    if (shot?.type === 'shoot') expect(shot.path).toEqual([{ x: 17, y: 7 }, { x: 20, y: 7 }])
+    expect(state.currentTime).toBe(4)
   })
 
   it('creates immediately for player-first shooting and ignores legacy point creation while shooting', () => {

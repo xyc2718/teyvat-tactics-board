@@ -40,10 +40,10 @@ export function RulesDrawer() {
               <RuleInput label="小禁区半径" value={rules.field.smallPenaltyRadius} suffix="格" onChange={(value) => updateField('smallPenaltyRadius', value)} />
               <RuleInput label="大禁区半径" value={rules.field.largePenaltyRadius} suffix="格" onChange={(value) => updateField('largePenaltyRadius', value)} />
             </RuleSection>
-            <RuleSection title="传球" description="安全区、可截断区与落地区来自同一组参数。">
+            <RuleSection title="传球" description="按最远传球标定：球从 2 倍标定速度线性减速至 0；默认 8 格耗时 1 秒。">
               <RuleInput label="安全距离" value={rules.passing.safeDistance} suffix="格" onChange={(value) => updatePassing('safeDistance', value)} />
               <RuleInput label="最大有效距离" value={rules.passing.maxDistance} suffix="格" onChange={(value) => updatePassing('maxDistance', value)} />
-              <RuleInput label="球速" value={rules.passing.ballSpeed} suffix="格/s" onChange={(value) => updatePassing('ballSpeed', value)} />
+              <RuleInput label="标定球速" value={rules.passing.ballSpeed} suffix="格/s" onChange={(value) => updatePassing('ballSpeed', value)} />
               <RuleInput label="截断锥起点宽" value={rules.passing.interceptStartWidth} suffix="格" onChange={(value) => updatePassing('interceptStartWidth', value)} />
               <RuleInput label="截断锥终点宽" value={rules.passing.interceptEndWidth} suffix="格" onChange={(value) => updatePassing('interceptEndWidth', value)} />
             </RuleSection>

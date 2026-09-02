@@ -61,6 +61,57 @@ describe('pass threat classification', () => {
     expect(classifyPassThreat(path, 'blue', frame, document.rulesSnapshot).some((segment) => segment.level === 'direct')).toBe(true)
   })
 
+  it('blocks Q interception during freeze but preserves an in-place corridor interception', () => {
+    const document = createDefaultDocument()
+    movePlayer(document, 'red-water', 10, 7)
+    movePlayer(document, 'red-fire', 20, 0)
+    movePlayer(document, 'red-ice', 20, 14)
+    document.rulesSnapshot.passing.interceptStartWidth = 0.1
+    document.rulesSnapshot.passing.interceptEndWidth = 0.1
+    const path = [{ x: 5.5, y: 5 }, { x: 13.5, y: 5 }]
+    const frame = projectFrame(document, 0)
+    frame.statuses.push({
+      id: 'frozen-interceptor',
+      playerId: 'red-water',
+      kind: 'frozen',
+      sourceActionId: 'ice-q',
+      startsAt: 0,
+      endsAt: 2,
+    })
+
+    let segments = classifyPassThreat(path, 'blue', frame, document.rulesSnapshot)
+    expect(segments.some((segment) => segment.level === 'qSingle')).toBe(false)
+
+    frame.players.find((player) => player.id === 'red-water')!.position = { x: 10, y: 5.05 }
+    segments = classifyPassThreat(path, 'blue', frame, document.rulesSnapshot)
+    expect(segments.some((segment) => segment.level === 'direct')).toBe(true)
+  })
+
+  it('allows an instant Q only when freeze and cooldown end before the ball arrives', () => {
+    const document = createDefaultDocument()
+    movePlayer(document, 'red-water', 10, 7)
+    movePlayer(document, 'red-fire', 20, 0)
+    movePlayer(document, 'red-ice', 20, 14)
+    document.rulesSnapshot.passing.interceptStartWidth = 0.1
+    document.rulesSnapshot.passing.interceptEndWidth = 0.1
+    const path = [{ x: 5.5, y: 5 }, { x: 13.5, y: 5 }]
+    const frame = projectFrame(document, 0)
+    frame.statuses.push({
+      id: 'brief-freeze',
+      playerId: 'red-water',
+      kind: 'frozen',
+      sourceActionId: 'ice-q',
+      startsAt: 0,
+      endsAt: 0.25,
+    })
+    frame.cooldowns['red-water']!.q = 0.25
+
+    expect(classifyPassThreat(path, 'blue', frame, document.rulesSnapshot).some((segment) => segment.level === 'qSingle')).toBe(true)
+
+    frame.cooldowns['red-water']!.q = 1.1
+    expect(classifyPassThreat(path, 'blue', frame, document.rulesSnapshot).some((segment) => segment.level === 'qSingle')).toBe(false)
+  })
+
   it('preserves every corner and the final endpoint of a multi-point path', () => {
     const document = createDefaultDocument()
     const frame = projectFrame(document, 0)
