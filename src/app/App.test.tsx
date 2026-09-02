@@ -240,18 +240,28 @@ describe('App shell', () => {
     expect(screen.getByText('等待时长')).toBeInTheDocument()
   })
 
-  it('keeps later player locomotion visible from an earlier paused joint', () => {
+  it('keeps later locomotion and shots visible from an earlier paused joint', () => {
     const document = createDefaultDocument()
     document.actions.push({
       id: 'future-path', type: 'move', actorId: 'blue-fire', startTime: 5, duration: 2,
       path: [{ x: 3.5, y: 2.7 }, { x: 5.5, y: 2.7 }],
     })
+    document.actions.push({
+      id: 'future-shot', type: 'shoot', actorId: 'blue-fire', startTime: 7, duration: 0.8, charge: 'yellow',
+      path: [{ x: 5.5, y: 2.7 }, { x: 20, y: 7 }],
+    })
     useTacticStore.setState({ document, currentTime: 0 })
     const { container } = render(<App />)
     expect(container.querySelector('[data-action-id="future-path"] .action-move')).toBeInTheDocument()
+    expect(container.querySelector('[data-action-id="future-shot"] .action-shoot')).toBeInTheDocument()
 
     act(() => useTacticStore.getState().setCurrentTime(5))
     expect(container.querySelector('[data-action-id="future-path"] .action-move')).toBeInTheDocument()
+    expect(container.querySelector('[data-action-id="future-shot"] .action-shoot')).toBeInTheDocument()
+
+    act(() => useTacticStore.setState({ currentTime: 0, isPlaying: true }))
+    expect(container.querySelector('[data-action-id="future-path"] .action-move')).not.toBeInTheDocument()
+    expect(container.querySelector('[data-action-id="future-shot"] .action-shoot')).not.toBeInTheDocument()
   })
 
   it('lets a selected player turn the latest run into an editable curve directly', () => {

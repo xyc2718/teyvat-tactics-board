@@ -317,9 +317,9 @@ export function TacticsBoard() {
     const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? resolvedMovePath(moveAction) : path
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
-    const remainingLocomotion = (action.type === 'move' || action.type === 'qMove')
+    const remainingPlannedPath = (action.type === 'move' || action.type === 'qMove' || action.type === 'shoot')
       && action.startTime + action.duration >= currentTime - 1e-5
-    if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingLocomotion)) return null
+    if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const waterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
     const receiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
