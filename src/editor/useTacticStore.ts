@@ -183,16 +183,37 @@ function actorToolPreviewTime(document: TacticDocumentV1, actorId: string, tool:
   return planSimpleQ(document, actorId, continuationTime)?.startTime ?? continuationTime
 }
 
-function prepareTimelineEditingStep(state: TacticStore) {
+function prepareTimelineEditingStep(state: TacticStore, preferredTime?: number) {
   if (state.boardMode !== 'simulation' || !isOpeningStep(state.document, state.activeStepId)) return null
 
   const next = cloneDocument(state.document)
-  const repairedStepId = ensureOpeningActionBoundary(next)
+  const targetTime = preferredTime === undefined
+    ? Math.max(FIRST_ACTION_STEP_TIME, actionContinuationTime(next))
+    : Math.max(FIRST_ACTION_STEP_TIME, preferredTime)
+  let createdStepId: string | null = null
   let laterSteps = sortedStepMarkers(next).filter((step) => !isOpeningStep(next, step.id))
-  let createdStepId = repairedStepId
+
+  if (preferredTime !== undefined) {
+    let target = laterSteps.find((step) => Math.abs(step.time - targetTime) <= 1e-6)
+    if (!target) {
+      createdStepId = appendStepMarker(next, targetTime)
+      target = next.stepMarkers.find((step) => step.id === createdStepId)
+    }
+    if (!target) return null
+    return {
+      document: next,
+      targetStepId: target.id,
+      time: targetTime,
+      changed: createdStepId !== null,
+    }
+  }
+
+  const repairedStepId = ensureOpeningActionBoundary(next)
+  if (repairedStepId) createdStepId = repairedStepId
+  laterSteps = sortedStepMarkers(next).filter((step) => !isOpeningStep(next, step.id))
 
   if (laterSteps.length === 0) {
-    createdStepId = appendStepMarker(next, Math.max(FIRST_ACTION_STEP_TIME, actionContinuationTime(next)))
+    createdStepId = appendStepMarker(next, targetTime)
     laterSteps = sortedStepMarkers(next).filter((step) => !isOpeningStep(next, step.id))
   }
 
@@ -201,7 +222,7 @@ function prepareTimelineEditingStep(state: TacticStore) {
   return {
     document: next,
     targetStepId: target.id,
-    time: Math.max(target.time, actionContinuationTime(next)),
+    time: Math.max(target.time, targetTime),
     changed: createdStepId !== null,
   }
 }
@@ -486,15 +507,13 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       && TIMELINE_WRITING_TOOLS.has(tool)
       && isOpeningStep(current.document, current.activeStepId)
     ) {
-      if (tool === 'pass') {
-        const continuationTime = actionContinuationTime(current.document)
-        if (!projectFrame(current.document, continuationTime).ball.carrierId) {
-          set({ tool, selection: null, notice: missingPassCarrierNotice(current.document, continuationTime), isPlaying: false })
-          return
-        }
-      }
       set((state) => {
-        const prepared = prepareTimelineEditingStep(state)
+        // The protected opening step always renders the initial scene. Pass activation must
+        // therefore inspect that same visible instant, not a hidden continuation at timeline end.
+        const prepared = prepareTimelineEditingStep(
+          state,
+          tool === 'pass' ? FIRST_ACTION_STEP_TIME : undefined,
+        )
         if (!prepared) return {}
         return {
           ...(prepared.changed ? applyDocument(state, prepared.document) : {}),

@@ -82,6 +82,42 @@ describe('tactic store timeline edits', () => {
     expect(getStepActionOwnership(state.document, state.activeStepId)?.count).toBe(1)
   })
 
+  it('starts a pass from the visible opening possession instead of checking the hidden timeline end', () => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    document.actions.push({
+      id: 'future-loose-ball',
+      type: 'possession',
+      carrierId: null,
+      position: { x: 8, y: 7 },
+      startTime: 4,
+      duration: 0,
+    })
+    useTacticStore.setState({
+      document,
+      activeStepId: openingId,
+      currentTime: 4,
+      selection: null,
+      tool: 'select',
+      past: [],
+      future: [],
+    })
+
+    expect(projectFrame(document, 4).ball.carrierId).toBeNull()
+    useTacticStore.getState().setTool('pass')
+
+    const state = useTacticStore.getState()
+    expect(state.activeStepId).not.toBe(openingId)
+    expect(state.currentTime).toBe(0)
+    expect(state.selection).toEqual({ kind: 'player', id: 'blue-water' })
+    expect(state.tool).toBe('pass')
+    expect(state.notice).toBeNull()
+    expect(state.document.stepMarkers.find((step) => step.id === state.activeStepId)).toMatchObject({
+      time: 0,
+      name: '步骤 1',
+    })
+  })
+
   it('keeps inspection and basic-board arrows in the opening frame without creating a timeline step', () => {
     const document = createDefaultDocument()
     const openingId = document.stepMarkers[0]!.id
