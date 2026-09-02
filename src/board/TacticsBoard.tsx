@@ -10,7 +10,7 @@ import {
   evaluateShotActionPressure,
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
-import { waterQMoveBoost } from '../domain/timeline/movementEffects'
+import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
@@ -320,7 +320,8 @@ export function TacticsBoard() {
     const remainingLocomotion = (action.type === 'move' || action.type === 'qMove')
       && action.startTime + action.duration >= currentTime - 1e-5
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingLocomotion)) return null
-    const waterBoost = action.type === 'move' ? waterQMoveBoost(document, action) : null
+    const waterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
+    const receiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
       <g
@@ -346,6 +347,7 @@ export function TacticsBoard() {
               {qEffect && qEffect.reduction > 0.005 && <title>冰圈影响：原路径 {qEffect.authoredDistance.toFixed(2)} 格，实际 Q 位移 {qEffect.effectiveDistance.toFixed(2)} 格</title>}
             </polyline>}
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
+        {receiveBoost && <ReceiveBoostRoute effect={receiveBoost} />}
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
@@ -438,6 +440,11 @@ export function TacticsBoard() {
   const boardRenderPercent = Math.min(1, boardZoom) * 100
   const hasPassLegendContext = boardMode === 'simulation'
     && Boolean(tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass'))
+  const showsSimulationAnalysis = boardMode === 'simulation' && document.view.analysis
+  const basicToolName = tool === 'move' ? '移动箭头' : toolLabels[tool].label
+  const basicToolPrompt = isRangeInspectionTool(tool)
+    ? toolActor ? targetPrompt(tool) : actorPrompt(tool)
+    : toolActor ? '点击球场设置箭头终点' : '选择一名球员'
 
   return (
     <div
@@ -523,9 +530,9 @@ export function TacticsBoard() {
         <text x="12" y="20" className="field-label">蓝方球门</text>
         <text x={fieldWidth - 12} y="20" textAnchor="end" className="field-label">红方球门</text>
 
-        {boardMode === 'simulation' && (document.view.analysis || isRangeInspectionTool(tool)) && selectedPlayer && (
+        {(showsSimulationAnalysis || isRangeInspectionTool(tool)) && selectedPlayer && (
           <g className="analysis-ranges" pointerEvents="none">
-            {(document.view.analysis || tool === 'attack') && <>
+            {(showsSimulationAnalysis || tool === 'attack') && <>
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
@@ -551,7 +558,7 @@ export function TacticsBoard() {
                 <title>Q 技能 + 攻击最大打击范围：{(rules.roles[selectedPlayer.role].q.maxDistance + rules.roles[selectedPlayer.role].attackRadius).toFixed(1)} 格</title>
               </circle>
             )}
-            {document.view.analysis && <>
+            {showsSimulationAnalysis && <>
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
@@ -755,7 +762,7 @@ export function TacticsBoard() {
       </div>
       {tool !== 'select' && <div className="board-workflow-guide" role="status">
         <span className="guide-step">{isRangeInspectionTool(tool) ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
-        <span><strong>{boardMode === 'basic' ? '移动箭头' : toolLabels[tool].label}</strong>{boardMode === 'basic' ? (toolActor ? '点击球场设置箭头终点' : '选择一名球员') : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
+        <span><strong>{boardMode === 'basic' ? basicToolName : toolLabels[tool].label}</strong>{boardMode === 'basic' ? basicToolPrompt : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
         <span className="guide-actions">
           {boardMode === 'simulation' && toolActor && (tool === 'move' || tool === 'qMove') && <button
             type="button"
@@ -772,7 +779,7 @@ export function TacticsBoard() {
         {boardMode === 'basic'
           ? tool === 'select'
             ? '拖动球员调整站位 · 选择球员后使用“移动箭头” · 点击箭头可编辑或删除'
-            : toolActor ? '点击球场设置移动箭头终点' : '先选择一名球员'
+            : basicToolPrompt
           : tool === 'select' ? '非播放状态只停在动作节点 · 拖动节点球员可联动前后路径' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}
       </div>
       </div>
@@ -868,6 +875,18 @@ function WaterBoostRoute({
   return <g className="water-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
     <polyline points={pointsAttribute(effect.path)} className="water-q-boost-segment">
       <title>水 Q 加速段，累计身位收益 {effect.separationGain.toFixed(2)} 格</title>
+    </polyline>
+  </g>
+}
+
+function ReceiveBoostRoute({
+  effect,
+}: {
+  effect: NonNullable<ReturnType<typeof receiveMoveBoost>>
+}) {
+  return <g className="receive-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
+    <polyline points={pointsAttribute(effect.path)} className="ice-receive-boost-segment">
+      <title>冰接球加速段，累计身位收益 {effect.separationGain.toFixed(2)} 格</title>
     </polyline>
   </g>
 }

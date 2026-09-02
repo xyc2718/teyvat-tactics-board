@@ -12,7 +12,6 @@ import {
 import type {
   EZoneAction,
   MoveAction,
-  PassAction,
   PlayerState,
   PlayerStatus,
   ProjectedFrame,
@@ -23,7 +22,12 @@ import type {
 } from '../model/types'
 import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
 import { actionEndTime, passPathProgress } from './durations'
-import { waterQGainAtTime, waterQMoveBoost } from './movementEffects'
+import {
+  movementReceiveBoostWindowFor,
+  receiveBoostWindowFor,
+  waterQGainAtTime,
+  waterQMoveBoost,
+} from './movementEffects'
 
 type IceQHitMap = Map<string, IceQHit[]>
 
@@ -38,55 +42,6 @@ function clonePlayers(players: PlayerState[]): PlayerState[] {
 
 function getActorRole(document: TacticDocumentV1, actorId: string) {
   return document.initialScene.players.find((player) => player.id === actorId)?.role
-}
-
-function receiveBoostWindowFor(document: TacticDocumentV1, playerId: string, time: number) {
-  const role = getActorRole(document, playerId)
-  const boost = role ? document.rulesSnapshot.roles[role].receiveBoost : undefined
-  if (!boost || boost.duration <= 0) return undefined
-  const source = [...document.actions]
-    .filter(
-      (candidate): candidate is PassAction =>
-        candidate.type === 'pass' &&
-        candidate.targetPlayerId === playerId &&
-        pathLength(candidate.path) <= document.rulesSnapshot.passing.maxDistance &&
-        actionEndTime(candidate) <= time &&
-        actionEndTime(candidate) + boost.duration > time,
-    )
-    .sort((a, b) => actionEndTime(b) - actionEndTime(a))[0]
-  return source ? { start: actionEndTime(source), end: actionEndTime(source) + boost.duration, boost } : undefined
-}
-
-function movementBoostWindowFor(
-  document: TacticDocumentV1,
-  playerId: string,
-  actionStart: number,
-  time: number,
-) {
-  const receiverRole = getActorRole(document, playerId)
-  const ownBoost = receiverRole ? document.rulesSnapshot.roles[receiverRole].receiveBoost : undefined
-  for (const source of [...document.actions]
-    .filter(
-      (candidate): candidate is PassAction =>
-        candidate.type === 'pass' &&
-        candidate.targetPlayerId === playerId &&
-        pathLength(candidate.path) <= document.rulesSnapshot.passing.maxDistance &&
-        actionEndTime(candidate) <= time,
-    )
-    .sort((a, b) => actionEndTime(b) - actionEndTime(a))) {
-    let boost = ownBoost
-    if (!boost) {
-      const passerRole = getActorRole(document, source.actorId)
-      const passerBoost = passerRole ? document.rulesSnapshot.roles[passerRole].receiveBoost : undefined
-      if (passerBoost?.transfersOnPass && receiveBoostWindowFor(document, source.actorId, source.startTime)) {
-        boost = passerBoost
-      }
-    }
-    if (boost && boost.duration > 0 && actionEndTime(source) + boost.duration > actionStart) {
-      return { start: actionEndTime(source), end: actionEndTime(source) + boost.duration, boost }
-    }
-  }
-  return undefined
 }
 
 function freezeWindowsFor(document: TacticDocumentV1, actorId: string, hitMap: IceQHitMap): Array<{ start: number; end: number }> {
@@ -119,7 +74,7 @@ function moveDistanceWithoutEZoneSlow(
     traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
   }
 
-  const receiveWindow = movementBoostWindowFor(document, action.actorId, action.startTime, effectiveTime)
+  const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, effectiveTime)
   if (receiveWindow) {
     const elapsed = Math.max(
       0,

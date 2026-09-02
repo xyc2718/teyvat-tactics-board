@@ -103,9 +103,9 @@ export const defaultRules: RuleSetV1 = {
     },
   },
   matchups: {
-    water: { water: 1, fire: null, ice: 0 },
-    fire: { water: 0, fire: 0, ice: null },
-    ice: { water: 1, fire: 0, ice: 0 },
+    water: { water: 1, fire: -2, ice: 1 },
+    fire: { water: 0, fire: 0, ice: 1 },
+    ice: { water: -1, fire: 0, ice: 1 },
   },
   modifiers: [
     {

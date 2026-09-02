@@ -5,7 +5,7 @@ import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
 
 const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'shoot', 'annotation']
-const basicTools: ToolId[] = ['select', 'move']
+const basicTools: ToolId[] = ['select', 'move', 'attack', 'strikeRange']
 const advancedTools: ToolId[] = ['attack', 'strikeRange', 'eZone']
 
 export function TopToolbar() {

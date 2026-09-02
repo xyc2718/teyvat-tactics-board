@@ -209,6 +209,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .ice-zone.active { fill: rgba(112, 191, 226, .2); filter: drop-shadow(0 0 7px rgba(112, 191, 226, .35)); }
 .separation-extension { stroke: #f4cf67; stroke-width: 5; stroke-dasharray: 3 6; stroke-linecap: round; }
 .water-q-boost-segment { fill:none; stroke:#58e0f1; stroke-width:8px; stroke-linecap:round; stroke-dasharray:13 7; filter:drop-shadow(0 0 4px rgba(88,224,241,.65)); }
+.ice-receive-boost-segment { fill:none; stroke:#d9f4ff; stroke-width:8px; stroke-linecap:round; stroke-dasharray:3 8; filter:drop-shadow(0 0 5px rgba(164,225,250,.82)); }
 .ice-q-hit-radius { fill:rgba(150,225,255,.08); stroke:#a9e9ff; stroke-width:2px; stroke-dasharray:5 4; }
 .range-circle { fill: none; stroke-width: 2; pointer-events: none; }
 .attack-range { fill: rgba(255, 113, 92, .07); stroke: rgba(255, 132, 111, .62); }

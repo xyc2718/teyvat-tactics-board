@@ -3,7 +3,7 @@ import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from './projectFrame'
-import { waterQMoveBoost } from './movementEffects'
+import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
   it('uses 1 grid/s movement and an 8-grid, 1-second decelerating pass', () => {
@@ -230,6 +230,28 @@ describe('projectFrame', () => {
     expect(effect?.separationGain).toBeCloseTo(0.8)
     expect(effect?.path.at(-1)?.x).toBeCloseTo(13.1)
     expect(projectFrame(document, 5.3).players.find((player) => player.id === 'blue-water')?.position.x).toBeCloseTo(13.1)
+  })
+
+  it('shares the solved ice receive-boost interval between projection and route analysis', () => {
+    const document = createDefaultDocument()
+    const pass: PassAction = {
+      id: 'ice-reception-pass', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-ice', startTime: 0.5, duration: 0.5,
+      path: [{ x: 5.5, y: 5 }, { x: 3.5, y: 9.3 }],
+    }
+    const move: MoveAction = {
+      id: 'ice-reception-run', type: 'move', actorId: 'blue-ice', startTime: 0.5, duration: 6,
+      path: [{ x: 3.5, y: 9.3 }, { x: 9.5, y: 9.3 }],
+    }
+    document.actions.push(pass, move)
+    const effect = receiveMoveBoost(document, move)
+
+    expect(effect?.sourceActionId).toBe(pass.id)
+    expect(effect?.overlapStart).toBe(1)
+    expect(effect?.overlapEnd).toBeCloseTo(5.3)
+    expect(effect?.separationGain).toBeCloseTo(0.8)
+    expect(effect?.path[0]?.x).toBeCloseTo(4)
+    expect(effect?.path.at(-1)?.x).toBeCloseTo(9.1)
+    expect(projectFrame(document, 5.3).players.find((player) => player.id === 'blue-ice')?.position.x).toBeCloseTo(9.1)
   })
 
   it('projects an instantaneous water Q before a same-time move regardless of file action order', () => {

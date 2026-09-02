@@ -477,8 +477,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       set({ isPlaying: false, currentTime: nearestTimelineJoint(current.document, current.currentTime) })
       current = get()
     }
-    if (current.boardMode === 'basic' && tool !== 'select' && tool !== 'move') {
-      set({ notice: '基础模式只提供球员选择和移动箭头。' })
+    if (current.boardMode === 'basic' && tool !== 'select' && tool !== 'move' && !isRangeInspectionTool(tool)) {
+      set({ notice: '基础模式只提供球员选择、移动箭头和范围查看。' })
       return
     }
     if (

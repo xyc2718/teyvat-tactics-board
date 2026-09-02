@@ -95,6 +95,22 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().document.actions).toHaveLength(0)
 
     useTacticStore.getState().setBoardMode('basic')
+    useTacticStore.getState().setTool('attack')
+    useTacticStore.getState().chooseActorForTool('blue-fire')
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'attack',
+      selection: { kind: 'player', id: 'blue-fire' },
+    })
+
+    useTacticStore.getState().setTool('strikeRange')
+    useTacticStore.getState().chooseActorForTool('blue-water')
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'strikeRange',
+      selection: { kind: 'player', id: 'blue-water' },
+    })
+    expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+
     useTacticStore.getState().setTool('move')
     useTacticStore.getState().createAction('blue-water', { x: 8, y: 5 })
     expect(useTacticStore.getState().document.stepMarkers).toHaveLength(1)

@@ -4,6 +4,14 @@ import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } fr
 import { evaluateMatchup, evaluateWarnings } from './evaluateRules'
 
 describe('rule assistance', () => {
+  it('uses the configured directional default matchup matrix', () => {
+    expect(createDefaultDocument().rulesSnapshot.matchups).toEqual({
+      water: { water: 1, fire: -2, ice: 1 },
+      fire: { water: 0, fire: 0, ice: 1 },
+      ice: { water: -1, fire: 0, ice: 1 },
+    })
+  })
+
   it.each([
     [3, 'info'],
     [6, 'warning'],

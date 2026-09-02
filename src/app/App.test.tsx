@@ -159,6 +159,8 @@ describe('App shell', () => {
     expect(useTacticStore.getState().boardMode).toBe('basic')
     expect(screen.getByRole('button', { name: '基础模式' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '移动箭头' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '攻击范围' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '打击范围' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Q 技能' })).not.toBeInTheDocument()
     expect(container.querySelector('.timeline-panel')).not.toBeInTheDocument()
     expect(container.querySelector('.roster-panel')).not.toBeInTheDocument()
@@ -168,6 +170,17 @@ describe('App shell', () => {
     expect(container.querySelector('[data-action-id="hidden-timeline-move"]')).not.toBeInTheDocument()
     expect(container.querySelector('[data-static-arrow-id="basic-arrow"]')).toBeInTheDocument()
     expect(screen.getByText('1 个移动箭头')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '攻击范围' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { pointerId: 1, button: 0 })
+    expect(container.querySelector('.attack-range')).toHaveAttribute('r', '75')
+    expect(useTacticStore.getState().document.actions).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '打击范围' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 2, button: 0 })
+    expect(container.querySelector('.strike-range')).toHaveAttribute('r', '175')
+    expect(container.querySelector('.attack-range')).not.toBeInTheDocument()
+    expect(useTacticStore.getState().document.actions).toHaveLength(1)
 
     act(() => useTacticStore.setState({ selection: { kind: 'staticArrow', id: 'basic-arrow' } }))
     fireEvent.click(screen.getByRole('button', { name: '删除所选箭头' }))
@@ -708,6 +721,28 @@ describe('App shell', () => {
     expect(container.querySelector('.action-label')).not.toBeInTheDocument()
     expect(container.querySelector('.separation-label')).not.toBeInTheDocument()
     expect(container.querySelector('.freeze-label')).not.toBeInTheDocument()
+  })
+
+  it('renders an ice receive-boosted run with its own route pattern', () => {
+    const document = createDefaultDocument()
+    const pass: PassAction = {
+      id: 'ice-boost-source', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-ice', startTime: 0, duration: 0.5,
+      path: [{ x: 5.5, y: 5 }, { x: 3.5, y: 9.3 }],
+    }
+    const move: MoveAction = {
+      id: 'ice-boost-run', type: 'move', actorId: 'blue-ice', startTime: 0.5, duration: 5,
+      path: [{ x: 3.5, y: 9.3 }, { x: 8.5, y: 9.3 }],
+    }
+    document.actions.push(pass, move)
+    useTacticStore.setState({ document, selection: { kind: 'action', id: move.id } })
+    const { container } = render(<App />)
+
+    const selected = container.querySelector('[data-action-id="ice-boost-run"]')!
+    const receiveRoute = selected.querySelector('.receive-boost-route')
+    expect(receiveRoute).toHaveAttribute('data-source-action-id', pass.id)
+    expect(receiveRoute?.querySelector('.ice-receive-boost-segment')).toBeInTheDocument()
+    expect(receiveRoute?.querySelector('title')).toHaveTextContent('冰接球加速段')
+    expect(receiveRoute?.querySelector('.water-q-boost-segment')).not.toBeInTheDocument()
   })
 
   it('opens a live, closable logic explanation and labels the next-step action clearly', () => {
