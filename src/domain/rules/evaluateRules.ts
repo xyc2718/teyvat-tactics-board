@@ -1,4 +1,5 @@
 import {
+  angleToVector,
   clampPoint,
   distance,
   goalCenter,
@@ -32,6 +33,32 @@ function latestPassTo(document: TacticDocumentV1, playerId: string, time: number
         action.type === 'pass' && action.targetPlayerId === playerId && actionEndTime(action) <= time,
     )
     .sort((a, b) => b.startTime - a.startTime)[0]
+}
+
+function isBadIceEscapeFacing(
+  attackerFacing: number,
+  defenderPosition: { x: number; y: number },
+  defenderFacing: number,
+  knockback: number,
+  fieldWidth: number,
+  fieldHeight: number,
+): boolean {
+  if (knockback <= 0) return false
+  const defenderAfter = clampPoint(
+    oppositeFacingOffset(defenderPosition, defenderFacing, knockback),
+    fieldWidth,
+    fieldHeight,
+  )
+  const defenderBackward = {
+    x: defenderAfter.x - defenderPosition.x,
+    y: defenderAfter.y - defenderPosition.y,
+  }
+  const attackerForward = angleToVector(attackerFacing)
+
+  // Ice escapes by continuing forward through the frozen defender. A backward
+  // fall opposing that direction opens separation; falling with or across the
+  // escape direction does not.
+  return defenderBackward.x * attackerForward.x + defenderBackward.y * attackerForward.y >= -1e-6
 }
 
 export function evaluateMatchup(
@@ -79,18 +106,14 @@ export function evaluateMatchup(
     longPass: passDistance > rules.passing.safeDistance,
     badFacing:
       attacker.role === 'ice' &&
-      distance(
-        clampPoint(
-          oppositeFacingOffset(
-            defender.position,
-            defender.facing,
-            rules.roles.ice.q.facingKnockback ?? 0,
-          ),
-          rules.field.width,
-          rules.field.height,
-        ),
-        attacker.position,
-      ) <= gap,
+      isBadIceEscapeFacing(
+        attacker.facing,
+        defender.position,
+        defender.facing,
+        rules.roles.ice.q.facingKnockback ?? 0,
+        rules.field.width,
+        rules.field.height,
+      ),
   }
   const appliedModifiers = rules.modifiers.filter(
     (modifier) => modifier.enabled && conditions[modifier.condition],

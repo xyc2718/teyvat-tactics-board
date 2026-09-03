@@ -93,7 +93,7 @@ describe('tactic narrative', () => {
       },
     )
     const hitText = buildTacticNarrative(movingDocument).entries.find((entry) => entry.id === 'action-moving-target-q')?.detail
-    expect(hitText).toContain('(4.4, 7.8)')
+    expect(hitText).toContain('(4.5, 7.8)')
 
     const boundaryDocument = createDefaultDocument()
     const boundaryTarget = boundaryDocument.initialScene.players.find((player) => player.id === 'red-water')!

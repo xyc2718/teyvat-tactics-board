@@ -24,7 +24,7 @@ import { projectFrame } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
-import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion, syncFollowMoveTimings } from './locomotionScheduling'
+import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion, syncConstrainedMovePath, syncFollowMoveTimings } from './locomotionScheduling'
 import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
 
 type Selection =
@@ -1217,6 +1217,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const next = cloneDocument(document)
       next.actions.push(action)
       if (action.type === 'pass') syncPassEndpoints(next)
+      if (action.type === 'move' || action.type === 'qMove') syncPassEndpoints(next, action.actorId)
       refreshStepSnapshots(next)
       return {
         ...applyDocument(state, next),
@@ -1253,8 +1254,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           )
         }
       }
-      if (action.type === 'move' && !action.timingConstraint) {
-        action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (action.type === 'move') {
+        if (action.timingConstraint) syncConstrainedMovePath(draft, action)
+        else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       }
       if (action.type === 'pass') syncPassEndpoints(draft)
       if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
@@ -1290,7 +1292,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           y: (start.y + end.y) / 2 + (dx / length) * offset,
         }, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
       }
-      if (!action.timingConstraint) action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (action.timingConstraint) syncConstrainedMovePath(draft, action)
+      else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft, action.actorId)
@@ -1305,7 +1308,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const action = draft.actions.find((candidate) => candidate.id === actionId)
       if (!action || action.type !== 'move' || action.targetPlayerId || !action.curveControl) return
       action.curveControl = clampPoint(rawPoint, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
-      if (!action.timingConstraint) action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (action.timingConstraint) syncConstrainedMovePath(draft, action)
+      else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft, action.actorId)
@@ -1323,6 +1327,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (fixed) {
         action.timingConstraint = { kind: 'fixed' }
         action.duration = Math.max(MIN_FIXED_MOVE_DURATION, action.duration)
+        syncConstrainedMovePath(draft, action)
       } else {
         delete action.timingConstraint
         action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
@@ -1340,7 +1345,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         patch.document,
         state.currentTime,
       ),
-      notice: fixed ? '已固定该跑动的持续时间。' : '已恢复按路径与规则自动计算跑动时间。',
+      notice: fixed ? '已按基础移速锁定这段跑动的时间和路径长度。' : '已恢复按路径与规则自动计算跑动时间。',
     }
   }),
 
@@ -1362,6 +1367,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (!action || action.type !== 'move' || action.targetPlayerId) return
       action.timingConstraint = { kind: 'keyframe', reference: { ...reference } }
       action.duration = referenceTime - action.startTime
+      syncConstrainedMovePath(draft, action)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft, action.actorId)
@@ -1400,6 +1406,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         if (!candidate || candidate.type !== 'move' || candidate.targetPlayerId) return
         candidate.timingConstraint = { kind: 'fixed' }
         candidate.duration = Math.max(MIN_FIXED_MOVE_DURATION, safeValue)
+        syncConstrainedMovePath(draft, candidate)
         if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, candidate.actorId)
         syncFollowMoveTimings(draft)
         syncPassEndpoints(draft, candidate.actorId)

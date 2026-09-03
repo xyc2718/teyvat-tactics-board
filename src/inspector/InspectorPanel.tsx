@@ -159,7 +159,7 @@ export function InspectorPanel() {
               action={selectedAction}
               document={document}
             />}
-            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '当前时间约束保持不变。' : '动作时长会随曲线长度自动更新。'}</p>}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '路径总长会保持与固定时间一致。' : '动作时长会随曲线长度自动更新。'}</p>}
             {selectedAction.type === 'move' && selectedAction.targetPlayerId && <p className="callout">贴身跟随 {document.initialScene.players.find((player) => player.id === selectedAction.targetPlayerId)?.name ?? selectedAction.targetPlayerId}；结束时间同步目标动作，追上后保持约 {selectedAction.followGap?.toFixed(2)} 格攻击间距。</p>}
             {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
             {selectedAction.type === 'shoot' && <label className="field-row"><span>蓄力等级</span>
@@ -245,7 +245,7 @@ function MoveTimingEditor({
         checked={timingFixed}
         onChange={(event) => setMoveTimingFixed(action.id, event.target.checked)}
       />
-      <span><strong>固定跑动时间</strong><small>按指定时长或其他球员关键帧到达终点</small></span>
+      <span><strong>固定跑动时间</strong><small>按指定时长或其他球员关键帧锁定跑动距离</small></span>
     </label>
     {timingFixed && <div className="move-timing-controls">
       <label className="field-row">
@@ -268,7 +268,7 @@ function MoveTimingEditor({
         </button>
         {keyframe && <button type="button" className="quiet-button" onClick={() => setMoveTimingFixed(action.id, true)}>改为手动时间</button>}
       </div>
-      <p className="callout">固定时间会让这段跑动准时到达终点，并覆盖这段跑动的自动速度加成与冰圈减速。</p>
+      <p className="callout">固定时间会按基础移速重算并锁定路径长度；拖动终点只改变方向，不会把同一段路改成慢跑。</p>
     </div>}
     {dialogOpen && <MoveKeyframeDialog
       action={action}

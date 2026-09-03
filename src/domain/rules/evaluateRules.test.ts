@@ -90,6 +90,52 @@ describe('rule assistance', () => {
     },
   )
 
+  it('treats a defender falling backward against an attacking Ice player as favorable separation', () => {
+    const document = createDefaultDocument()
+    const attacker = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    const defender = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    attacker.position = { x: 8, y: 7 }
+    defender.position = { x: 9, y: 7 }
+    attacker.facing = 0
+    defender.facing = 0
+
+    const result = evaluateMatchup(document, 0, attacker.id, defender.id)
+
+    expect(result?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
+  })
+
+  it('applies the facing penalty only when a defender falls along an attacking Ice player escape direction', () => {
+    const document = createDefaultDocument()
+    const iceAttacker = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    const waterAttacker = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const defender = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    iceAttacker.position = { x: 8, y: 7 }
+    waterAttacker.position = { x: 8, y: 7 }
+    defender.position = { x: 9, y: 7 }
+    iceAttacker.facing = 0
+    waterAttacker.facing = 0
+    defender.facing = 180
+
+    const iceResult = evaluateMatchup(document, 0, iceAttacker.id, defender.id)
+    const waterResult = evaluateMatchup(document, 0, waterAttacker.id, defender.id)
+
+    expect(iceResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(true)
+    expect(waterResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
+  })
+
+  it('ignores facing when Ice has no configured freeze knockback', () => {
+    const document = createDefaultDocument()
+    const attacker = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    const defender = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    attacker.facing = 0
+    defender.facing = 180
+    document.rulesSnapshot.roles.ice.q.facingKnockback = 0
+
+    const result = evaluateMatchup(document, 0, attacker.id, defender.id)
+
+    expect(result?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
+  })
+
   it('warns when an ice Q target is unreachable and when an enemy runner enters a moving ice zone', () => {
     const document = createDefaultDocument()
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 10, y: 5 }

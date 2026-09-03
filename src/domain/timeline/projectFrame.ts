@@ -32,6 +32,8 @@ import {
 
 type IceQHitMap = Map<string, IceQHit[]>
 
+const iceQHitMapCache = new WeakMap<TacticDocumentV1, { signature: string; hitMap: IceQHitMap }>()
+
 const E_ZONE_SAMPLE_SECONDS = 0.05
 const E_ZONE_SAMPLE_DISTANCE = 0.05
 const FOLLOW_SAMPLE_SECONDS = 0.05
@@ -759,6 +761,10 @@ function projectSceneCore(
 }
 
 function buildIceQHitMap(document: TacticDocumentV1): IceQHitMap {
+  const signature = JSON.stringify([document.rulesSnapshot, document.initialScene, document.actions])
+  const cached = iceQHitMapCache.get(document)
+  if (cached?.signature === signature) return cached.hitMap
+
   const hitMap: IceQHitMap = new Map()
   const actions = [...document.actions]
     .filter((action): action is QMoveAction => action.type === 'qMove')
@@ -770,8 +776,15 @@ function buildIceQHitMap(document: TacticDocumentV1): IceQHitMap {
     const actor = startFrame.players.find((player) => player.id === action.actorId)
     if (!actor) continue
     const effectiveAction = { ...action, path: effectiveQPathWithHitMap(document, action, hitMap) }
-    hitMap.set(action.id, analyzeIceQHits(effectiveAction, actor, startFrame.players, document.rulesSnapshot))
+    hitMap.set(action.id, analyzeIceQHits(
+      effectiveAction,
+      actor,
+      startFrame.players,
+      document.rulesSnapshot,
+      (time) => projectSceneCore(document, time, false, true, hitMap).players,
+    ))
   }
+  iceQHitMapCache.set(document, { signature, hitMap })
   return hitMap
 }
 

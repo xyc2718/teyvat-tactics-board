@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { pathLength, resolvedMovePath } from '../domain/geometry/geometry'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
 import { actionEndTime, documentDuration, passDuration } from '../domain/timeline/durations'
@@ -33,7 +34,7 @@ describe('tactic store timeline edits', () => {
     })
   })
 
-  it('keeps an ordinary move at an explicitly fixed duration and reflows its later actions', () => {
+  it('resizes and locks an ordinary move to its fixed duration at base speed', () => {
     const document = createDefaultDocument()
     document.actions.push(
       {
@@ -51,12 +52,26 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().updateActionTiming('fixed-run', 'duration', 5)
 
     const state = useTacticStore.getState()
-    expect(state.document.actions.find((action) => action.id === 'fixed-run')).toMatchObject({
+    const fixedRun = state.document.actions.find((action) => action.id === 'fixed-run')
+    expect(fixedRun).toMatchObject({
       duration: 5,
       timingConstraint: { kind: 'fixed' },
+      path: [{ x: 3.5, y: 7 }, { x: 8.5, y: 7 }],
     })
-    expect(state.document.actions.find((action) => action.id === 'after-fixed-run')?.startTime).toBe(5)
-    expect(projectFrame(state.document, 2.5).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(4.5)
+    const afterFixedRun = state.document.actions.find((action) => action.id === 'after-fixed-run')
+    expect(afterFixedRun?.startTime).toBe(5)
+    if (afterFixedRun?.type !== 'qMove') throw new Error('Expected following Q')
+    expect(afterFixedRun.path[0]).toEqual({ x: 8.5, y: 7 })
+    expect(projectFrame(state.document, 2.5).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(6)
+
+    useTacticStore.getState().updateActionPathPoint('fixed-run', 1, { x: 3.5, y: 9 })
+    const redirected = useTacticStore.getState().document.actions.find((action) => action.id === 'fixed-run')
+    if (redirected?.type !== 'move') throw new Error('Expected fixed move')
+    expect(pathLength(resolvedMovePath(redirected))).toBeCloseTo(5)
+    expect(redirected.path.at(-1)).toEqual({ x: 3.5, y: 12 })
+    const redirectedQ = useTacticStore.getState().document.actions.find((action) => action.id === 'after-fixed-run')
+    if (redirectedQ?.type !== 'qMove') throw new Error('Expected following Q')
+    expect(redirectedQ.path[0]).toEqual({ x: 3.5, y: 12 })
   })
 
   it('aligns a move to another player keyframe and follows later source timing edits', () => {
@@ -87,7 +102,8 @@ describe('tactic store timeline edits', () => {
     useTacticStore.getState().updateActionTiming('red-reference-run', 'duration', 6)
     const updated = useTacticStore.getState().document.actions.find((action) => action.id === 'blue-run-to-sync')
     expect(updated?.duration).toBe(6)
-    expect(projectFrame(useTacticStore.getState().document, 6).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(7.5)
+    expect(updated).toMatchObject({ path: [{ x: 3.5, y: 7 }, { x: 9.5, y: 7 }] })
+    expect(projectFrame(useTacticStore.getState().document, 6).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(9.5)
   })
 
   it('rejects circular move keyframe timing references', () => {
@@ -815,6 +831,25 @@ describe('tactic store timeline edits', () => {
     expect(move.duration).toBeCloseTo(2)
   })
 
+  it('keeps a timed curved run at its duration-derived locked path length', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({
+      id: 'locked-curve', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+      path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }],
+    })
+    useTacticStore.setState({ document, currentTime: 2 })
+
+    useTacticStore.getState().setMoveTimingFixed('locked-curve', true)
+    useTacticStore.getState().setMovePathMode('locked-curve', 'curve')
+    useTacticStore.getState().updateMoveCurveControl('locked-curve', { x: 4.5, y: 10 })
+
+    const move = useTacticStore.getState().document.actions.find((action) => action.id === 'locked-curve')
+    if (move?.type !== 'move') throw new Error('Expected curved move')
+    expect(move.duration).toBe(2)
+    expect(move.curveControl).toBeDefined()
+    expect(pathLength(resolvedMovePath(move))).toBeCloseTo(2)
+  })
+
   it('supports tool-first Q creation and keeps the actor selected after one shot', () => {
     const store = useTacticStore.getState()
     store.setTool('qMove')
@@ -1107,6 +1142,13 @@ describe('tactic store timeline edits', () => {
       duration: 0,
     })
     expect(projectFrame(state.document, actionEndTime(pass)).ball.carrierId).toBe(receiver.id)
+    const afterCatch = projectFrame(state.document, actionEndTime(pass) + 0.5)
+    const receiverAfterCatch = afterCatch.players.find((player) => player.id === receiver.id)
+    expect(afterCatch.ball).toMatchObject({
+      carrierId: receiver.id,
+      position: receiverAfterCatch?.position,
+      isFree: false,
+    })
 
     useTacticStore.getState().updateActionPathPoint('moving-receiver', 1, {
       x: receiver.position.x,
@@ -1120,6 +1162,99 @@ describe('tactic store timeline edits', () => {
     if (!updatedPass || updatedPass.type !== 'pass') throw new Error('Expected updated pass action')
     expect(updatedPass.path.at(-1)?.y).toBeGreaterThan(receiver.position.y)
     expect(updatedReceive?.startTime).toBeCloseTo(actionEndTime(updatedPass))
+  })
+
+  it('keeps the ball attached when the named receiver runs after the catch', () => {
+    useTacticStore.getState().givePossession('blue-fire')
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-fire', { x: 5.5, y: 9.3 }, 'blue-ice')
+
+    const pass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')
+    if (!pass || pass.type !== 'pass') throw new Error('Expected pass action')
+
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-ice' })
+    useTacticStore.getState().setTool('move')
+    useTacticStore.getState().createAction('blue-ice', { x: 8.5, y: 9.3 })
+
+    const document = useTacticStore.getState().document
+    const move = document.actions.find(
+      (action) => action.type === 'move' && action.actorId === 'blue-ice',
+    )
+    if (!move || move.type !== 'move') throw new Error('Expected receiver move action')
+
+    const duringRun = projectFrame(document, move.startTime + move.duration / 2)
+    const ice = duringRun.players.find((player) => player.id === 'blue-ice')
+    expect(duringRun.ball.carrierId).toBe(ice?.id)
+    expect(duringRun.ball.position).toEqual(ice?.position)
+
+    const afterRun = projectFrame(document, actionEndTime(move))
+    const finishedIce = afterRun.players.find((player) => player.id === 'blue-ice')
+    expect(afterRun.ball.carrierId).toBe(finishedIce?.id)
+    expect(afterRun.ball.position).toEqual(finishedIce?.position)
+  })
+
+  it('keeps the ball on Ice for the boosted remainder of an already active run', () => {
+    const document = useTacticStore.getState().document
+    document.initialScene.ball = {
+      carrierId: 'blue-fire',
+      position: { x: 3.5, y: 7 },
+      isFree: false,
+    }
+    for (const player of document.initialScene.players) player.hasBall = player.id === 'blue-fire'
+    document.actions.push({
+      id: 'ice-run-before-pass',
+      type: 'move',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 4,
+      path: [{ x: 5.5, y: 9.3 }, { x: 9.5, y: 9.3 }],
+    })
+    useTacticStore.setState({ document, currentTime: 0 })
+
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-fire', { x: 5.5, y: 9.3 }, 'blue-ice')
+
+    const updated = useTacticStore.getState().document
+    const pass = updated.actions.find((action) => action.type === 'pass')
+    if (!pass || pass.type !== 'pass') throw new Error('Expected pass action')
+    const frame = projectFrame(updated, Math.min(3.5, actionEndTime(pass) + 1))
+    const ice = frame.players.find((player) => player.id === 'blue-ice')
+    expect(frame.ball.carrierId).toBe(ice?.id)
+    expect(frame.ball.position).toEqual(ice?.position)
+  })
+
+  it('re-solves an in-flight named pass when a new receiver run creates the catch', () => {
+    const document = useTacticStore.getState().document
+    const ice = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    ice.position = { x: 12, y: 7 }
+    document.initialScene.ball = {
+      carrierId: 'blue-fire',
+      position: { x: 3.5, y: 7 },
+      isFree: false,
+    }
+    for (const player of document.initialScene.players) player.hasBall = player.id === 'blue-fire'
+    useTacticStore.setState({ document, currentTime: 0 })
+
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction('blue-fire', ice.position, ice.id)
+    expect(useTacticStore.getState().document.actions.some((action) => action.type === 'receive')).toBe(false)
+
+    useTacticStore.getState().select({ kind: 'player', id: ice.id })
+    useTacticStore.getState().setTool('move')
+    useTacticStore.getState().createAction(ice.id, { x: 8, y: 7 })
+
+    const updated = useTacticStore.getState().document
+    const pass = updated.actions.find((action) => action.type === 'pass')
+    const receive = updated.actions.find(
+      (action) => action.type === 'receive' && action.sourceActionId === pass?.id,
+    )
+    if (!pass || pass.type !== 'pass') throw new Error('Expected pass action')
+    expect(receive).toMatchObject({ actorId: ice.id, startTime: actionEndTime(pass) })
+
+    const afterCatch = projectFrame(updated, actionEndTime(pass) + 0.25)
+    const projectedIce = afterCatch.players.find((player) => player.id === ice.id)
+    expect(afterCatch.ball.carrierId).toBe(ice.id)
+    expect(afterCatch.ball.position).toEqual(projectedIce?.position)
   })
 
   it('deletes an automatic pass/receive pair as one semantic action', () => {

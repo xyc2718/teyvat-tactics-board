@@ -1,5 +1,5 @@
-import { resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
-import type { PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
+import { pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
+import type { MoveAction, PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
 import { resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
 import { documentFreezeWindows, projectFrame } from '../domain/timeline/projectFrame'
@@ -10,6 +10,59 @@ const EPSILON = 1e-6
 type LocomotionAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
 type ActorSequenceAction = LocomotionAction | (Extract<TacticAction, { type: 'wait' }> & { actorId: string })
 type FollowSyncAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
+
+function maximumScaleInsideField(origin: Vec2, point: Vec2, width: number, height: number): number {
+  const dx = point.x - origin.x
+  const dy = point.y - origin.y
+  let maximum = Number.POSITIVE_INFINITY
+  if (dx > EPSILON) maximum = Math.min(maximum, (width - origin.x) / dx)
+  if (dx < -EPSILON) maximum = Math.min(maximum, (0 - origin.x) / dx)
+  if (dy > EPSILON) maximum = Math.min(maximum, (height - origin.y) / dy)
+  if (dy < -EPSILON) maximum = Math.min(maximum, (0 - origin.y) / dy)
+  return Math.max(0, maximum)
+}
+
+/** Keeps a timed fixed-point move at the configured base movement speed. */
+export function syncConstrainedMovePath(document: TacticDocumentV1, action: MoveAction): boolean {
+  if (!action.timingConstraint || action.targetPlayerId) return false
+  const origin = action.path[0]
+  const currentLength = pathLength(resolvedMovePath(action))
+  if (!origin || currentLength <= EPSILON) return false
+
+  const desiredLength = Math.max(0, action.duration) * document.rulesSnapshot.field.baseMoveSpeed
+  const geometryPoints = [
+    ...action.path.slice(1),
+    ...(action.curveControl ? [action.curveControl] : []),
+  ]
+  const fieldScale = geometryPoints.reduce(
+    (limit, point) => Math.min(limit, maximumScaleInsideField(
+      origin,
+      point,
+      document.rulesSnapshot.field.width,
+      document.rulesSnapshot.field.height,
+    )),
+    Number.POSITIVE_INFINITY,
+  )
+  const scale = Math.min(desiredLength / currentLength, fieldScale)
+  const scalePoint = (point: Vec2): Vec2 => ({
+    x: origin.x + (point.x - origin.x) * scale,
+    y: origin.y + (point.y - origin.y) * scale,
+  })
+  const nextPath = [{ ...origin }, ...action.path.slice(1).map(scalePoint)]
+  const nextControl = action.curveControl ? scalePoint(action.curveControl) : undefined
+  const changed = nextPath.some((point, index) => {
+    const previous = action.path[index]
+    return !previous || Math.abs(point.x - previous.x) > EPSILON || Math.abs(point.y - previous.y) > EPSILON
+  }) || Boolean(nextControl) !== Boolean(action.curveControl)
+    || Boolean(nextControl && action.curveControl && (
+      Math.abs(nextControl.x - action.curveControl.x) > EPSILON
+      || Math.abs(nextControl.y - action.curveControl.y) > EPSILON
+    ))
+  action.path = nextPath
+  if (nextControl) action.curveControl = nextControl
+  else delete action.curveControl
+  return changed
+}
 
 function isActorSequenceAction(action: TacticAction, actorId: string): action is ActorSequenceAction {
   return (action.type === 'move' || action.type === 'qMove' || action.type === 'wait')
@@ -131,6 +184,10 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): void {
         delete action.timingConstraint
         continue
       }
+      if (action.timingConstraint?.kind === 'fixed') {
+        if (syncConstrainedMovePath(document, action)) timingChanged = true
+        continue
+      }
       if (action.timingConstraint?.kind !== 'keyframe') continue
       const referencedTime = resolveMoveKeyframeTime(document, action.timingConstraint.reference)
       if (referencedTime === null || referencedTime <= action.startTime + EPSILON) {
@@ -142,6 +199,7 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): void {
       const nextDuration = Math.max(0, referencedTime - action.startTime)
       if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
       action.duration = nextDuration
+      if (syncConstrainedMovePath(document, action)) timingChanged = true
     }
     if (!timingChanged) break
   }
@@ -341,6 +399,22 @@ export function reflowSimpleLocomotion(
     if (!plan) continue
 
     let path = [{ ...plan.origin }, ...tail]
+    if (action.type === 'move' && action.timingConstraint) {
+      const previousOrigin = action.path[0]
+      if (previousOrigin) {
+        const offset = { x: plan.origin.x - previousOrigin.x, y: plan.origin.y - previousOrigin.y }
+        path = [
+          { ...plan.origin },
+          ...tail.map((point) => ({ x: point.x + offset.x, y: point.y + offset.y })),
+        ]
+        if (action.curveControl) {
+          action.curveControl = {
+            x: action.curveControl.x + offset.x,
+            y: action.curveControl.y + offset.y,
+          }
+        }
+      }
+    }
     if (action.type === 'qMove') {
       const q = document.rulesSnapshot.roles[plan.actor.role].q
       path = resolveQPath(
@@ -360,6 +434,7 @@ export function reflowSimpleLocomotion(
           ? Math.max(0, referencedTime - plan.startTime)
           : movementDuration(resolvedMovePath(action), document.rulesSnapshot)
       : qDuration(plan.actor, document.rulesSnapshot)
+    if (action.type === 'move') syncConstrainedMovePath(document, action)
     scheduled.push(action)
     chainEnd = actionEndTime(action)
   }

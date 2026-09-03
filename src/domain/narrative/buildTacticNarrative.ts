@@ -52,9 +52,9 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
         ? document.initialScene.players.find((player) => player.id === keyframeConstraint.reference.playerId)
         : null
       const timingText = action.timingConstraint?.kind === 'fixed'
-        ? '；使用手动固定时长'
+        ? '；按手动时长与基础移速锁定路径长度'
         : action.timingConstraint?.kind === 'keyframe'
-          ? `；结束对齐 ${timingReferencePlayer?.name ?? '其他球员'}的关键帧`
+          ? `；按 ${timingReferencePlayer?.name ?? '其他球员'}的关键帧时长与基础移速锁定路径长度`
           : ''
       return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(resolvedMovePath(action)).toFixed(2)} 格${action.curveControl ? '曲线' : '直线'}跑到 ${pointText(action.path.at(-1))}${timingText}${boostText}。`
     }

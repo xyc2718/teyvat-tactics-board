@@ -395,6 +395,7 @@ describe('App shell', () => {
     expect(screen.queryByRole('dialog', { name: '选择到达关键帧' })).not.toBeInTheDocument()
     expect(useTacticStore.getState().document.actions.find((action) => action.id === 'timed-blue-run')).toMatchObject({
       duration: 4,
+      path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
       timingConstraint: {
         kind: 'keyframe',
         reference: { playerId: 'red-fire', actionId: 'reference-red-run', edge: 'end' },
@@ -682,6 +683,48 @@ describe('App shell', () => {
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({ type: 'eZone', actorId: 'blue-ice' })
     expect(container.querySelector('.ice-zone.active')).toBeInTheDocument()
     expect(container.querySelector('.board-workflow-guide')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['跑动', 'move'],
+    ['Q 技能', 'qMove'],
+  ] as const)('lets %s target placement click through an active ice zone', (toolName, actionType) => {
+    const document = createDefaultDocument()
+    const actor = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const zoneOwner = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    actor.position = { x: 5.5, y: 5 }
+    zoneOwner.position = { x: 7, y: 5 }
+    document.actions.push({
+      id: 'blocking-zone', type: 'eZone', actorId: zoneOwner.id, center: { x: 7, y: 5 }, radius: 2,
+      startTime: 0, duration: 5,
+    })
+    document.stepMarkers.push({
+      id: 'blocking-zone-step', time: 0, name: '步骤 1', note: '', snapshot: structuredClone(document.initialScene),
+    })
+    useTacticStore.setState({
+      document,
+      activeStepId: 'blocking-zone-step',
+      currentTime: 0,
+      selection: null,
+    })
+    const { container } = render(<App />)
+
+    const zone = container.querySelector('[data-action-id="blocking-zone"]')!
+    fireEvent.pointerDown(zone, { pointerId: 51, button: 0 })
+    expect(useTacticStore.getState().selection).toEqual({ kind: 'action', id: 'blocking-zone' })
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 1，水灵/ }), { pointerId: 52, button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: toolName }))
+    expect(container.querySelector('.actions-layer-background')).toHaveAttribute('pointer-events', 'none')
+
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    fireEvent.pointerDown(board, { clientX: 386, clientY: 272, pointerId: 53, button: 0 })
+
+    expect(useTacticStore.getState().document.actions.at(-1)).toMatchObject({
+      type: actionType,
+      actorId: actor.id,
+    })
   })
 
   it('renders an active ice zone at the live projected Frost position instead of its legacy snapshot', () => {

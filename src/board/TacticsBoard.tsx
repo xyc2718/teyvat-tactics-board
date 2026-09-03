@@ -604,7 +604,10 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           />
         )}
 
-        {boardMode === 'simulation' && <g className="actions-layer actions-layer-background">
+        {boardMode === 'simulation' && <g
+          className="actions-layer actions-layer-background"
+          pointerEvents={tool === 'select' ? undefined : 'none'}
+        >
           {document.actions.filter((action) => action.id !== selectedAction?.id).map((action) => renderAction(action, false))}
         </g>}
 

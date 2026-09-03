@@ -202,6 +202,52 @@ describe('projectFrame', () => {
     expect(complete.statuses.filter((status) => status.kind === 'frozen').map((status) => status.playerId).sort()).toEqual(['red-fire', 'red-water'])
   })
 
+  it('does not freeze an opponent who stays ahead while moving along the same Q path', () => {
+    const document = createDefaultDocument()
+    const actor = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    const target = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    actor.position = { x: 3.5, y: 7.3 }
+    target.position = { x: 4.5, y: 7.3 }
+    const q: QMoveAction = {
+      id: 'moving-target-miss', type: 'qMove', actorId: actor.id, startTime: 0, duration: 1,
+      path: [{ ...actor.position }, { x: 6.5, y: 7.3 }],
+    }
+    const targetMove: MoveAction = {
+      id: 'moving-target-run', type: 'move', actorId: target.id, startTime: 0, duration: 1,
+      path: [{ ...target.position }, { x: 7.5, y: 7.3 }],
+      timingConstraint: { kind: 'fixed' },
+    }
+    document.actions.push(q, targetMove)
+
+    expect(analyzeDocumentIceQHits(document, q).some((hit) => hit.targetId === target.id)).toBe(false)
+    const frame = projectFrame(document, 1.1)
+    expect(frame.statuses.some((status) => status.playerId === target.id && status.kind === 'frozen')).toBe(false)
+    expect(frame.players.find((player) => player.id === target.id)?.position.x).toBeCloseTo(7.5)
+  })
+
+  it('uses the opponent position at the same instant when a moving target crosses an ice Q', () => {
+    const document = createDefaultDocument()
+    const actor = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    const target = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    actor.position = { x: 3.5, y: 7.3 }
+    target.position = { x: 6.5, y: 7.3 }
+    const q: QMoveAction = {
+      id: 'moving-target-hit', type: 'qMove', actorId: actor.id, startTime: 0, duration: 1,
+      path: [{ ...actor.position }, { x: 6.5, y: 7.3 }],
+    }
+    const targetMove: MoveAction = {
+      id: 'moving-target-cross', type: 'move', actorId: target.id, startTime: 0, duration: 1,
+      path: [{ ...target.position }, { x: 4.5, y: 7.3 }],
+      timingConstraint: { kind: 'fixed' },
+    }
+    document.actions.push(q, targetMove)
+
+    const hit = analyzeDocumentIceQHits(document, q).find((candidate) => candidate.targetId === target.id)
+    expect(hit).toBeDefined()
+    expect(hit?.hitTime).toBeCloseTo(0.6)
+    expect(hit?.target.position.x).toBeCloseTo(5.3)
+  })
+
   it('uses projected positions at ice-Q start and recomputes hits after path, rule, timing, or role edits', () => {
     const document = createDefaultDocument()
     const target = document.initialScene.players.find((player) => player.id === 'red-water')!
@@ -269,7 +315,7 @@ describe('projectFrame', () => {
     const frame = projectFrame(document, 4.1)
     expect(firstHit).toBeDefined()
     expect(secondHit).toBeDefined()
-    expect(frame.players.find((player) => player.id === target.id)?.position.x).toBeCloseTo(3.9333)
+    expect(frame.players.find((player) => player.id === target.id)?.position.x).toBeCloseTo(4.1)
   })
 
   it('shares the configured water-Q overlap between projection and route analysis', () => {
