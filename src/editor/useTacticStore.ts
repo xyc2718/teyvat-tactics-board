@@ -4,6 +4,7 @@ import { createDefaultDocument } from '../domain/model/createDocument'
 import type {
   BoardMode,
   MatchupRating,
+  MoveKeyframeReference,
   RoleId,
   RuleSetV1,
   SceneState,
@@ -16,12 +17,14 @@ import { cloneDefaultRules } from '../domain/rules/defaultRules'
 import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
 import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
+import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { solvePassReception } from '../domain/timeline/passReception'
+import { resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
 import { projectFrame } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
-import { latestActorSequenceJoint, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion } from './locomotionScheduling'
+import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion, syncFollowMoveTimings } from './locomotionScheduling'
 import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
 
 type Selection =
@@ -76,6 +79,8 @@ interface TacticStore extends HistoryState {
   updateActionPathPoint: (actionId: string, index: number, point: Vec2) => void
   setMovePathMode: (actionId: string, mode: 'straight' | 'curve') => void
   updateMoveCurveControl: (actionId: string, point: Vec2) => void
+  setMoveTimingFixed: (actionId: string, fixed: boolean) => void
+  setMoveTimingKeyframe: (actionId: string, reference: MoveKeyframeReference) => void
   updateActionTiming: (actionId: string, field: 'startTime' | 'duration', value: number) => void
   setShotCharge: (actionId: string, charge: 'yellow' | 'red') => void
   deleteAction: (actionId: string) => void
@@ -135,6 +140,7 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
 ])
 
 const MIN_AUTHORED_PATH_LENGTH = 0.05
+const MIN_FIXED_MOVE_DURATION = 0.05
 
 function appendStepMarker(document: TacticDocumentV1, time: number): string {
   const id = uid('step')
@@ -256,7 +262,9 @@ function firstQCooldownViolation(document: TacticDocumentV1, actorIds: string[])
 
 function recalculateRuleDrivenActions(document: TacticDocumentV1) {
   for (const action of document.actions) {
-    if (action.type === 'move') action.duration = movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+    if (action.type === 'move' && !action.targetPlayerId && !action.timingConstraint) {
+      action.duration = movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+    }
     if (action.type === 'qMove') {
       const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
       if (player) {
@@ -284,6 +292,7 @@ function recalculateRuleDrivenActions(document: TacticDocumentV1) {
       }
     }
   }
+  syncFollowMoveTimings(document)
   syncPassEndpoints(document)
 }
 
@@ -373,6 +382,25 @@ function passPairActionIds(document: TacticDocumentV1, actionIds: Iterable<strin
       expanded.add(action.sourceActionId)
       for (const receive of document.actions) {
         if (receive.type === 'receive' && receive.sourceActionId === action.sourceActionId) expanded.add(receive.id)
+      }
+    }
+  }
+  let addedDependent = true
+  while (addedDependent) {
+    addedDependent = false
+    for (const action of document.actions) {
+      if (action.type === 'move' && action.syncActionId && expanded.has(action.syncActionId) && !expanded.has(action.id)) {
+        expanded.add(action.id)
+        addedDependent = true
+      }
+      if (
+        action.type === 'move'
+        && action.timingConstraint?.kind === 'keyframe'
+        && expanded.has(action.timingConstraint.reference.actionId)
+        && !expanded.has(action.id)
+      ) {
+        expanded.add(action.id)
+        addedDependent = true
       }
     }
   }
@@ -493,6 +521,7 @@ function editPlayerJoint(
 function initialDocument(): TacticDocumentV1 {
   const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
   const repairedDegeneratePass = removeDegenerateAutomaticPasses(document)
+  syncFollowMoveTimings(document)
   syncPassEndpoints(document)
   if (repairedDegeneratePass) refreshStepSnapshots(document)
   ensureOpeningActionBoundary(document)
@@ -1076,23 +1105,49 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       } else if (!isToolActorEligible(state.tool, actor, frame, document.rulesSnapshot)) {
         return { notice: state.tool === 'pass' ? '传球者必须是当前持球者。' : '当前球员不能执行该动作。' }
       } else if (state.tool === 'move') {
-        const plan = planSimpleLocomotion(
-          document,
-          actor.id,
-          state.currentTime,
-          (scheduledActor) => movementDuration([scheduledActor.position, clampedTarget], document.rulesSnapshot),
-        )
-        if (!plan) return { notice: '无法为该球员找到可用的跑动时间。' }
-        const origin = plan.origin
-        const path = [{ ...origin }, clampedTarget]
-        if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: '目标位置与球员当前位置重合。' }
-        action = {
-          id: uid('move'),
-          type: 'move',
-          actorId: actor.id,
-          path,
-          startTime: plan.startTime,
-          duration: plan.duration,
+        const targetPlayer = targetPlayerId
+          ? frame.players.find((player) => player.id === targetPlayerId)
+          : undefined
+        if (targetPlayer && !isToolTargetPlayerEligible('move', actor, targetPlayer)) {
+          return { notice: '跑动者不能跟随自己；请点击其他球员或空地。' }
+        }
+        if (targetPlayer) {
+          const plan = planFollowLocomotion(document, actor.id, targetPlayer.id, state.currentTime)
+          if (!plan) return { notice: '该球员在此后没有可同步的跑动或 Q 动作，请改点空地或选择其他目标。' }
+          const syncTarget = projectFrame(document, plan.syncEndTime).players.find(
+            (player) => player.id === targetPlayer.id,
+          )
+          if (!syncTarget) return { notice: '未找到可跟随的目标球员。' }
+          action = {
+            id: uid('follow'),
+            type: 'move',
+            actorId: actor.id,
+            path: [{ ...plan.origin }, { ...syncTarget.position }],
+            targetPlayerId: targetPlayer.id,
+            syncActionId: plan.syncActionId,
+            followGap: document.rulesSnapshot.roles[plan.actor.role].attackRadius,
+            startTime: plan.startTime,
+            duration: plan.syncEndTime - plan.startTime,
+          }
+        } else {
+          const plan = planSimpleLocomotion(
+            document,
+            actor.id,
+            state.currentTime,
+            (scheduledActor) => movementDuration([scheduledActor.position, clampedTarget], document.rulesSnapshot),
+          )
+          if (!plan) return { notice: '无法为该球员找到可用的跑动时间。' }
+          const origin = plan.origin
+          const path = [{ ...origin }, clampedTarget]
+          if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: '目标位置与球员当前位置重合。' }
+          action = {
+            id: uid('move'),
+            type: 'move',
+            actorId: actor.id,
+            path,
+            startTime: plan.startTime,
+            duration: plan.duration,
+          }
         }
       } else if (state.tool === 'qMove') {
         const plan = planSimpleQ(document, actor.id, state.currentTime)
@@ -1177,7 +1232,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   updateActionPathPoint: (actionId, index, rawPoint) => set((state) => {
     const currentAction = state.document.actions.find((candidate) => candidate.id === actionId)
     const currentPath = currentAction ? actionPathSafe(currentAction) : undefined
-    if (!currentAction || currentAction.type === 'shoot' || !currentPath?.[index]) return {}
+    if (!currentAction || currentAction.type === 'shoot' || (currentAction.type === 'move' && currentAction.targetPlayerId) || !currentPath?.[index]) return {}
 
     const patch = mutateDocument(state, (draft) => {
       const action = draft.actions.find((candidate) => candidate.id === actionId)
@@ -1198,11 +1253,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           )
         }
       }
-      if (action.type === 'move') action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (action.type === 'move' && !action.timingConstraint) {
+        action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      }
       if (action.type === 'pass') syncPassEndpoints(draft)
       if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
         reflowSimpleLocomotion(draft, action.actorId)
       }
+      syncFollowMoveTimings(draft)
       if (action.type === 'move' || action.type === 'qMove') syncPassEndpoints(draft, action.actorId)
       refreshStepSnapshots(draft)
     })
@@ -1216,7 +1274,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const before = state.document.actions.find((action) => action.id === actionId)
     const patch = mutateDocument(state, (draft) => {
       const action = draft.actions.find((candidate) => candidate.id === actionId)
-      if (!action || action.type !== 'move') return
+      if (!action || action.type !== 'move' || action.targetPlayerId) return
       if (mode === 'straight') {
         delete action.curveControl
       } else if (!action.curveControl) {
@@ -1232,8 +1290,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           y: (start.y + end.y) / 2 + (dx / length) * offset,
         }, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
       }
-      action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (!action.timingConstraint) action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncFollowMoveTimings(draft)
       syncPassEndpoints(draft, action.actorId)
       refreshStepSnapshots(draft)
     })
@@ -1244,14 +1303,80 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const before = state.document.actions.find((action) => action.id === actionId)
     const patch = mutateDocument(state, (draft) => {
       const action = draft.actions.find((candidate) => candidate.id === actionId)
-      if (!action || action.type !== 'move' || !action.curveControl) return
+      if (!action || action.type !== 'move' || action.targetPlayerId || !action.curveControl) return
       action.curveControl = clampPoint(rawPoint, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
-      action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      if (!action.timingConstraint) action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncFollowMoveTimings(draft)
       syncPassEndpoints(draft, action.actorId)
       refreshStepSnapshots(draft)
     })
     return { ...patch, currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
+  }),
+
+  setMoveTimingFixed: (actionId, fixed) => set((state) => {
+    const before = state.document.actions.find((action) => action.id === actionId)
+    if (!before || before.type !== 'move' || before.targetPlayerId) return {}
+    const patch = mutateDocument(state, (draft) => {
+      const action = draft.actions.find((candidate) => candidate.id === actionId)
+      if (!action || action.type !== 'move' || action.targetPlayerId) return
+      if (fixed) {
+        action.timingConstraint = { kind: 'fixed' }
+        action.duration = Math.max(MIN_FIXED_MOVE_DURATION, action.duration)
+      } else {
+        delete action.timingConstraint
+        action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      }
+      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncFollowMoveTimings(draft)
+      syncPassEndpoints(draft, action.actorId)
+      refreshStepSnapshots(draft)
+    })
+    return {
+      ...patch,
+      currentTime: timeAfterActionEdit(
+        before,
+        patch.document.actions.find((action) => action.id === actionId),
+        patch.document,
+        state.currentTime,
+      ),
+      notice: fixed ? '已固定该跑动的持续时间。' : '已恢复按路径与规则自动计算跑动时间。',
+    }
+  }),
+
+  setMoveTimingKeyframe: (actionId, reference) => set((state) => {
+    const before = state.document.actions.find((action) => action.id === actionId)
+    if (!before || before.type !== 'move' || before.targetPlayerId) return {}
+    if (reference.playerId === before.actorId) return { notice: '请选择其他球员的关键帧。' }
+    const referenceTime = resolveMoveKeyframeTime(state.document, reference)
+    if (referenceTime === null) return { notice: '所选关键帧已经不存在，请重新选择。' }
+    if (referenceTime <= before.startTime + JOINT_EPSILON) {
+      return { notice: '到达关键帧必须晚于这段跑动的开始时间。' }
+    }
+    if (moveTimingWouldCycle(state.document, actionId, reference.actionId)) {
+      return { notice: '该选择会形成循环时间依赖，请选择其他关键帧。' }
+    }
+
+    const patch = mutateDocument(state, (draft) => {
+      const action = draft.actions.find((candidate) => candidate.id === actionId)
+      if (!action || action.type !== 'move' || action.targetPlayerId) return
+      action.timingConstraint = { kind: 'keyframe', reference: { ...reference } }
+      action.duration = referenceTime - action.startTime
+      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      syncFollowMoveTimings(draft)
+      syncPassEndpoints(draft, action.actorId)
+      refreshStepSnapshots(draft)
+    })
+    return {
+      ...patch,
+      currentTime: timeAfterActionEdit(
+        before,
+        patch.document.actions.find((action) => action.id === actionId),
+        patch.document,
+        state.currentTime,
+      ),
+      notice: `跑动结束已对齐到 ${referenceTime.toFixed(2)}s 关键帧。`,
+    }
   }),
 
   updateActionTiming: (actionId, field, value) => set((state) => {
@@ -1262,6 +1387,29 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     if (action?.type === 'pass' && action.targetPlayerId && field === 'duration') {
       return { notice: '传球飞行时间由出球时刻与接球队员轨迹自动解算。' }
+    }
+    if (action?.type === 'move' && action.targetPlayerId && field === 'duration') {
+      return { notice: '贴身跟随的持续时间与目标动作结束点同步，不能单独修改。' }
+    }
+    if (action?.type === 'move' && action.timingConstraint?.kind === 'keyframe' && field === 'duration') {
+      return { notice: '该跑动已对齐关键帧；请改选关键帧，或取消固定时间后重新设置。' }
+    }
+    if (action?.type === 'move' && !action.targetPlayerId && field === 'duration') {
+      const patch = mutateDocument(state, (draft) => {
+        const candidate = draft.actions.find((item) => item.id === actionId)
+        if (!candidate || candidate.type !== 'move' || candidate.targetPlayerId) return
+        candidate.timingConstraint = { kind: 'fixed' }
+        candidate.duration = Math.max(MIN_FIXED_MOVE_DURATION, safeValue)
+        if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, candidate.actorId)
+        syncFollowMoveTimings(draft)
+        syncPassEndpoints(draft, candidate.actorId)
+        refreshStepSnapshots(draft)
+      })
+      return {
+        ...patch,
+        currentTime: timeAfterActionEdit(action, patch.document.actions.find((item) => item.id === actionId), patch.document, state.currentTime),
+        notice: null,
+      }
     }
     if (action?.type === 'wait' && !state.showAdvancedTimeline) {
       const patch = mutateDocument(state, (draft) => {
@@ -1282,6 +1430,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           const candidate = draft.actions.find((item) => item.id === actionId)
           if (candidate && candidate.type === 'qMove') {
             candidate.startTime = safeValue
+            syncFollowMoveTimings(draft)
             syncPassEndpoints(draft, candidate.actorId)
             refreshStepSnapshots(draft)
           }
@@ -1293,6 +1442,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const candidate = draft.actions.find((item) => item.id === actionId)
       if (!candidate) return
       candidate[field] = safeValue
+      syncFollowMoveTimings(draft)
       if (candidate.type === 'pass') syncPassEndpoints(draft)
       else if ('actorId' in candidate && candidate.actorId) syncPassEndpoints(draft, candidate.actorId)
       refreshStepSnapshots(draft)
@@ -1307,17 +1457,22 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const frame = projectFrame(draft, action.startTime)
     const player = frame.players.find((candidate) => candidate.id === action.actorId)
     if (player) action.duration = shotDuration(player, charge, draft.rulesSnapshot)
+    syncFollowMoveTimings(draft)
+    syncPassEndpoints(draft, action.actorId)
+    refreshStepSnapshots(draft)
   })),
 
   deleteAction: (actionId) => set((state) => {
-    const removed = state.document.actions.find((action) => action.id === actionId)
     const removedIds = passPairActionIds(state.document, [actionId])
+    const affectedActorIds = new Set(state.document.actions.flatMap((action) => (
+      removedIds.has(action.id) && 'actorId' in action && action.actorId ? [action.actorId] : []
+    )))
     const patch = mutateDocument(state, (draft) => {
       draft.actions = draft.actions.filter((action) => !removedIds.has(action.id))
-      if (!state.showAdvancedTimeline && removed && 'actorId' in removed && removed.actorId
-        && (removed.type === 'move' || removed.type === 'qMove' || removed.type === 'wait')) {
-        reflowSimpleLocomotion(draft, removed.actorId)
+      if (!state.showAdvancedTimeline) {
+        for (const actorId of affectedActorIds) reflowSimpleLocomotion(draft, actorId)
       }
+      syncFollowMoveTimings(draft)
       syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
@@ -1440,6 +1595,13 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const step = state.document.stepMarkers.find((candidate) => candidate.id === id)
     const next = cloneDocument(state.document)
     next.actions = next.actions.filter((action) => !removedIds.has(action.id))
+    if (!state.showAdvancedTimeline) {
+      const affectedActorIds = new Set(state.document.actions.flatMap((action) => (
+        removedIds.has(action.id) && 'actorId' in action && action.actorId ? [action.actorId] : []
+      )))
+      for (const actorId of affectedActorIds) reflowSimpleLocomotion(next, actorId)
+    }
+    syncFollowMoveTimings(next)
     syncPassEndpoints(next)
     const nextDuration = timelineDuration(next)
     const selection = state.selection?.kind === 'action' && !next.actions.some((action) => action.id === state.selection?.id)
@@ -1557,6 +1719,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   replaceDocument: (document) => set((state) => {
     const next = cloneDocument(document)
     const repairedDegeneratePass = removeDegenerateAutomaticPasses(next)
+    syncFollowMoveTimings(next)
     syncPassEndpoints(next)
     if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)
@@ -1576,6 +1739,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   openDocument: (document, notice = '已打开战术。') => set(() => {
     const next = cloneDocument(document)
     const repairedDegeneratePass = removeDegenerateAutomaticPasses(next)
+    syncFollowMoveTimings(next)
     syncPassEndpoints(next)
     if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)

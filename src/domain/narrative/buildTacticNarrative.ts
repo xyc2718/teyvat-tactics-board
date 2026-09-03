@@ -5,7 +5,7 @@ import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from '../ru
 import { evaluateShotActionPressure, shotPressureComparison, shotPressureSummary } from '../rules/shotPressure'
 import { actionEndTime } from '../timeline/durations'
 import { waterQMoveBoost } from '../timeline/movementEffects'
-import { analyzeDocumentIceQHits, evaluateQDistanceEffect, projectFrame } from '../timeline/projectFrame'
+import { analyzeDocumentIceQHits, evaluateQDistanceEffect, projectedMovePath, projectFrame } from '../timeline/projectFrame'
 
 export interface NarrativeEntry {
   id: string
@@ -38,11 +38,25 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
 
   switch (action.type) {
     case 'move': {
-      const boost = waterQMoveBoost(document, action)
+      const route = projectedMovePath(document, action)
+      const boost = action.timingConstraint ? null : waterQMoveBoost(document, action)
       const boostText = boost
         ? `；其中 ${boost.overlapStart.toFixed(2)}–${boost.overlapEnd.toFixed(2)}s 为水 Q 加速段，累计身位收益 +${boost.separationGain.toFixed(2)} 格`
         : ''
-      return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(resolvedMovePath(action)).toFixed(2)} 格${action.curveControl ? '曲线' : '直线'}跑到 ${pointText(action.path.at(-1))}${boostText}。`
+      if (action.targetPlayerId) {
+        const target = document.initialScene.players.find((player) => player.id === action.targetPlayerId)?.name ?? action.targetPlayerId
+        return `${timing}，${name} 按自身速度贴身跟随 ${target}，路线 ${pathLength(route).toFixed(2)} 格，追上后保持约 ${(action.followGap ?? 0).toFixed(2)} 格攻击间距，并与目标动作结束时间同步${boostText}。`
+      }
+      const keyframeConstraint = action.timingConstraint?.kind === 'keyframe' ? action.timingConstraint : null
+      const timingReferencePlayer = keyframeConstraint
+        ? document.initialScene.players.find((player) => player.id === keyframeConstraint.reference.playerId)
+        : null
+      const timingText = action.timingConstraint?.kind === 'fixed'
+        ? '；使用手动固定时长'
+        : action.timingConstraint?.kind === 'keyframe'
+          ? `；结束对齐 ${timingReferencePlayer?.name ?? '其他球员'}的关键帧`
+          : ''
+      return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(resolvedMovePath(action)).toFixed(2)} 格${action.curveControl ? '曲线' : '直线'}跑到 ${pointText(action.path.at(-1))}${timingText}${boostText}。`
     }
     case 'qMove': {
       const rule = actor ? document.rulesSnapshot.roles[actor.role] : undefined

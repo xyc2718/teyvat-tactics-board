@@ -56,6 +56,7 @@ export function isToolTargetPlayerEligible(
 ): boolean {
   if (target.id === actor.id) return false
   if (tool === 'pass') return target.team === actor.team
+  if (tool === 'move') return true
   if (isRangeInspectionTool(tool)) return true
   return false
 }
@@ -80,6 +81,6 @@ export function targetPrompt(tool: ToolId): string {
   if (tool === 'strikeRange') return '点击其他球员可连续切换打击范围查看对象'
   if (tool === 'shoot') return '选择射门球员；无需指定落点'
   if (tool === 'wait') return '选择球员后立即添加 1 秒等待，并可在右侧修改时长'
-  if (tool === 'move') return '第 2/2 步：点击球场目标位置；可直接改选球员或返回第 1 步'
+  if (tool === 'move') return '第 2/2 步：点击空地跑到定点，或点击球员贴身跟随；可返回第 1 步重选跑动者'
   return '点击球场上的目标位置'
 }

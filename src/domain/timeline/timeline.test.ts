@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { distance } from '../geometry/geometry'
 import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { timelineJointTimes } from './keyframes'
-import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectFrame } from './projectFrame'
+import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame } from './projectFrame'
 import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
@@ -41,6 +42,24 @@ describe('timeline defaults', () => {
 })
 
 describe('projectFrame', () => {
+  it('treats an explicit move duration as an exact arrival contract', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'fixed-arrival', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }], timingConstraint: { kind: 'fixed' },
+      },
+      {
+        id: 'enemy-ice-field', type: 'eZone', actorId: 'red-ice', startTime: 0, duration: 6,
+        center: { x: 15.5, y: 9.3 }, radius: 20,
+      },
+    )
+
+    expect(projectFrame(document, 2).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(5.5)
+    expect(projectFrame(document, 4).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(7.5)
+    expect(eZoneSlowSegmentsForMove(document, document.actions[0] as MoveAction)).toEqual([])
+  })
+
   it('projects a pass with linearly decreasing speed', () => {
     const document = createDefaultDocument()
     const action: PassAction = {
@@ -533,5 +552,79 @@ describe('projectFrame', () => {
     const frame = projectFrame(document, 1)
     expect(frame.shots.find((candidate) => candidate.actionId === shot.id)?.completed).toBe(false)
     expect(frame.ball.carrierId).toBe(shooter.id)
+  })
+})
+
+describe('close-follow movement', () => {
+  it('uses the follower speed and stays on the attack-radius edge after catching up', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    const follower = document.initialScene.players.find((player) => player.id === 'red-fire')!
+    target.position = { x: 5, y: 7 }
+    follower.position = { x: 9, y: 7 }
+    const targetMove: MoveAction = {
+      id: 'follow-target-run', type: 'move', actorId: target.id, startTime: 0, duration: 4,
+      path: [{ x: 5, y: 7 }, { x: 9, y: 7 }],
+    }
+    const follow: MoveAction = {
+      id: 'close-follow', type: 'move', actorId: follower.id, startTime: 0, duration: 4,
+      path: [{ x: 9, y: 7 }, { x: 9, y: 7 }], targetPlayerId: target.id,
+      syncActionId: targetMove.id, followGap: 1,
+    }
+    document.actions.push(targetMove, follow)
+
+    expect(projectFrame(document, 1).players.find((player) => player.id === follower.id)?.position.x).toBeCloseTo(8)
+    const endFrame = projectFrame(document, 4)
+    const targetEnd = endFrame.players.find((player) => player.id === target.id)!
+    const followerEnd = endFrame.players.find((player) => player.id === follower.id)!
+    expect(distance(targetEnd.position, followerEnd.position)).toBeCloseTo(1, 1)
+    expect(projectedMovePath(document, follow).at(-1)).toEqual(followerEnd.position)
+  })
+
+  it('does not stretch follower speed to force a catch at the synchronized end', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const follower = document.initialScene.players.find((player) => player.id === 'red-water')!
+    target.position = { x: 5, y: 5 }
+    follower.position = { x: 0, y: 5 }
+    const targetMove: MoveAction = {
+      id: 'fast-target-run', type: 'move', actorId: target.id, startTime: 0, duration: 4,
+      path: [{ x: 5, y: 5 }, { x: 13, y: 5 }],
+    }
+    const follow: MoveAction = {
+      id: 'rule-speed-follow', type: 'move', actorId: follower.id, startTime: 0, duration: 4,
+      path: [{ x: 0, y: 5 }, { x: 13, y: 5 }], targetPlayerId: target.id,
+      syncActionId: targetMove.id, followGap: 1.5,
+    }
+    document.actions.push(targetMove, follow)
+
+    const endFrame = projectFrame(document, 4)
+    expect(endFrame.players.find((player) => player.id === follower.id)?.position.x).toBeCloseTo(4, 1)
+    expect(endFrame.players.find((player) => player.id === target.id)?.position.x).toBeCloseTo(13)
+  })
+
+  it('recomputes the derived follow route when the target route changes', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    const follower = document.initialScene.players.find((player) => player.id === 'red-fire')!
+    target.position = { x: 5, y: 7 }
+    follower.position = { x: 9, y: 7 }
+    const targetMove: MoveAction = {
+      id: 'editable-target-run', type: 'move', actorId: target.id, startTime: 0, duration: 4,
+      path: [{ x: 5, y: 7 }, { x: 9, y: 7 }],
+    }
+    const follow: MoveAction = {
+      id: 'derived-follow-route', type: 'move', actorId: follower.id, startTime: 0, duration: 4,
+      path: [{ x: 9, y: 7 }, { x: 9, y: 7 }], targetPlayerId: target.id,
+      syncActionId: targetMove.id, followGap: 1,
+    }
+    document.actions.push(targetMove, follow)
+
+    const originalEnd = projectedMovePath(document, follow).at(-1)!
+    targetMove.path[1] = { x: 7, y: 9 }
+    const revisedEnd = projectedMovePath(document, follow).at(-1)!
+
+    expect(revisedEnd).not.toEqual(originalEnd)
+    expect(revisedEnd.y).toBeGreaterThan(originalEnd.y)
   })
 })

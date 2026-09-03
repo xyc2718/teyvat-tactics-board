@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
 import { defaultRules } from '../domain/rules/defaultRules'
+import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 
 export const MAX_TACTIC_FILE_BYTES = 2 * 1024 * 1024
 export const DRAFT_STORAGE_KEY = 'teyvat-tactics-board:draft:v1'
@@ -51,6 +52,18 @@ const actionBase = {
   label: z.string().max(120).optional(),
 }
 
+const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('fixed') }),
+  z.object({
+    kind: z.literal('keyframe'),
+    reference: z.object({
+      playerId: z.string().min(1).max(100),
+      actionId: z.string().min(1).max(120),
+      edge: z.enum(['start', 'end']),
+    }),
+  }),
+])
+
 const actionSchema = z.discriminatedUnion('type', [
   z.object({
     ...actionBase,
@@ -58,6 +71,10 @@ const actionSchema = z.discriminatedUnion('type', [
     actorId: z.string(),
     path: z.array(vec2Schema).min(2).max(20),
     curveControl: vec2Schema.optional(),
+    targetPlayerId: z.string().optional(),
+    syncActionId: z.string().optional(),
+    followGap: nonNegative.optional(),
+    timingConstraint: moveTimingConstraintSchema.optional(),
   }),
   z.object({
     ...actionBase,
@@ -342,10 +359,56 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     if ('actorId' in action && action.actorId && !knownPlayers.has(action.actorId)) return `动作 ${action.id} 的执行者不存在。`
     if ('targetId' in action && action.targetId && !knownPlayers.has(action.targetId)) return `动作 ${action.id} 的目标不存在。`
     if (action.type === 'pass' && action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的接球队员不存在。`
+    if (action.type === 'move') {
+      const followFields = [action.targetPlayerId, action.syncActionId, action.followGap]
+      const hasFollowField = followFields.some((value) => value !== undefined)
+      const hasCompleteFollow = followFields.every((value) => value !== undefined)
+      if (hasFollowField && !hasCompleteFollow) return `动作 ${action.id} 的跟随信息不完整。`
+      if (action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的跟随目标不存在。`
+      if (action.targetPlayerId === action.actorId) return `动作 ${action.id} 不能跟随自己。`
+      if (action.targetPlayerId && action.curveControl) return `动作 ${action.id} 的贴身跟随不能同时使用曲线路径。`
+      if (hasFollowField && action.timingConstraint) return `动作 ${action.id} 的贴身跟随不能同时使用固定时间。`
+      if (action.timingConstraint?.kind === 'keyframe') {
+        const reference = action.timingConstraint.reference
+        if (!knownPlayers.has(reference.playerId)) return `动作 ${action.id} 的时间参照球员不存在。`
+        if (reference.playerId === action.actorId) return `动作 ${action.id} 不能对齐自己的关键帧。`
+      }
+    }
     if ('path' in action && action.path.some((point) => !pointInField(point))) return `动作 ${action.id} 包含球场范围外的坐标。`
     if (action.type === 'move' && action.curveControl && !pointInField(action.curveControl)) return `动作 ${action.id} 的曲线控制点超出球场。`
     // V1 keeps the activation snapshot for compatibility, but the live E-zone center is its actor.
     if (action.type === 'possession' && !pointInField(action.position)) return `动作 ${action.id} 的球权位置超出球场。`
+  }
+  for (const action of document.actions) {
+    if (action.type !== 'move' || !action.targetPlayerId || !action.syncActionId) continue
+    const syncAction = document.actions.find((candidate) => candidate.id === action.syncActionId)
+    if (!syncAction || (syncAction.type !== 'move' && syncAction.type !== 'qMove')) return `动作 ${action.id} 的同步动作不存在。`
+    if (syncAction.actorId !== action.targetPlayerId) return `动作 ${action.id} 的同步动作不属于跟随目标。`
+    if (syncAction.startTime + syncAction.duration <= action.startTime) return `动作 ${action.id} 的同步动作必须在跟随开始后结束。`
+
+    const seen = new Set<string>([action.id])
+    let dependency = syncAction
+    while (dependency.type === 'move' && dependency.targetPlayerId && dependency.syncActionId) {
+      if (dependency.targetPlayerId === action.actorId) return `动作 ${action.id} 形成了循环跟随。`
+      if (seen.has(dependency.id)) return `动作 ${action.id} 形成了循环跟随。`
+      seen.add(dependency.id)
+      const nextActionId = dependency.syncActionId
+      const next = document.actions.find((candidate) => candidate.id === nextActionId)
+      if (!next || (next.type !== 'move' && next.type !== 'qMove')) break
+      dependency = next
+    }
+  }
+  for (const action of document.actions) {
+    if (action.type !== 'move' || action.timingConstraint?.kind !== 'keyframe') continue
+    const reference = action.timingConstraint.reference
+    const source = document.actions.find((candidate) => candidate.id === reference.actionId)
+    if (!source || !('actorId' in source) || source.actorId !== reference.playerId) {
+      return `动作 ${action.id} 的时间参照关键帧不存在。`
+    }
+    const sourceTime = reference.edge === 'start' ? source.startTime : source.startTime + source.duration
+    if (sourceTime <= action.startTime) return `动作 ${action.id} 的时间参照必须晚于跑动开始。`
+
+    if (moveTimingWouldCycle(document, action.id, reference.actionId)) return `动作 ${action.id} 形成了循环时间参照。`
   }
   const staticArrowIds = new Set<string>()
   const staticArrowPlayers = new Set<string>()

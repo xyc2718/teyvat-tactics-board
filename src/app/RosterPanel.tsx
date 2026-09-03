@@ -2,7 +2,7 @@ import { projectFrame } from '../domain/timeline/projectFrame'
 import { useTacticStore } from '../editor/useTacticStore'
 import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
 
-export function RosterPanel() {
+export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void }) {
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
   const selection = useTacticStore((state) => state.selection)
@@ -23,29 +23,41 @@ export function RosterPanel() {
     if (!player) return
     if (tool === 'select') {
       select({ kind: 'player', id: player.id })
+      onPlayerChosen?.()
       return
     }
     if (isRangeInspectionTool(tool)) {
       chooseActor(player.id)
+      onPlayerChosen?.()
       return
     }
     if (tool === 'shoot') {
       chooseActor(player.id)
+      onPlayerChosen?.()
       return
     }
-    if (tool === 'move' || tool === 'qMove') {
+    if (tool === 'move') {
+      if (!actor || actor.id === player.id) chooseActor(player.id)
+      else createAction(actor.id, player.position, player.id)
+      onPlayerChosen?.()
+      return
+    }
+    if (tool === 'qMove') {
       chooseActor(player.id)
+      onPlayerChosen?.()
       return
     }
     if (toolNeedsActor(tool) && !actor) {
       chooseActor(player.id)
+      onPlayerChosen?.()
       return
     }
     createAction(actor?.id ?? null, player.position, player.id)
+    onPlayerChosen?.()
   }
 
   return (
-    <aside className="roster-panel panel-surface">
+    <aside id="roster-panel" className="roster-panel panel-surface">
       <div className="panel-heading">
         <div><span className="eyebrow">阵容</span><h2>场上角色</h2></div>
         <span className="tiny-pill">3 v 3</span>
@@ -59,9 +71,9 @@ export function RosterPanel() {
             const statuses = frame.statuses.filter((status) => status.playerId === player.id)
             const actorCandidate = isRangeInspectionTool(tool)
               || (tool !== 'select'
-                && (!actor || tool === 'move' || tool === 'qMove')
+                && (!actor || tool === 'qMove')
                 && isToolActorEligible(tool, player, frame, document.rulesSnapshot))
-            const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'move' && tool !== 'qMove' && actor
+            const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && actor
               ? isToolTargetPlayerEligible(tool, actor, player)
               : false
             const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || tool === 'pass' || tool === 'qMove')

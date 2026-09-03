@@ -1,6 +1,7 @@
 import { resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
+import { resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
 import { documentFreezeWindows, projectFrame } from '../domain/timeline/projectFrame'
 import { earliestLegalQStart } from '../domain/rules/qCooldown'
 
@@ -8,6 +9,7 @@ const EPSILON = 1e-6
 
 type LocomotionAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
 type ActorSequenceAction = LocomotionAction | (Extract<TacticAction, { type: 'wait' }> & { actorId: string })
+type FollowSyncAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
 
 function isActorSequenceAction(action: TacticAction, actorId: string): action is ActorSequenceAction {
   return (action.type === 'move' || action.type === 'qMove' || action.type === 'wait')
@@ -19,6 +21,130 @@ export interface LocomotionPlan {
   origin: Vec2
   actor: PlayerState
   duration: number
+}
+
+export interface FollowLocomotionPlan extends LocomotionPlan {
+  targetPlayerId: string
+  syncActionId: string
+  syncEndTime: number
+}
+
+export function findFollowSyncAction(
+  document: TacticDocumentV1,
+  targetPlayerId: string,
+  startTime: number,
+  preferredActionId?: string,
+): FollowSyncAction | null {
+  const candidates = document.actions
+    .filter((action): action is FollowSyncAction => (
+      (action.type === 'move' || action.type === 'qMove')
+      && action.actorId === targetPlayerId
+      && action.duration > EPSILON
+      && actionEndTime(action) > startTime + EPSILON
+    ))
+    .sort((left, right) => {
+      const leftActive = left.startTime <= startTime + EPSILON ? 0 : 1
+      const rightActive = right.startTime <= startTime + EPSILON ? 0 : 1
+      return leftActive - rightActive || left.startTime - right.startTime || actionEndTime(left) - actionEndTime(right)
+    })
+  return candidates.find((action) => action.id === preferredActionId) ?? candidates[0] ?? null
+}
+
+export function wouldCreateFollowCycle(
+  document: TacticDocumentV1,
+  actorId: string,
+  syncActionId: string,
+): boolean {
+  const seen = new Set<string>()
+  let current = document.actions.find((action) => action.id === syncActionId)
+  while (current?.type === 'move' && current.targetPlayerId && current.syncActionId) {
+    if (current.targetPlayerId === actorId || seen.has(current.id)) return true
+    seen.add(current.id)
+    const nextActionId = current.syncActionId
+    current = document.actions.find((action) => action.id === nextActionId)
+  }
+  return false
+}
+
+export function planFollowLocomotion(
+  document: TacticDocumentV1,
+  actorId: string,
+  targetPlayerId: string,
+  requestedStart: number,
+  preferredActionId?: string,
+): FollowLocomotionPlan | null {
+  let candidateStart = Math.max(0, requestedStart)
+  for (let attempt = 0; attempt < document.actions.length + 3; attempt += 1) {
+    const syncAction = findFollowSyncAction(document, targetPlayerId, candidateStart, preferredActionId)
+    if (!syncAction || wouldCreateFollowCycle(document, actorId, syncAction.id)) return null
+    const syncEndTime = actionEndTime(syncAction)
+    const plan = planSimpleLocomotion(
+      document,
+      actorId,
+      candidateStart,
+      () => Math.max(0, syncEndTime - candidateStart),
+    )
+    if (!plan || syncEndTime <= plan.startTime + EPSILON) return null
+    if (Math.abs(plan.startTime - candidateStart) > EPSILON) {
+      candidateStart = plan.startTime
+      continue
+    }
+    return { ...plan, targetPlayerId, syncActionId: syncAction.id, syncEndTime }
+  }
+  return null
+}
+
+/** Keeps all derived move timings attached to their referenced joints. */
+export function syncFollowMoveTimings(document: TacticDocumentV1): void {
+  for (let attempt = 0; attempt <= document.actions.length; attempt += 1) {
+    let timingChanged = false
+    for (const action of document.actions) {
+      if (action.type !== 'move') continue
+      if (action.targetPlayerId && action.syncActionId) {
+        const syncAction = document.actions.find(
+          (candidate): candidate is FollowSyncAction => (
+            candidate.id === action.syncActionId
+            && (candidate.type === 'move' || candidate.type === 'qMove')
+            && candidate.actorId === action.targetPlayerId
+          ),
+        )
+        if (!syncAction) continue
+        const nextDuration = Math.max(0, actionEndTime(syncAction) - action.startTime)
+        if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
+        action.duration = nextDuration
+        const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+        if (actor) action.followGap = document.rulesSnapshot.roles[actor.role].attackRadius
+        const projectionDocument: TacticDocumentV1 = {
+          ...document,
+          actions: document.actions.filter((candidate) => candidate.id !== action.id),
+        }
+        const projectedActor = projectFrame(projectionDocument, action.startTime).players.find(
+          (player) => player.id === action.actorId,
+        )
+        const projectedTarget = projectFrame(projectionDocument, actionEndTime(syncAction)).players.find(
+          (player) => player.id === action.targetPlayerId,
+        )
+        if (projectedActor && projectedTarget) {
+          action.path = [{ ...projectedActor.position }, { ...projectedTarget.position }]
+        }
+        delete action.curveControl
+        delete action.timingConstraint
+        continue
+      }
+      if (action.timingConstraint?.kind !== 'keyframe') continue
+      const referencedTime = resolveMoveKeyframeTime(document, action.timingConstraint.reference)
+      if (referencedTime === null || referencedTime <= action.startTime + EPSILON) {
+        delete action.timingConstraint
+        action.duration = movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+        timingChanged = true
+        continue
+      }
+      const nextDuration = Math.max(0, referencedTime - action.startTime)
+      if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
+      action.duration = nextDuration
+    }
+    if (!timingChanged) break
+  }
 }
 
 /** Latest continuation joint, including pass/receive events and a derived thaw boundary. */
@@ -47,7 +173,7 @@ export function planSimpleLocomotion(
   document: TacticDocumentV1,
   actorId: string,
   requestedStart: number,
-  durationAt: (actor: PlayerState) => number,
+  durationAt: (actor: PlayerState, startTime: number) => number,
   normalizeStart: (candidate: number) => number = (candidate) => candidate,
 ): LocomotionPlan | null {
   const locomotion = document.actions
@@ -60,7 +186,7 @@ export function planSimpleLocomotion(
     startTime = Math.max(startTime, normalizeStart(startTime))
     const actor = projectFrame(document, startTime).players.find((player) => player.id === actorId)
     if (!actor) return null
-    const duration = Math.max(0, durationAt(actor))
+    const duration = Math.max(0, durationAt(actor, startTime))
     const proposedEnd = startTime + duration
     const conflict = locomotion.find((action) => {
       const existingEnd = actionEndTime(action)
@@ -130,7 +256,13 @@ export function planSimpleWait(
  * locomotion duration. Authored endpoints/control points stay intact while
  * starts and projected origins are moved forward only when required.
  */
-export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: string): void {
+export function reflowSimpleLocomotion(
+  document: TacticDocumentV1,
+  actorId: string,
+  reflowedActors: Set<string> = new Set(),
+): void {
+  if (!actorId || reflowedActors.has(actorId)) return
+  reflowedActors.add(actorId)
   const entries = document.actions
     .map((action, index) => ({ action, index }))
     .filter(
@@ -161,18 +293,50 @@ export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: stri
       continue
     }
 
+    if (action.type === 'move' && action.targetPlayerId && action.syncActionId) {
+      const plan = planFollowLocomotion(
+        planningDocument,
+        actorId,
+        action.targetPlayerId,
+        requestedStart,
+        action.syncActionId,
+      )
+      if (!plan) continue
+      const target = projectFrame(planningDocument, plan.syncEndTime).players.find(
+        (player) => player.id === action.targetPlayerId,
+      )
+      if (!target) continue
+      action.path = [{ ...plan.origin }, { ...target.position }]
+      action.startTime = plan.startTime
+      action.duration = plan.syncEndTime - plan.startTime
+      action.syncActionId = plan.syncActionId
+      action.followGap = document.rulesSnapshot.roles[plan.actor.role].attackRadius
+      delete action.curveControl
+      scheduled.push(action)
+      chainEnd = actionEndTime(action)
+      continue
+    }
+
     const tail = action.path.slice(1).map((point) => ({ ...point }))
     if (tail.length === 0) continue
+    const referencedTime = action.type === 'move' && action.timingConstraint?.kind === 'keyframe'
+      ? resolveMoveKeyframeTime(document, action.timingConstraint.reference)
+      : null
+    const authoredDuration = action.duration
     const plan = action.type === 'qMove'
       ? planSimpleQ(planningDocument, actorId, requestedStart)
       : planSimpleLocomotion(
           planningDocument,
           actorId,
           requestedStart,
-          (scheduledActor) => movementDuration(
-            resolvedMovePath({ ...action, path: [{ ...scheduledActor.position }, ...tail] }),
-            document.rulesSnapshot,
-          ),
+          (scheduledActor, plannedStart) => action.timingConstraint?.kind === 'fixed'
+            ? authoredDuration
+            : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
+              ? Math.max(0, referencedTime - plannedStart)
+              : movementDuration(
+                  resolvedMovePath({ ...action, path: [{ ...scheduledActor.position }, ...tail] }),
+                  document.rulesSnapshot,
+                ),
         )
     if (!plan) continue
 
@@ -190,9 +354,21 @@ export function reflowSimpleLocomotion(document: TacticDocumentV1, actorId: stri
     action.path = path
     action.startTime = plan.startTime
     action.duration = action.type === 'move'
-      ? movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+      ? action.timingConstraint?.kind === 'fixed'
+        ? authoredDuration
+        : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
+          ? Math.max(0, referencedTime - plan.startTime)
+          : movementDuration(resolvedMovePath(action), document.rulesSnapshot)
       : qDuration(plan.actor, document.rulesSnapshot)
     scheduled.push(action)
     chainEnd = actionEndTime(action)
   }
+
+  const dependents = new Set(document.actions.flatMap((action) => (
+    action.type === 'move' && (
+      action.targetPlayerId === actorId
+      || (action.timingConstraint?.kind === 'keyframe' && action.timingConstraint.reference.playerId === actorId)
+    ) ? [action.actorId] : []
+  )))
+  for (const dependent of dependents) reflowSimpleLocomotion(document, dependent, reflowedActors)
 }

@@ -1,6 +1,6 @@
-import type { TacticAction } from '../domain/model/types'
 import { actionEndTime } from '../domain/timeline/durations'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
+import { actionActorId, actionTimelineKeyframes } from '../domain/timeline/playerKeyframes'
 import { documentFreezeWindows } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership, stepDuration } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep, sortedStepMarkers } from '../domain/timeline/steps'
@@ -10,20 +10,9 @@ import { actionLabels } from '../ui/labels'
 
 const INSTANT_ACTION_EPSILON = 1e-6
 
-function actionActorId(action: TacticAction | undefined): string | null {
-  if (!action || !('actorId' in action)) return null
-  return action.actorId ?? null
-}
-
 function timePercent(time: number, duration: number): number {
   if (duration <= 0) return 0
   return Math.min(100, Math.max(0, (time / duration) * 100))
-}
-
-function actorKeyframes(action: TacticAction): Array<{ edge: 'start' | 'end' | 'instant'; time: number }> {
-  if (action.type === 'pass') return [{ edge: 'instant', time: action.startTime }]
-  if (action.duration <= INSTANT_ACTION_EPSILON) return [{ edge: 'instant', time: action.startTime }]
-  return [{ edge: 'start', time: action.startTime }, { edge: 'end', time: actionEndTime(action) }]
 }
 
 export function TimelinePanel() {
@@ -78,7 +67,7 @@ export function TimelinePanel() {
     : null
   const trackKeyframeTimes = Array.from(new Set([
     0,
-    ...trackActions.flatMap((action) => actorKeyframes(action).map(({ time }) => time)),
+    ...trackActions.flatMap((action) => actionTimelineKeyframes(action).map(({ time }) => time)),
     ...trackFreezeWindows.flatMap((window) => [window.startsAt, window.endsAt]),
   ])).sort((left, right) => left - right)
 
@@ -96,7 +85,7 @@ export function TimelinePanel() {
   }
 
   return (
-    <section className={`timeline-panel ${showAdvanced ? 'expanded' : ''}`}>
+    <section id="timeline-panel" className={`timeline-panel ${showAdvanced ? 'expanded' : ''}`}>
       <div className="playback-row">
         <button className="play-button" onClick={togglePlayback} aria-label={isPlaying ? '暂停' : '播放'}>{isPlaying ? 'Ⅱ' : '▶'}</button>
         <button className="timeline-icon-button" onClick={() => setCurrentTime(0)} aria-label="回到开头">|◀</button>
@@ -110,7 +99,7 @@ export function TimelinePanel() {
               const actorId = actionActorId(action)
               const player = document.initialScene.players.find((candidate) => candidate.id === actorId)
               if (!player) return []
-              const times = actorKeyframes(action)
+              const times = actionTimelineKeyframes(action)
               return times.map(({ edge, time }) => (
                 <i
                   key={`${action.id}-${edge}`}
@@ -178,15 +167,16 @@ export function TimelinePanel() {
               const instant = action.duration <= INSTANT_ACTION_EPSILON
               const width = instant ? 1.2 : Math.max(1.2, timePercent(action.duration, sliderMax))
               const actionSelected = selection?.kind === 'action' && selection.id === action.id
+              const actionLabel = action.type === 'move' && action.targetPlayerId ? '贴身跟随' : actionLabels[action.type]
               return (
                 <button
                   key={action.id}
                   className={`player-track-action type-${action.type} ${instant ? 'instant' : ''} ${actionSelected ? 'selected' : ''}`}
                   style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${width}%` }}
                   onClick={() => select({ kind: 'action', id: action.id })}
-                  aria-label={`选择${actionLabels[action.type]}动作，不移动播放头`}
-                  title={`${actionLabels[action.type]} ${action.startTime.toFixed(2)}–${actionEndTime(action).toFixed(2)}s；点击只选择动作，不跳转时间`}
-                ><span>{actionLabels[action.type]}</span></button>
+                  aria-label={`选择${actionLabel}动作，不移动播放头`}
+                  title={`${actionLabel} ${action.startTime.toFixed(2)}–${actionEndTime(action).toFixed(2)}s；点击只选择动作，不跳转时间`}
+                ><span>{actionLabel}</span></button>
               )
             })}
             {trackKeyframeTimes.map((time) => {
@@ -294,7 +284,7 @@ export function TimelinePanel() {
               <div className={`action-row ${selection?.kind === 'action' && selection.id === action.id ? 'selected' : ''}`} key={action.id} data-timeline-action-id={action.id}>
                 <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{actionLabels[action.type]}</button>
                 <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId)} title={action.type === 'receive' && action.sourceActionId ? '由对应传球自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
-                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId)) || (action.type === 'pass' && Boolean(action.targetPlayerId))} title={(action.type === 'receive' && action.sourceActionId) || (action.type === 'pass' && action.targetPlayerId) ? '由传球与接球队员轨迹自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
+                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId)) || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'move' && (Boolean(action.targetPlayerId) || action.timingConstraint?.kind === 'keyframe'))} title={(action.type === 'receive' && action.sourceActionId) || (action.type === 'pass' && action.targetPlayerId) ? '由传球与接球队员轨迹自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
                 <div className="mini-track"><span style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${Math.max(timePercent(action.duration, sliderMax), 1.5)}%` }} /></div>
                 <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${actionLabels[action.type]}`}>×</button>
               </div>

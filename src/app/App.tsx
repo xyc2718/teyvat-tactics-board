@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import packageJson from '../../package.json'
 import { TacticsBoard } from '../board/TacticsBoard'
 import { timelineDuration } from '../domain/timeline/keyframes'
@@ -10,9 +10,14 @@ import { TimelinePanel } from '../timeline/TimelinePanel'
 import { RosterPanel } from './RosterPanel'
 import { TopToolbar } from './TopToolbar'
 import { TacticLibraryDrawer } from './TacticLibraryDrawer'
+import { MobileOrientationGate } from './MobileOrientationGate'
+import { MobilePanelDock, type MobilePanel } from './MobilePanelDock'
+import { useDeviceLayout } from './useDeviceLayout'
 import { useTacticLibraryController } from './useTacticLibraryController'
 
 export function App() {
+  const deviceLayout = useDeviceLayout()
+  const isMobileLandscape = deviceLayout === 'phone-landscape'
   const library = useTacticLibraryController()
   const document = useTacticStore((state) => state.document)
   const boardMode = useTacticStore((state) => state.boardMode)
@@ -24,6 +29,14 @@ export function App() {
     () => timelineDuration(document),
     [document],
   )
+  const mobileContext = `${deviceLayout}:${boardMode}`
+  const [mobileUi, setMobileUi] = useState<{ context: string; panel: MobilePanel | null; actionsOpen: boolean }>(() => ({
+    context: mobileContext,
+    panel: null,
+    actionsOpen: false,
+  }))
+  const mobilePanel = mobileUi.context === mobileContext ? mobileUi.panel : null
+  const mobileActionsOpen = mobileUi.context === mobileContext && mobileUi.actionsOpen
 
   useEffect(() => {
     if (!isPlaying) return
@@ -89,14 +102,46 @@ export function App() {
     return () => window.clearTimeout(timer)
   }, [notice, setNotice])
 
+  if (deviceLayout === 'phone-portrait') return <MobileOrientationGate />
+
+  const activeMobilePanel = boardMode === 'simulation' && isMobileLandscape ? mobilePanel : null
+  const shellClasses = [
+    'app-shell',
+    boardMode === 'basic' ? 'basic-mode' : '',
+    isMobileLandscape ? 'mobile-landscape' : '',
+    activeMobilePanel ? `mobile-panel-${activeMobilePanel}` : '',
+  ].filter(Boolean).join(' ')
+
+  function toggleMobilePanel(panel: MobilePanel) {
+    setMobileUi((current) => {
+      const activePanel = current.context === mobileContext ? current.panel : null
+      return { context: mobileContext, panel: activePanel === panel ? null : panel, actionsOpen: false }
+    })
+  }
+
+  function setMobileActions(open: boolean) {
+    setMobileUi((current) => ({
+      context: mobileContext,
+      panel: open ? null : current.context === mobileContext ? current.panel : null,
+      actionsOpen: open,
+    }))
+  }
+
+  function closeMobilePanel() {
+    setMobileUi({ context: mobileContext, panel: null, actionsOpen: false })
+  }
+
   return (
-    <div className={`app-shell ${boardMode === 'basic' ? 'basic-mode' : ''}`}>
+    <div className={shellClasses}>
       <TopToolbar
         libraryReady={library.ready}
         libraryBusy={library.busy}
         onOpenLibrary={() => library.setOpen(true)}
         onCreateDocument={library.createNew}
         onImportDocument={library.importDocument}
+        mobile={isMobileLandscape}
+        mobileActionsOpen={mobileActionsOpen}
+        onMobileActionsOpenChange={setMobileActions}
       />
       <div className="document-bar">
         <label><span className="status-dot" />本地草稿已自动保存</label>
@@ -107,13 +152,17 @@ export function App() {
         </div>
       </div>
       <main className={`workspace-grid ${boardMode === 'basic' ? 'basic-workspace' : ''}`}>
-        {boardMode === 'simulation' && <RosterPanel />}
+        {boardMode === 'simulation' && <RosterPanel onPlayerChosen={isMobileLandscape ? closeMobilePanel : undefined} />}
         <section className="board-column">
-          <TacticsBoard />
+          <TacticsBoard key={deviceLayout} initialZoom={isMobileLandscape ? 1.75 : 1} touchOptimized={isMobileLandscape} />
         </section>
         {boardMode === 'simulation' && <InspectorPanel />}
       </main>
       {boardMode === 'simulation' && <TimelinePanel />}
+      {isMobileLandscape && boardMode === 'simulation' && <>
+        {activeMobilePanel && <button type="button" className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-label="关闭手机面板" />}
+        <MobilePanelDock activePanel={activeMobilePanel} onToggle={toggleMobilePanel} />
+      </>}
       <RulesDrawer />
       <LogicDrawer />
       <TacticLibraryDrawer controller={library} />

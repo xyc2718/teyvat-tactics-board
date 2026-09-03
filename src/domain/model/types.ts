@@ -60,12 +60,28 @@ interface BaseAction {
   label?: string
 }
 
+export interface MoveKeyframeReference {
+  playerId: string
+  actionId: string
+  edge: 'start' | 'end'
+}
+
+export type MoveTimingConstraint =
+  | { kind: 'fixed' }
+  | { kind: 'keyframe'; reference: MoveKeyframeReference }
+
 export interface MoveAction extends BaseAction {
   type: 'move'
   actorId: string
   path: Vec2[]
   /** Optional quadratic Bezier control point. Omitted paths are straight. */
   curveControl?: Vec2
+  /** Optional player-following contract. All three fields are persisted together. */
+  targetPlayerId?: string
+  syncActionId?: string
+  followGap?: number
+  /** Optional fixed-point timing override. Omitted moves keep rule-derived timing. */
+  timingConstraint?: MoveTimingConstraint
 }
 
 export interface QMoveAction extends BaseAction {

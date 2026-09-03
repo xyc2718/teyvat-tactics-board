@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath, resolvedMovePath } from '../domain/geometry/geometry'
+import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath } from '../domain/geometry/geometry'
 import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
 import {
   classifyPassThreat,
@@ -11,7 +11,7 @@ import {
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
 import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectFrame } from '../domain/timeline/projectFrame'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
@@ -74,12 +74,12 @@ type DragState =
   | { kind: 'facing'; playerId: string; center: Vec2; initialFacing: number; facing: number }
   | null
 
-export function TacticsBoard() {
+export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { initialZoom?: number; touchOptimized?: boolean }) {
   const svgRef = useRef<SVGSVGElement>(null)
   const boardViewportRef = useRef<HTMLDivElement>(null)
   const knownPassActionIdsRef = useRef(new Set<string>())
   const [drag, setDrag] = useState<DragState>(null)
-  const [boardZoom, setBoardZoom] = useState(1)
+  const [boardZoom, setBoardZoom] = useState(() => Math.max(BOARD_ZOOM_MIN, Math.min(BOARD_ZOOM_MAX, initialZoom)))
   const [isPassLegendDismissed, setIsPassLegendDismissed] = useState(false)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
@@ -186,7 +186,12 @@ export function TacticsBoard() {
         else chooseActor(id)
         return
       }
-      if ((tool === 'move' || tool === 'qMove') && id !== 'ball') {
+      if (tool === 'move' && id !== 'ball') {
+        if (!toolActor || toolActor.id === id) chooseActor(id)
+        else createAction(actionActor?.id ?? null, point, id)
+        return
+      }
+      if (tool === 'qMove' && id !== 'ball') {
         chooseActor(id)
         return
       }
@@ -314,14 +319,20 @@ export function TacticsBoard() {
     const moveAction = action.type === 'move'
       ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
       : null
-    const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? resolvedMovePath(moveAction) : path
+    const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? projectedMovePath(document, moveAction) : path
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
     const remainingPlannedPath = (action.type === 'move' || action.type === 'qMove' || action.type === 'shoot')
       && action.startTime + action.duration >= currentTime - 1e-5
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
-    const waterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
-    const receiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
+    const rawWaterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
+    const waterBoost = rawWaterBoost && moveAction?.targetPlayerId
+      ? { ...rawWaterBoost, path: projectedMovePathSegment(document, moveAction, rawWaterBoost.overlapStart, rawWaterBoost.overlapEnd) }
+      : rawWaterBoost
+    const rawReceiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
+    const receiveBoost = rawReceiveBoost && moveAction?.targetPlayerId
+      ? { ...rawReceiveBoost, path: projectedMovePathSegment(document, moveAction, rawReceiveBoost.overlapStart, rawReceiveBoost.overlapEnd) }
+      : rawReceiveBoost
     const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
@@ -342,10 +353,11 @@ export function TacticsBoard() {
             />
           : <polyline
               points={pointsAttribute(renderedPath)}
-              className={`action-path action-${action.type}`}
+              className={`action-path action-${action.type} ${moveAction?.targetPlayerId ? 'action-move-follow' : ''}`}
               markerEnd={`url(#arrow-${action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'annotation' ? 'note' : 'move'})`}
             >
               {qEffect && qEffect.reduction > 0.005 && <title>冰圈影响：原路径 {qEffect.authoredDistance.toFixed(2)} 格，实际 Q 位移 {qEffect.effectiveDistance.toFixed(2)} 格</title>}
+              {moveAction?.targetPlayerId && <title>贴身跟随 · 同步至目标动作结束 · 间距 {moveAction.followGap?.toFixed(2)} 格</title>}
             </polyline>}
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
         {receiveBoost && <ReceiveBoostRoute effect={receiveBoost} />}
@@ -353,27 +365,22 @@ export function TacticsBoard() {
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
-        {elevated && action.type !== 'shoot' && !(action.type === 'pass' && action.targetPlayerId) && path.map((point, index) => (
-          <circle
+        {elevated && action.type !== 'shoot' && !(action.type === 'pass' && action.targetPlayerId) && !(action.type === 'move' && action.targetPlayerId) && path.map((point, index) => (
+          <g
             key={`${action.id}-handle-${index}`}
-            cx={point.x * SCALE}
-            cy={point.y * SCALE}
-            r="8"
-            className="path-handle"
-            pointerEvents="all"
+            className="path-handle-target"
             onPointerDown={(event) => {
               event.stopPropagation()
               setDrag({ kind: 'path', actionId: action.id, index, point })
               svgRef.current?.setPointerCapture?.(event.pointerId)
             }}
-          />
+          >
+            {touchOptimized && <circle cx={point.x * SCALE} cy={point.y * SCALE} r="20" className="svg-touch-hit-area" />}
+            <circle cx={point.x * SCALE} cy={point.y * SCALE} r="8" className="path-handle" pointerEvents="all" />
+          </g>
         ))}
-        {elevated && action.type === 'move' && action.curveControl && <circle
-          cx={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.x : action.curveControl.x) * SCALE}
-          cy={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.y : action.curveControl.y) * SCALE}
-          r="9"
-          className="path-handle curve-handle"
-          pointerEvents="all"
+        {elevated && action.type === 'move' && !action.targetPlayerId && action.curveControl && <g
+          className="path-handle-target"
           role="slider"
           aria-label="调整跑动曲线"
           onPointerDown={(event) => {
@@ -381,7 +388,21 @@ export function TacticsBoard() {
             setDrag({ kind: 'curve', actionId: action.id, point: action.curveControl! })
             svgRef.current?.setPointerCapture?.(event.pointerId)
           }}
-        />}
+        >
+          {touchOptimized && <circle
+            cx={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.x : action.curveControl.x) * SCALE}
+            cy={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.y : action.curveControl.y) * SCALE}
+            r="20"
+            className="svg-touch-hit-area"
+          />}
+          <circle
+            cx={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.x : action.curveControl.x) * SCALE}
+            cy={(drag?.kind === 'curve' && drag.actionId === action.id ? drag.point.y : action.curveControl.y) * SCALE}
+            r="9"
+            className="path-handle curve-handle"
+            pointerEvents="all"
+          />
+        </g>}
       </g>
     )
   }
@@ -416,12 +437,8 @@ export function TacticsBoard() {
       >
         <title>{player.name} 移动箭头</title>
       </line>
-      {elevated && <circle
-        cx={target.x * SCALE}
-        cy={target.y * SCALE}
-        r="9"
-        className="path-handle static-arrow-handle"
-        pointerEvents="all"
+      {elevated && <g
+        className="path-handle-target"
         role="slider"
         tabIndex={0}
         aria-label={`调整${player.name}移动箭头终点`}
@@ -430,7 +447,10 @@ export function TacticsBoard() {
           setDrag({ kind: 'staticArrow', arrowId: arrow.id, point: target })
           svgRef.current?.setPointerCapture?.(event.pointerId)
         }}
-      />}
+      >
+        {touchOptimized && <circle cx={target.x * SCALE} cy={target.y * SCALE} r="20" className="svg-touch-hit-area" />}
+        <circle cx={target.x * SCALE} cy={target.y * SCALE} r="9" className="path-handle static-arrow-handle" pointerEvents="all" />
+      </g>}
     </g>
   }
 
@@ -453,6 +473,7 @@ export function TacticsBoard() {
       className="board-shell"
       aria-label={`${rules.field.width} 乘 ${rules.field.height} 格战术球场`}
       data-board-zoom={zoomPercent}
+      data-touch-optimized={touchOptimized ? 'true' : 'false'}
     >
       {hasPassLegendContext && !isPassLegendDismissed && (
         <PassThreatLegend onClose={() => setIsPassLegendDismissed(true)} />
@@ -603,9 +624,9 @@ export function TacticsBoard() {
           const selected = selection?.kind === 'player' && selection.id === player.id
           const actorCandidate = isRangeInspectionTool(tool)
             || (tool !== 'select'
-              && (!toolActor || tool === 'move' || tool === 'qMove')
+              && (!toolActor || tool === 'qMove')
               && isToolActorEligible(tool, player, frame, rules))
-          const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'move' && tool !== 'qMove' && toolActor
+          const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && toolActor
             ? isToolTargetPlayerEligible(tool, toolActor, player)
             : false
           const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
@@ -632,7 +653,10 @@ export function TacticsBoard() {
                   chooseActor(player.id)
                 } else if (tool === 'shoot') {
                   chooseActor(player.id)
-                } else if (tool === 'move' || tool === 'qMove') {
+                } else if (tool === 'move') {
+                  if (!toolActor || toolActor.id === player.id) chooseActor(player.id)
+                  else createAction(actionActor?.id ?? null, position, player.id)
+                } else if (tool === 'qMove') {
                   chooseActor(player.id)
                 } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {
                   chooseActor(player.id)
@@ -643,6 +667,7 @@ export function TacticsBoard() {
                 }
               }}
             >
+              {touchOptimized && <circle r="38" className="svg-touch-hit-area entity-touch-hit" />}
               {statuses.map((status, index) => <circle key={status.id} r={27 + index * 5} className={`status-ring status-${status.kind}`} />)}
               <circle r="22" className="token-shadow" />
               <circle r="20" className="token-body" />
@@ -697,7 +722,7 @@ export function TacticsBoard() {
               setPlayerFacing(selectedPlayer.id, normalizeAngle(nextFacing))
             }}
           >
-            <circle r="16" className="facing-handle-hit" />
+            <circle r={touchOptimized ? 24 : 16} className="facing-handle-hit" />
             <circle r="9" className="facing-handle-ring" />
             <circle r="3" className="facing-handle-dot" />
           </g>
@@ -724,6 +749,7 @@ export function TacticsBoard() {
             }
           }}
         >
+          {touchOptimized && <circle r="26" className="svg-touch-hit-area entity-touch-hit" />}
           <circle r="11" className="ball-shadow" />
           <circle r="9" className="ball-body" />
           <path d="M0 -4 L4 -1 L3 4 L-3 4 L-4 -1 Z" className="ball-mark" />

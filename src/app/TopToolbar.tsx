@@ -14,11 +14,24 @@ interface TopToolbarProps {
   onOpenLibrary: () => void
   onCreateDocument: () => Promise<void>
   onImportDocument: (document: TacticDocumentV1) => Promise<void>
+  mobile?: boolean
+  mobileActionsOpen?: boolean
+  onMobileActionsOpenChange?: (open: boolean) => void
 }
 
-export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateDocument, onImportDocument }: TopToolbarProps) {
+export function TopToolbar({
+  libraryReady,
+  libraryBusy,
+  onOpenLibrary,
+  onCreateDocument,
+  onImportDocument,
+  mobile = false,
+  mobileActionsOpen = false,
+  onMobileActionsOpenChange,
+}: TopToolbarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const resetButtonRef = useRef<HTMLButtonElement>(null)
+  const mobileActionsButtonRef = useRef<HTMLButtonElement>(null)
   const [resetStage, setResetStage] = useState<0 | 1 | 2>(0)
   const document = useTacticStore((state) => state.document)
   const boardMode = useTacticStore((state) => state.boardMode)
@@ -53,12 +66,17 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
 
   function closeResetDialog() {
     setResetStage(0)
-    window.setTimeout(() => resetButtonRef.current?.focus(), 0)
+    window.setTimeout(() => (mobile ? mobileActionsButtonRef.current : resetButtonRef.current)?.focus(), 0)
   }
 
   function confirmReset() {
     resetTactic()
     closeResetDialog()
+  }
+
+  function closeMobileActions(restoreFocus = false) {
+    onMobileActionsOpenChange?.(false)
+    if (restoreFocus) window.setTimeout(() => mobileActionsButtonRef.current?.focus(), 0)
   }
 
   return (
@@ -91,23 +109,45 @@ export function TopToolbar({ libraryReady, libraryBusy, onOpenLibrary, onCreateD
         ))}
       </nav>
 
-      <div className="top-actions">
+      {mobile && <button
+        ref={mobileActionsButtonRef}
+        type="button"
+        className="mobile-actions-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={mobileActionsOpen}
+        aria-controls="mobile-workspace-actions"
+        onClick={() => onMobileActionsOpenChange?.(!mobileActionsOpen)}
+      ><span aria-hidden="true">⋯</span><small>功能</small></button>}
+
+      {mobile && mobileActionsOpen && <button type="button" className="mobile-actions-backdrop" aria-label="关闭功能面板" onClick={() => closeMobileActions(true)} />}
+      <div
+        id={mobile ? 'mobile-workspace-actions' : undefined}
+        className={`top-actions ${mobileActionsOpen ? 'mobile-open' : ''}`}
+        hidden={mobile && !mobileActionsOpen}
+        role={mobile ? 'dialog' : undefined}
+        aria-modal={mobile ? true : undefined}
+        aria-labelledby={mobile ? 'mobile-workspace-actions-title' : undefined}
+      >
+        {mobile && <div className="mobile-actions-header">
+          <strong id="mobile-workspace-actions-title">战术功能</strong>
+          <button type="button" onClick={() => closeMobileActions(true)} aria-label="关闭战术功能">×</button>
+        </div>}
         <div className="undo-group">
           <button className="icon-button" onClick={undo} disabled={!canUndo} aria-label="撤销" title="撤销 (Ctrl+Z)">↶</button>
           <button className="icon-button" onClick={redo} disabled={!canRedo} aria-label="重做" title="重做 (Ctrl+Y)">↷</button>
         </div>
         {boardMode === 'simulation' && <>
-          <button className={`quiet-button ${analysis ? 'active' : ''}`} onClick={() => setAnalysis(!analysis)} aria-pressed={analysis}>分析层</button>
-          <button className="quiet-button" onClick={() => setLogicOpen(true)} aria-haspopup="dialog" aria-expanded={showLogic}>逻辑说明</button>
-          <button className="quiet-button" onClick={() => setRulesOpen(true)} aria-haspopup="dialog" aria-expanded={showRules}>规则设置</button>
+          <button className={`quiet-button ${analysis ? 'active' : ''}`} onClick={() => { setAnalysis(!analysis); closeMobileActions() }} aria-pressed={analysis}>分析层</button>
+          <button className="quiet-button" onClick={() => { setLogicOpen(true); closeMobileActions() }} aria-haspopup="dialog" aria-expanded={showLogic}>逻辑说明</button>
+          <button className="quiet-button" onClick={() => { setRulesOpen(true); closeMobileActions() }} aria-haspopup="dialog" aria-expanded={showRules}>规则设置</button>
         </>}
         <div className="file-menu">
-          <button className="quiet-button" onClick={onOpenLibrary} aria-haspopup="dialog">我的战术</button>
-          <button className="quiet-button" disabled={!libraryReady || libraryBusy} onClick={() => inputRef.current?.click()}>导入</button>
+          <button className="quiet-button" onClick={() => { onOpenLibrary(); closeMobileActions() }} aria-haspopup="dialog">我的战术</button>
+          <button className="quiet-button" disabled={!libraryReady || libraryBusy} onClick={() => { inputRef.current?.click(); closeMobileActions() }}>导入</button>
           <input ref={inputRef} type="file" accept=".json,.teyvat-tactic.json,application/json" hidden onChange={(event) => { void importFile(event.target.files?.[0]); event.currentTarget.value = '' }} />
-          <button className="accent-button" onClick={() => downloadTactic(document)}>导出战术</button>
-          <button ref={resetButtonRef} className="quiet-button reset-trigger" onClick={() => setResetStage(1)} aria-haspopup="dialog">重置</button>
-          <button className="icon-button" disabled={!libraryReady || libraryBusy} onClick={() => void onCreateDocument()} aria-label="新建战术" title="新建战术">＋</button>
+          <button className="accent-button" onClick={() => { downloadTactic(document); closeMobileActions() }}>导出战术</button>
+          <button ref={resetButtonRef} className="quiet-button reset-trigger" onClick={() => { setResetStage(1); closeMobileActions() }} aria-haspopup="dialog">重置</button>
+          <button className="icon-button" disabled={!libraryReady || libraryBusy} onClick={() => { void onCreateDocument(); closeMobileActions() }} aria-label="新建战术" title="新建战术">＋</button>
         </div>
       </div>
       {activeResetStage !== null && (

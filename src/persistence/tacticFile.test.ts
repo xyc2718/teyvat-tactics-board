@@ -72,6 +72,67 @@ describe('tactic file boundary', () => {
     }
   })
 
+  it('round-trips fixed and other-player keyframe move timing constraints', () => {
+    const source = createDefaultDocument()
+    source.actions.push(
+      {
+        id: 'reference-run', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 12.5, y: 7 }], timingConstraint: { kind: 'fixed' },
+      },
+      {
+        id: 'aligned-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
+        timingConstraint: {
+          kind: 'keyframe',
+          reference: { playerId: 'red-fire', actionId: 'reference-run', edge: 'end' },
+        },
+      },
+    )
+
+    const result = parseTactic(serializeTactic(source))
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.document.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'reference-run', timingConstraint: { kind: 'fixed' } }),
+      expect.objectContaining({
+        id: 'aligned-run',
+        timingConstraint: {
+          kind: 'keyframe',
+          reference: { playerId: 'red-fire', actionId: 'reference-run', edge: 'end' },
+        },
+      }),
+    ]))
+  })
+
+  it('rejects dangling and same-player keyframe move timing references', () => {
+    const dangling = createDefaultDocument()
+    dangling.actions.push({
+      id: 'dangling-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+      path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }],
+      timingConstraint: {
+        kind: 'keyframe',
+        reference: { playerId: 'red-fire', actionId: 'missing-action', edge: 'end' },
+      },
+    })
+    expect(parseTactic(serializeTactic(dangling))).toMatchObject({ ok: false })
+
+    const samePlayer = createDefaultDocument()
+    samePlayer.actions.push(
+      {
+        id: 'same-source', type: 'wait', actorId: 'blue-fire', startTime: 2, duration: 1,
+      },
+      {
+        id: 'same-player-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }],
+        timingConstraint: {
+          kind: 'keyframe',
+          reference: { playerId: 'blue-fire', actionId: 'same-source', edge: 'start' },
+        },
+      },
+    )
+    expect(parseTactic(serializeTactic(samePlayer))).toMatchObject({ ok: false })
+  })
+
   it('adds an empty static-arrow collection when importing an older V1 file', () => {
     const legacy = createDefaultDocument() as unknown as Record<string, unknown>
     delete legacy.staticMoveArrows
@@ -205,6 +266,40 @@ describe('tactic file boundary', () => {
 
     const nonFinite = serializeTactic(createDefaultDocument()).replace('"facing": 0', '"facing": 1e999')
     expect(parseTactic(nonFinite).ok).toBe(false)
+  })
+
+  it('round-trips a complete follow contract and rejects broken or circular references', () => {
+    const source = createDefaultDocument()
+    source.actions.push(
+      {
+        id: 'saved-target-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
+      },
+      {
+        id: 'saved-follow', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 7.5, y: 7 }], targetPlayerId: 'blue-fire',
+        syncActionId: 'saved-target-run', followGap: 1,
+      },
+    )
+    const parsed = parseTactic(serializeTactic(source))
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.actions[1]).toMatchObject({
+      targetPlayerId: 'blue-fire', syncActionId: 'saved-target-run', followGap: 1,
+    })
+
+    const incomplete = structuredClone(source)
+    const incompleteFollow = incomplete.actions[1]
+    if (incompleteFollow?.type === 'move') delete incompleteFollow.syncActionId
+    expect(parseTactic(JSON.stringify(incomplete)).ok).toBe(false)
+
+    const circular = structuredClone(source)
+    const targetRun = circular.actions[0]
+    if (targetRun?.type === 'move') {
+      targetRun.targetPlayerId = 'red-fire'
+      targetRun.syncActionId = 'saved-follow'
+      targetRun.followGap = 1
+    }
+    expect(parseTactic(JSON.stringify(circular)).ok).toBe(false)
   })
 
   it('rejects broken player references and inconsistent possession state', () => {

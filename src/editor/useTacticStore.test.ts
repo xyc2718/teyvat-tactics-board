@@ -33,6 +33,116 @@ describe('tactic store timeline edits', () => {
     })
   })
 
+  it('keeps an ordinary move at an explicitly fixed duration and reflows its later actions', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'fixed-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }],
+      },
+      {
+        id: 'after-fixed-run', type: 'qMove', actorId: 'blue-fire', startTime: 2, duration: 0,
+        path: [{ x: 5.5, y: 7 }, { x: 7.8, y: 7 }],
+      },
+    )
+    useTacticStore.setState({ document, currentTime: 2 })
+
+    useTacticStore.getState().setMoveTimingFixed('fixed-run', true)
+    useTacticStore.getState().updateActionTiming('fixed-run', 'duration', 5)
+
+    const state = useTacticStore.getState()
+    expect(state.document.actions.find((action) => action.id === 'fixed-run')).toMatchObject({
+      duration: 5,
+      timingConstraint: { kind: 'fixed' },
+    })
+    expect(state.document.actions.find((action) => action.id === 'after-fixed-run')?.startTime).toBe(5)
+    expect(projectFrame(state.document, 2.5).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(4.5)
+  })
+
+  it('aligns a move to another player keyframe and follows later source timing edits', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'blue-run-to-sync', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
+      },
+      {
+        id: 'red-reference-run', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 12.5, y: 7 }],
+      },
+    )
+    useTacticStore.setState({ document })
+
+    useTacticStore.getState().setMoveTimingKeyframe('blue-run-to-sync', {
+      playerId: 'red-fire', actionId: 'red-reference-run', edge: 'end',
+    })
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === 'blue-run-to-sync')).toMatchObject({
+      duration: 4,
+      timingConstraint: {
+        kind: 'keyframe',
+        reference: { playerId: 'red-fire', actionId: 'red-reference-run', edge: 'end' },
+      },
+    })
+
+    useTacticStore.getState().updateActionTiming('red-reference-run', 'duration', 6)
+    const updated = useTacticStore.getState().document.actions.find((action) => action.id === 'blue-run-to-sync')
+    expect(updated?.duration).toBe(6)
+    expect(projectFrame(useTacticStore.getState().document, 6).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(7.5)
+  })
+
+  it('rejects circular move keyframe timing references', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'blue-cycle-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
+      },
+      {
+        id: 'red-cycle-run', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 12.5, y: 7 }],
+      },
+    )
+    useTacticStore.setState({ document })
+    useTacticStore.getState().setMoveTimingKeyframe('blue-cycle-run', {
+      playerId: 'red-fire', actionId: 'red-cycle-run', edge: 'end',
+    })
+    useTacticStore.getState().setMoveTimingKeyframe('red-cycle-run', {
+      playerId: 'blue-fire', actionId: 'blue-cycle-run', edge: 'end',
+    })
+
+    const state = useTacticStore.getState()
+    expect(state.notice).toContain('循环时间依赖')
+    expect(state.document.actions.find((action) => action.id === 'red-cycle-run')).not.toHaveProperty('timingConstraint')
+  })
+
+  it('rejects an indirect cycle through the referenced player sequence', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'blue-cycle-source', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 7 }, { x: 7.5, y: 7 }],
+      },
+      {
+        id: 'red-following-blue', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 7.5, y: 7 }], targetPlayerId: 'blue-fire',
+        syncActionId: 'blue-cycle-source', followGap: 1,
+      },
+      {
+        id: 'red-q-after-follow', type: 'qMove', actorId: 'red-fire', startTime: 4, duration: 0,
+        path: [{ x: 7.5, y: 7 }, { x: 5.2, y: 7 }],
+      },
+    )
+    useTacticStore.setState({ document })
+
+    useTacticStore.getState().setMoveTimingKeyframe('blue-cycle-source', {
+      playerId: 'red-fire', actionId: 'red-q-after-follow', edge: 'start',
+    })
+
+    const state = useTacticStore.getState()
+    expect(state.notice).toContain('循环时间依赖')
+    expect(state.document.actions.find((action) => action.id === 'blue-cycle-source')).not.toHaveProperty('timingConstraint')
+  })
+
   it('automatically creates the editable next step before drawing movement from the opening frame', () => {
     const document = createDefaultDocument()
     const openingId = document.stepMarkers[0]!.id
@@ -1230,6 +1340,78 @@ describe('tactic store timeline edits', () => {
     expect(actions[0]).toMatchObject({ startTime: 0, duration: 1 })
     expect(actions[1]).toMatchObject({ startTime: 7, duration: 1 })
     expect(actions[1]?.path[0]).toEqual(actions[0]?.path.at(-1))
+  })
+
+  it('creates a follow move from the actor latest joint to the target move end', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    const follower = document.initialScene.players.find((player) => player.id === 'red-ice')!
+    document.actions.push(
+      {
+        id: 'target-long-run', type: 'move', actorId: target.id, startTime: 0, duration: 6,
+        path: [{ ...target.position }, { x: 10, y: target.position.y }],
+      },
+      {
+        id: 'follower-q-first', type: 'qMove', actorId: follower.id, startTime: 0, duration: 1,
+        path: [{ ...follower.position }, { x: follower.position.x - 3, y: follower.position.y }],
+      },
+    )
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'player', id: follower.id },
+      currentTime: 0,
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().setTool('move')
+    expect(useTacticStore.getState().currentTime).toBe(1)
+    const targetAtStart = projectFrame(document, 1).players.find((player) => player.id === target.id)!
+    useTacticStore.getState().createAction(follower.id, targetAtStart.position, target.id)
+
+    const state = useTacticStore.getState()
+    expect(state.document.actions.at(-1)).toMatchObject({
+      type: 'move',
+      actorId: follower.id,
+      targetPlayerId: target.id,
+      syncActionId: 'target-long-run',
+      startTime: 1,
+      duration: 5,
+    })
+    expect(state.currentTime).toBe(6)
+  })
+
+  it('keeps move target selection open when the clicked player has no future locomotion', () => {
+    const before = useTacticStore.getState().document.actions.length
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-fire' })
+    useTacticStore.getState().setTool('move')
+    useTacticStore.getState().createAction('blue-fire', { x: 16.5, y: 7 }, 'red-fire')
+
+    const state = useTacticStore.getState()
+    expect(state.document.actions).toHaveLength(before)
+    expect(state.tool).toBe('move')
+    expect(state.notice).toContain('没有可同步')
+  })
+
+  it('deletes dependent follow moves with their synchronized target action', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'deletable-target-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 4,
+        path: [{ x: 3.5, y: 4.7 }, { x: 7.5, y: 4.7 }],
+      },
+      {
+        id: 'dependent-follow', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 4.7 }, { x: 7.5, y: 4.7 }],
+        targetPlayerId: 'blue-fire', syncActionId: 'deletable-target-run', followGap: 1,
+      },
+    )
+    useTacticStore.setState({ document, selection: { kind: 'action', id: 'dependent-follow' } })
+
+    useTacticStore.getState().deleteAction('deletable-target-run')
+
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
+    expect(useTacticStore.getState().selection).toBeNull()
   })
 
   it('continues a frozen player only after the derived thaw keyframe', () => {

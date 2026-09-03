@@ -360,6 +360,49 @@ describe('App shell', () => {
     expect(screen.getByRole('slider', { name: '调整跑动曲线' })).toBeInTheDocument()
   })
 
+  it('lets a selected run use a manual duration or another player keyframe', () => {
+    const document = createDefaultDocument()
+    document.actions.push(
+      {
+        id: 'timed-blue-run', type: 'move', actorId: 'blue-fire', startTime: 0, duration: 2,
+        path: [{ x: 3.5, y: 7 }, { x: 5.5, y: 7 }],
+      },
+      {
+        id: 'reference-red-run', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+        path: [{ x: 16.5, y: 7 }, { x: 12.5, y: 7 }],
+      },
+    )
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'action', id: 'timed-blue-run' },
+      currentTime: 2,
+    })
+    render(<App />)
+
+    const fixedToggle = screen.getByRole('checkbox', { name: /固定跑动时间/ })
+    expect(fixedToggle).not.toBeChecked()
+    fireEvent.click(fixedToggle)
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === 'timed-blue-run')).toMatchObject({
+      timingConstraint: { kind: 'fixed' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '选择其他球员关键帧' }))
+    const dialog = screen.getByRole('dialog', { name: '选择到达关键帧' })
+    expect(dialog).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '红方 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '跑动结束4.00s' }))
+
+    expect(screen.queryByRole('dialog', { name: '选择到达关键帧' })).not.toBeInTheDocument()
+    expect(useTacticStore.getState().document.actions.find((action) => action.id === 'timed-blue-run')).toMatchObject({
+      duration: 4,
+      timingConstraint: {
+        kind: 'keyframe',
+        reference: { playerId: 'red-fire', actionId: 'reference-red-run', edge: 'end' },
+      },
+    })
+    expect(screen.getByText(/红方 2 · 跑动结束 · 4.00s/)).toBeInTheDocument()
+  })
+
   it('guides a tool-first Q workflow without a virtual arrow and resets after creation', () => {
     const { container } = render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
@@ -471,7 +514,7 @@ describe('App shell', () => {
     expect(container.querySelector(`[data-action-id="${q?.id}"] .action-qMove`)).toBeInTheDocument()
   })
 
-  it('lets step two switch to another player before creating locomotion', () => {
+  it('creates a close-follow move when step two clicks another player', () => {
     const document = createDefaultDocument()
     document.actions.push(
       {
@@ -484,7 +527,7 @@ describe('App shell', () => {
       },
     )
     useTacticStore.setState({ document, currentTime: 0, selection: null })
-    render(<App />)
+    const { container } = render(<App />)
 
     fireEvent.click(screen.getByRole('button', { name: '跑动' }))
     fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { button: 0, pointerId: 31 })
@@ -494,20 +537,33 @@ describe('App shell', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { button: 0, pointerId: 32 })
     expect(useTacticStore.getState()).toMatchObject({
       currentTime: 4,
+      selection: { kind: 'player', id: 'blue-fire' },
+      tool: 'select',
+    })
+    expect(useTacticStore.getState().document.actions).toHaveLength(3)
+    expect(useTacticStore.getState().document.actions.at(-1)).toMatchObject({
+      type: 'move',
+      actorId: 'blue-fire',
+      targetPlayerId: 'blue-ice',
+      syncActionId: 'replacement-player-run',
+      startTime: 2,
+      duration: 2,
+    })
+    expect(container.querySelector('.action-move-follow')).toBeInTheDocument()
+  })
+
+  it('keeps the explicit reselect control for changing the move actor', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '跑动' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 2，蛮牛/ }), { button: 0, pointerId: 41 })
+    fireEvent.click(screen.getByRole('button', { name: '返回第 1/2 步重新选择球员' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { button: 0, pointerId: 42 })
+
+    expect(useTacticStore.getState()).toMatchObject({
       selection: { kind: 'player', id: 'blue-ice' },
       tool: 'move',
     })
-    expect(useTacticStore.getState().document.actions).toHaveLength(2)
-
-    const board = screen.getByRole('application', { name: '战术编辑球场' })
-    mockBoardRect(board)
-    fireEvent.pointerDown(board, { clientX: 570, clientY: 487, pointerId: 33, button: 0 })
-
-    expect(useTacticStore.getState().document.actions.at(-1)).toMatchObject({
-      type: 'move',
-      actorId: 'blue-ice',
-      startTime: 4,
-    })
+    expect(useTacticStore.getState().document.actions).toHaveLength(0)
   })
 
   it('saves a cooldown-delayed Q from the projected final origin without a virtual arrow', () => {

@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
-import { normalizeAngle, pathLength, resolvedMovePath } from '../domain/geometry/geometry'
-import type { MoveAction } from '../domain/model/types'
+import { useEffect, useMemo, useState } from 'react'
+import { normalizeAngle, pathLength } from '../domain/geometry/geometry'
+import type { MoveAction, MoveKeyframeReference, TacticDocumentV1 } from '../domain/model/types'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
 import { evaluatePlayerSituation, type BallArrival } from '../domain/rules/playerSituation'
 import {
@@ -9,7 +9,9 @@ import {
   shotPressureModeLabel,
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
-import { projectFrame } from '../domain/timeline/projectFrame'
+import { projectedMovePath, projectFrame } from '../domain/timeline/projectFrame'
+import { playerActionKeyframes } from '../domain/timeline/playerKeyframes'
+import { timelineDuration } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
 import { actionLabels, matchupLabel } from '../ui/labels'
 
@@ -61,7 +63,7 @@ export function InspectorPanel() {
   const selectedPlayerIsCarrier = selectedPlayer?.id === frame.ball.carrierId
 
   return (
-    <aside className="inspector-panel panel-surface">
+    <aside id="inspector-panel" className="inspector-panel panel-surface">
       <div className="panel-heading inspector-heading">
         <div><span className="eyebrow">检查器</span><h2>{selectedPlayer ? selectedPlayer.name : selectedAction ? actionLabels[selectedAction.type] : '战术提示'}</h2></div>
         <span className="time-chip">{currentTime.toFixed(2)}s</span>
@@ -97,7 +99,7 @@ export function InspectorPanel() {
               <Metric label="坐标" value={`${selectedPlayer.position.x.toFixed(1)}, ${selectedPlayer.position.y.toFixed(1)}`} />
             </div>
           </section>
-          {latestPlayerMove && <section className="inspector-section latest-move-editor">
+          {latestPlayerMove && !latestPlayerMove.targetPlayerId && <section className="inspector-section latest-move-editor">
             <div className="section-title-row">
               <h3>最后一段跑动</h3>
               <span>{latestPlayerMove.startTime.toFixed(2)}–{(latestPlayerMove.startTime + latestPlayerMove.duration).toFixed(2)}s</span>
@@ -139,7 +141,7 @@ export function InspectorPanel() {
             {showAdvancedTimeline
               ? <>
                   <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
-                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)) || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
+                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)) || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId)) || (selectedAction.type === 'move' && (Boolean(selectedAction.targetPlayerId) || selectedAction.timingConstraint?.kind === 'keyframe'))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
                 </>
               : <>
                   <div className="inline-info"><span>开始节点</span><strong>{selectedAction.startTime.toFixed(2)}s</strong></div>
@@ -147,12 +149,18 @@ export function InspectorPanel() {
                     ? <label className="field-row"><span>等待时长</span><NumberInput value={selectedAction.duration} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
                     : <div className="inline-info"><span>动作时长</span><strong>{selectedAction.duration.toFixed(2)}s</strong></div>}
                 </>}
-            {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.type === 'move' ? resolvedMovePath(selectedAction) : selectedAction.path).toFixed(2)} 格</strong></div>}
-            {selectedAction.type === 'move' && <MovePathModeButtons
+            {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.type === 'move' ? projectedMovePath(document, selectedAction) : selectedAction.path).toFixed(2)} 格</strong></div>}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && <MovePathModeButtons
               curved={Boolean(selectedAction.curveControl)}
               onChange={(mode) => setMovePathMode(selectedAction.id, mode)}
             />}
-            {selectedAction.type === 'move' && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；动作时长会随曲线长度自动更新。</p>}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && <MoveTimingEditor
+              key={selectedAction.id}
+              action={selectedAction}
+              document={document}
+            />}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '当前时间约束保持不变。' : '动作时长会随曲线长度自动更新。'}</p>}
+            {selectedAction.type === 'move' && selectedAction.targetPlayerId && <p className="callout">贴身跟随 {document.initialScene.players.find((player) => player.id === selectedAction.targetPlayerId)?.name ?? selectedAction.targetPlayerId}；结束时间同步目标动作，追上后保持约 {selectedAction.followGap?.toFixed(2)} 格攻击间距。</p>}
             {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
             {selectedAction.type === 'shoot' && <label className="field-row"><span>蓄力等级</span>
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>
@@ -203,6 +211,148 @@ function MovePathModeButtons({
   return <div className="move-path-mode" role="group" aria-label="跑动路径类型">
     <button className={!curved ? 'active' : ''} aria-pressed={!curved} onClick={() => onChange('straight')}>直线</button>
     <button className={curved ? 'active' : ''} aria-pressed={curved} onClick={() => onChange('curve')}>可调曲线</button>
+  </div>
+}
+
+function MoveTimingEditor({
+  action,
+  document,
+}: {
+  action: MoveAction
+  document: TacticDocumentV1
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const setMoveTimingFixed = useTacticStore((state) => state.setMoveTimingFixed)
+  const setMoveTimingKeyframe = useTacticStore((state) => state.setMoveTimingKeyframe)
+  const updateTiming = useTacticStore((state) => state.updateActionTiming)
+  const timingFixed = Boolean(action.timingConstraint)
+  const keyframe = action.timingConstraint?.kind === 'keyframe'
+    ? action.timingConstraint.reference
+    : null
+  const referencePlayer = keyframe
+    ? document.initialScene.players.find((player) => player.id === keyframe.playerId)
+    : null
+  const referenceKeyframe = keyframe
+    ? playerActionKeyframes(document, keyframe.playerId).find(
+        (candidate) => candidate.actionId === keyframe.actionId && candidate.edge === keyframe.edge,
+      )
+    : null
+
+  return <div className="move-timing-editor">
+    <label className="move-timing-toggle">
+      <input
+        type="checkbox"
+        checked={timingFixed}
+        onChange={(event) => setMoveTimingFixed(action.id, event.target.checked)}
+      />
+      <span><strong>固定跑动时间</strong><small>按指定时长或其他球员关键帧到达终点</small></span>
+    </label>
+    {timingFixed && <div className="move-timing-controls">
+      <label className="field-row">
+        <span>持续时间</span>
+        <NumberInput
+          value={action.duration}
+          step={0.1}
+          disabled={Boolean(keyframe)}
+          onChange={(value) => updateTiming(action.id, 'duration', value)}
+          suffix="s"
+        />
+      </label>
+      {keyframe && <div className="timing-reference-summary">
+        <span>对齐关键帧</span>
+        <strong>{referencePlayer?.name ?? keyframe.playerId} · {referenceKeyframe?.label ?? '关键帧'} · {referenceKeyframe?.time.toFixed(2) ?? '?'}s</strong>
+      </div>}
+      <div className="move-timing-actions">
+        <button type="button" className="quiet-button" onClick={() => setDialogOpen(true)}>
+          {keyframe ? '更换关键帧' : '选择其他球员关键帧'}
+        </button>
+        {keyframe && <button type="button" className="quiet-button" onClick={() => setMoveTimingFixed(action.id, true)}>改为手动时间</button>}
+      </div>
+      <p className="callout">固定时间会让这段跑动准时到达终点，并覆盖这段跑动的自动速度加成与冰圈减速。</p>
+    </div>}
+    {dialogOpen && <MoveKeyframeDialog
+      action={action}
+      document={document}
+      onClose={() => setDialogOpen(false)}
+      onSelect={(reference) => {
+        setMoveTimingKeyframe(action.id, reference)
+        setDialogOpen(false)
+      }}
+    />}
+  </div>
+}
+
+function MoveKeyframeDialog({
+  action,
+  document,
+  onClose,
+  onSelect,
+}: {
+  action: MoveAction
+  document: TacticDocumentV1
+  onClose: () => void
+  onSelect: (reference: MoveKeyframeReference) => void
+}) {
+  const players = document.initialScene.players.filter((player) => player.id !== action.actorId)
+  const initialPlayerId = action.timingConstraint?.kind === 'keyframe'
+    ? action.timingConstraint.reference.playerId
+    : players[0]?.id ?? ''
+  const [playerId, setPlayerId] = useState(initialPlayerId)
+  const duration = Math.max(timelineDuration(document), action.startTime + action.duration, 0.01)
+  const keyframes = playerActionKeyframes(document, playerId)
+  const eligibleKeyframes = keyframes.filter((keyframe) => keyframe.time > action.startTime + 1e-6)
+  const player = players.find((candidate) => candidate.id === playerId)
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return <div className="timing-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.currentTarget === event.target) onClose()
+  }}>
+    <section className="timing-dialog" role="dialog" aria-modal="true" aria-labelledby="timing-dialog-title">
+      <div className="timing-dialog-heading">
+        <div><span className="eyebrow">跑动时间</span><h3 id="timing-dialog-title">选择到达关键帧</h3></div>
+        <button type="button" className="icon-button" aria-label="关闭关键帧选择" onClick={onClose}>×</button>
+      </div>
+      <p className="subtle">选择其他球员的一处关键帧，这段跑动会在同一时刻到达当前终点。</p>
+      <div className="timing-player-tabs" role="tablist" aria-label="选择球员时间轴">
+        {players.map((candidate) => <button
+          type="button"
+          role="tab"
+          aria-selected={candidate.id === playerId}
+          className={candidate.id === playerId ? `active team-${candidate.team}` : `team-${candidate.team}`}
+          key={candidate.id}
+          onClick={() => setPlayerId(candidate.id)}
+        >{candidate.name}</button>)}
+      </div>
+      <div className="timing-lane" aria-label={`${player?.name ?? '球员'}时间轴`}>
+        <span className="timing-lane-start">0s</span>
+        <span className="timing-lane-end">{duration.toFixed(2)}s</span>
+        <div className="timing-lane-line" />
+        {keyframes.map((keyframe) => <button
+          type="button"
+          key={keyframe.id}
+          className="timing-lane-keyframe"
+          style={{ left: `${Math.min(100, Math.max(0, (keyframe.time / duration) * 100))}%` }}
+          disabled={keyframe.time <= action.startTime + 1e-6}
+          title={`${keyframe.label} ${keyframe.time.toFixed(2)}s`}
+          aria-label={`${keyframe.label} ${keyframe.time.toFixed(2)}秒`}
+          onClick={() => onSelect(keyframe.reference)}
+        />)}
+      </div>
+      <div className="timing-keyframe-list">
+        {eligibleKeyframes.length > 0 ? eligibleKeyframes.map((keyframe) => <button
+          type="button"
+          key={keyframe.id}
+          onClick={() => onSelect(keyframe.reference)}
+        ><span>{keyframe.label}</span><strong>{keyframe.time.toFixed(2)}s</strong></button>) : <p>这名球员在跑动开始后还没有可选关键帧。</p>}
+      </div>
+    </section>
   </div>
 }
 

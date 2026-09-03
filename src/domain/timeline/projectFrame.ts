@@ -34,6 +34,8 @@ type IceQHitMap = Map<string, IceQHit[]>
 
 const E_ZONE_SAMPLE_SECONDS = 0.05
 const E_ZONE_SAMPLE_DISTANCE = 0.05
+const FOLLOW_SAMPLE_SECONDS = 0.05
+const POSITION_EPSILON = 1e-6
 
 type EZoneEffect = 'move' | 'qMove'
 
@@ -69,6 +71,11 @@ function moveDistanceWithoutEZoneSlow(
   const effectiveTime = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   let traveled = clamp((effectiveTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1) * routeLength
 
+  // An explicit timing constraint is an authored arrival contract. It scales
+  // the route uniformly to reach the endpoint at that time instead of adding
+  // rule-derived boosts that could make the actor arrive early.
+  if (action.timingConstraint) return traveled
+
   const role = getActorRole(document, action.actorId)
   const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
   if (boostRule) {
@@ -86,6 +93,46 @@ function moveDistanceWithoutEZoneSlow(
   return traveled
 }
 
+function followMoveDistanceBudget(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  startTime: number,
+  endTime: number,
+): number {
+  if (endTime <= startTime) return 0
+  let budget = (endTime - startTime) * document.rulesSnapshot.field.baseMoveSpeed
+  const role = getActorRole(document, action.actorId)
+  const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
+  if (boostRule) {
+    const source = [...document.actions]
+      .filter((candidate): candidate is QMoveAction => (
+        candidate.type === 'qMove'
+        && candidate.actorId === action.actorId
+        && actionEndTime(candidate) < actionEndTime(action)
+        && actionEndTime(candidate) + boostRule.duration > action.startTime
+      ))
+      .sort((left, right) => actionEndTime(right) - actionEndTime(left))[0]
+    if (source) {
+      const boostStart = actionEndTime(source)
+      const overlapStart = Math.max(startTime, action.startTime, boostStart)
+      const overlapEnd = Math.min(endTime, actionEndTime(action), boostStart + boostRule.duration)
+      if (overlapEnd > overlapStart) {
+        budget += ((overlapEnd - overlapStart) / boostRule.duration) * boostRule.netSeparationGain
+      }
+    }
+  }
+  const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, endTime)
+  if (receiveWindow) {
+    const overlapStart = Math.max(startTime, action.startTime, receiveWindow.start)
+    const overlapEnd = Math.min(endTime, receiveWindow.end)
+    if (overlapEnd > overlapStart) {
+      budget += ((overlapEnd - overlapStart) / receiveWindow.boost.duration)
+        * receiveWindow.boost.netSeparationGain
+    }
+  }
+  return budget
+}
+
 function eZoneMultiplierAt(
   document: TacticDocumentV1,
   movingActor: PlayerState,
@@ -94,6 +141,7 @@ function eZoneMultiplierAt(
   effect: EZoneEffect,
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
 ): number {
   if (effect === 'qMove' && movingActor.role !== 'water') return 1
   const activeZones = document.actions.filter(
@@ -105,7 +153,7 @@ function eZoneMultiplierAt(
   if (activeZones.length === 0) return 1
 
   // Resolve moving zone centers without E effects to avoid recursive zone-to-zone projection.
-  const centerFrame = projectSceneCore(document, time, false, applyControlEffects, hitMap, false)
+  const centerFrame = projectSceneCore(document, time, false, applyControlEffects, hitMap, false, ignoredActionIds)
   let multiplier = 1
   for (const zone of activeZones) {
     const owner = centerFrame.players.find((player) => player.id === zone.actorId)
@@ -140,6 +188,116 @@ interface EZoneMoveTrace {
   segments: EZoneSlowSegment[]
 }
 
+interface FollowMoveTrace extends EZoneMoveTrace {
+  position: PlayerState['position']
+  path: PlayerState['position'][]
+}
+
+function traceFollowMove(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  time: number,
+  applyControlEffects: boolean,
+  hitMap: IceQHitMap,
+  applyEZoneEffects: boolean,
+  ignoredActionIds: ReadonlySet<string>,
+): FollowMoveTrace {
+  const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
+  const origin = action.path[0]
+  const targetPlayerId = action.targetPlayerId
+  if (!movingActor || !origin || !targetPlayerId || time <= action.startTime) {
+    const position = { ...(origin ?? movingActor?.position ?? { x: 0, y: 0 }) }
+    return { traveled: 0, position, path: [position, { ...position }], segments: [] }
+  }
+
+  let end = Math.min(time, actionEndTime(action))
+  if (applyControlEffects) {
+    const freeze = freezeWindowsFor(document, action.actorId, hitMap).find(
+      (window) => window.start < actionEndTime(action) && window.end > action.startTime,
+    )
+    if (freeze) end = Math.min(end, freeze.start)
+  }
+  if (end <= action.startTime) {
+    return { traveled: 0, position: { ...origin }, path: [{ ...origin }, { ...origin }], segments: [] }
+  }
+
+  const nextIgnored = new Set(ignoredActionIds)
+  nextIgnored.add(action.id)
+  const steps = Math.max(1, Math.ceil((end - action.startTime) / FOLLOW_SAMPLE_SECONDS))
+  const gap = Math.max(0, action.followGap ?? document.rulesSnapshot.roles[movingActor.role].attackRadius)
+  const path: PlayerState['position'][] = [{ ...origin }]
+  const segments: EZoneSlowSegment[] = []
+  let position = { ...origin }
+  let traveled = 0
+  let fallbackUnit = { x: movingActor.team === 'blue' ? -1 : 1, y: 0 }
+
+  for (let index = 0; index < steps; index += 1) {
+    const stepStart = action.startTime + ((end - action.startTime) * index) / steps
+    const stepEnd = action.startTime + ((end - action.startTime) * (index + 1)) / steps
+    const targetFrame = projectSceneCore(
+      document,
+      stepEnd,
+      false,
+      applyControlEffects,
+      hitMap,
+      applyEZoneEffects,
+      nextIgnored,
+    )
+    const target = targetFrame.players.find((player) => player.id === targetPlayerId)
+    if (!target) continue
+
+    const offsetX = position.x - target.position.x
+    const offsetY = position.y - target.position.y
+    const separation = Math.hypot(offsetX, offsetY)
+    if (separation > POSITION_EPSILON) fallbackUnit = { x: offsetX / separation, y: offsetY / separation }
+    const desired = {
+      x: target.position.x + fallbackUnit.x * gap,
+      y: target.position.y + fallbackUnit.y * gap,
+    }
+    const deltaX = desired.x - position.x
+    const deltaY = desired.y - position.y
+    const remaining = Math.hypot(deltaX, deltaY)
+    const probe = remaining > POSITION_EPSILON
+      ? { x: position.x + deltaX * 0.5, y: position.y + deltaY * 0.5 }
+      : position
+    const multiplier = applyControlEffects && applyEZoneEffects
+      ? eZoneMultiplierAt(
+          document,
+          movingActor,
+          probe,
+          (stepStart + stepEnd) / 2,
+          'move',
+          applyControlEffects,
+          hitMap,
+          nextIgnored,
+        )
+      : 1
+    const budget = followMoveDistanceBudget(document, action, stepStart, stepEnd) * multiplier
+    const advance = Math.min(remaining, Math.max(0, budget))
+    const previous = { ...position }
+    if (remaining > POSITION_EPSILON && advance > POSITION_EPSILON) {
+      position = clampPoint({
+        x: position.x + (deltaX / remaining) * advance,
+        y: position.y + (deltaY / remaining) * advance,
+      }, document.rulesSnapshot.field.width, document.rulesSnapshot.field.height)
+      traveled += distance(previous, position)
+      path.push({ ...position })
+    }
+    if (multiplier < 1 - POSITION_EPSILON && distance(previous, position) > POSITION_EPSILON) {
+      const last = segments.at(-1)
+      if (last && Math.abs(last.endTime - stepStart) <= POSITION_EPSILON && Math.abs(last.multiplier - multiplier) <= POSITION_EPSILON) {
+        last.endTime = stepEnd
+        last.path.push({ ...position })
+      } else {
+        segments.push({ startTime: stepStart, endTime: stepEnd, multiplier, path: [previous, { ...position }] })
+      }
+    }
+  }
+
+  if (path.length === 1) path.push({ ...position })
+  return { traveled, position, path, segments }
+}
+
 function traceMoveWithEZoneSlow(
   document: TacticDocumentV1,
   action: MoveAction,
@@ -147,11 +305,20 @@ function traceMoveWithEZoneSlow(
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
 ): EZoneMoveTrace {
+  if (action.targetPlayerId && action.syncActionId) {
+    return traceFollowMove(document, action, time, applyControlEffects, hitMap, true, new Set())
+  }
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
   const route = resolvedMovePath(action)
   const routeLength = pathLength(route)
   const end = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   if (!movingActor || routeLength <= 0 || end <= action.startTime) return { traveled: 0, segments: [] }
+
+  // Fixed/keyframe timing is an explicit presentation contract and therefore
+  // takes precedence over automatic speed modifiers for this one move.
+  if (action.timingConstraint) {
+    return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [] }
+  }
 
   const hasOverlappingEnemyZone = document.actions.some((candidate) => {
     if (candidate.type !== 'eZone') return false
@@ -359,6 +526,7 @@ function projectSceneCore(
   applyControlEffects = true,
   hitMap: IceQHitMap = new Map(),
   applyEZoneEffects = true,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
 ): ProjectedFrame {
   const time = Math.max(0, rawTime)
   const rules = document.rulesSnapshot
@@ -380,6 +548,7 @@ function projectSceneCore(
   })
 
   for (const action of ordered) {
+    if (ignoredActionIds.has(action.id)) continue
     if (action.startTime > time) continue
     const actor = 'actorId' in action
       ? players.find((player) => player.id === action.actorId)
@@ -387,6 +556,18 @@ function projectSceneCore(
 
     if (action.type === 'move' || action.type === 'qMove') {
       if (!actor || action.path.length < 2) continue
+      if (action.type === 'move' && action.targetPlayerId && action.syncActionId) {
+        actor.position = traceFollowMove(
+          document,
+          action,
+          time,
+          applyControlEffects,
+          hitMap,
+          applyEZoneEffects,
+          ignoredActionIds,
+        ).position
+        continue
+      }
       const route = action.type === 'move' ? resolvedMovePath(action) : action.path
       actor.position = clampPoint(
         pointAlongPath(route, movementProgress(document, action, time, applyControlEffects, hitMap, applyEZoneEffects)),
@@ -679,6 +860,39 @@ export function eZoneSlowSegmentsForMove(
   )
   const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
   return traceMoveWithEZoneSlow(document, action, end, true, hitMap).segments
+}
+
+/** Shared formal route for both fixed-point and player-following moves. */
+export function projectedMovePath(document: TacticDocumentV1, action: MoveAction): PlayerState['position'][] {
+  if (!action.targetPlayerId || !action.syncActionId) return resolvedMovePath(action)
+  const hitMap = buildIceQHitMap(document)
+  return traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set()).path
+}
+
+export function projectedMovePathSegment(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  startTime: number,
+  endTime: number,
+): PlayerState['position'][] {
+  if (!action.targetPlayerId || !action.syncActionId) {
+    const route = resolvedMovePath(action)
+    return slicePath(
+      route,
+      clamp((startTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1),
+      clamp((endTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1),
+    )
+  }
+  const hitMap = buildIceQHitMap(document)
+  const full = traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set())
+  if (full.traveled <= POSITION_EPSILON) return full.path
+  const start = traceFollowMove(document, action, startTime, true, hitMap, true, new Set())
+  const end = traceFollowMove(document, action, endTime, true, hitMap, true, new Set())
+  return slicePath(
+    full.path,
+    clamp(start.traveled / full.traveled, 0, 1),
+    clamp(end.traveled / full.traveled, 0, 1),
+  )
 }
 
 export function analyzeDocumentIceQHits(document: TacticDocumentV1, action: QMoveAction): IceQHit[] {
