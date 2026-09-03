@@ -208,6 +208,47 @@ describe('tactic store timeline edits', () => {
     expect(getStepActionOwnership(state.document, state.activeStepId)?.count).toBe(1)
   })
 
+  it.each([
+    {
+      name: 'Q 技能',
+      tool: 'qMove' as const,
+      commit: () => useTacticStore.getState().createAction('blue-water', { x: 7.5, y: 4.7 }),
+    },
+    {
+      name: '传球',
+      tool: 'pass' as const,
+      commit: () => useTacticStore.getState().createAction('blue-water', { x: 3.5, y: 7 }, 'blue-fire'),
+    },
+    {
+      name: '射门',
+      tool: 'shoot' as const,
+      commit: () => useTacticStore.getState().createShot('blue-water'),
+    },
+  ])('repairs and selects step 1 when $name commits from an opening-only workflow', ({ tool, commit }) => {
+    const document = createDefaultDocument()
+    const openingId = document.stepMarkers[0]!.id
+    useTacticStore.setState({
+      document,
+      activeStepId: openingId,
+      currentTime: 0,
+      selection: { kind: 'player', id: 'blue-water' },
+      tool,
+      past: [],
+      future: [],
+    })
+
+    commit()
+
+    const state = useTacticStore.getState()
+    expect(state.document.stepMarkers).toHaveLength(2)
+    expect(state.document.stepMarkers.find((step) => step.id === state.activeStepId)).toMatchObject({
+      time: 0,
+      name: '步骤 1',
+    })
+    expect(getStepActionOwnership(state.document, openingId)?.count).toBe(0)
+    expect(getStepActionOwnership(state.document, state.activeStepId)?.count).toBeGreaterThan(0)
+  })
+
   it('starts a pass from the visible opening possession instead of checking the hidden timeline end', () => {
     const document = createDefaultDocument()
     const openingId = document.stepMarkers[0]!.id

@@ -181,6 +181,25 @@ function ensureOpeningActionBoundary(document: TacticDocumentV1): string | null 
   return appendStepMarker(document, boundaryTime)
 }
 
+/**
+ * Keeps action creation valid even when a restored or interrupted tool workflow
+ * reaches the commit command without first running the toolbar preparation.
+ */
+function ensureCommittedActionStep(
+  document: TacticDocumentV1,
+  activeStepId: string,
+  actionId: string,
+): string {
+  ensureOpeningActionBoundary(document)
+  const activeStepExists = document.stepMarkers.some((step) => step.id === activeStepId)
+  if (activeStepExists && !isOpeningStep(document, activeStepId)) return activeStepId
+
+  const owner = sortedStepMarkers(document)
+    .filter((step) => !isOpeningStep(document, step.id))
+    .find((step) => getStepActionOwnership(document, step.id)?.actionIds.includes(actionId))
+  return owner?.id ?? activeStepId
+}
+
 function actionContinuationTime(document: TacticDocumentV1): number {
   return documentDuration(document.actions, document.stepMarkers.map((step) => step.time))
 }
@@ -972,9 +991,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const next = cloneDocument(state.document)
     next.actions.push(action)
     if (!state.showAdvancedTimeline) reflowSimpleLocomotion(next, actorId)
+    const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
     return {
       ...applyDocument(state, next),
+      activeStepId,
       tool: 'select' as const,
       selection: { kind: 'action' as const, id: action.id },
       currentTime: actionEndTime(action),
@@ -1004,8 +1025,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     const next = cloneDocument(state.document)
     next.actions.push(action)
+    const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     return {
       ...applyDocument(state, next),
+      activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: shooter.id },
       currentTime: shotTime,
@@ -1031,8 +1054,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     const next = cloneDocument(state.document)
     next.actions.push(action)
+    const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     return {
       ...applyDocument(state, next),
+      activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: actor.id },
       notice: null,
@@ -1218,9 +1243,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       next.actions.push(action)
       if (action.type === 'pass') syncPassEndpoints(next)
       if (action.type === 'move' || action.type === 'qMove') syncPassEndpoints(next, action.actorId)
+      const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
       refreshStepSnapshots(next)
       return {
         ...applyDocument(state, next),
+        activeStepId,
         tool: 'select' as const,
         selection: actor ? { kind: 'player' as const, id: actor.id } : null,
         currentTime: action.type === 'move' || action.type === 'qMove' || action.type === 'pass'
