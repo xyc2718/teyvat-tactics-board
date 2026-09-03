@@ -34,6 +34,7 @@ describe('TimelinePanel player tracks', () => {
       boardMode: 'simulation',
       activeStepId: document.stepMarkers[0]!.id,
       currentTime: 2,
+      currentKeyframe: null,
       isPlaying: false,
       showAdvancedTimeline: false,
       notice: null,
@@ -161,6 +162,44 @@ describe('TimelinePanel player tracks', () => {
     expect(container.querySelector('.action-row[data-timeline-action-id="fire-run"]')).toBeInTheDocument()
     expect(container.querySelector('.action-row[data-timeline-action-id="water-run"]')).not.toBeInTheDocument()
     expect(screen.getByText('蓝方 2 · 精确时序')).toBeInTheDocument()
+  })
+
+  it('orders an instant Q end before its start when scrubbing from right to left', () => {
+    const document = useTacticStore.getState().document
+    document.actions.push({
+      id: 'instant-water-q',
+      type: 'qMove',
+      actorId: 'blue-water',
+      startTime: 2,
+      duration: 0,
+      path: [{ x: 7.5, y: 5 }, { x: 10, y: 5 }],
+    })
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'player', id: 'blue-water' },
+      currentTime: 2,
+      currentKeyframe: null,
+    })
+
+    const { container } = render(<TimelinePanel />)
+    const scrubber = screen.getByRole('slider', { name: '播放位置' })
+
+    expect(container.querySelector('[data-timeline-action-id="instant-water-q"][data-timeline-edge="start"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-timeline-action-id="instant-water-q"][data-timeline-edge="end"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-action-id="instant-water-q"][data-edge="start"]')).toHaveTextContent('Q 起点')
+    expect(container.querySelector('[data-action-id="instant-water-q"][data-edge="end"]')).toHaveTextContent('Q 终点')
+
+    const endPosition = Number((scrubber as HTMLInputElement).value)
+    fireEvent.change(scrubber, { target: { value: String(endPosition + 1) } })
+    expect(useTacticStore.getState().currentKeyframe).toEqual({
+      playerId: 'blue-water', actionId: 'instant-water-q', edge: 'end',
+    })
+
+    fireEvent.change(scrubber, { target: { value: String(endPosition - 32) } })
+    expect(useTacticStore.getState().currentKeyframe).toEqual({
+      playerId: 'blue-water', actionId: 'instant-water-q', edge: 'start',
+    })
+    expect(useTacticStore.getState().currentTime).toBe(2)
   })
 
   it('shows readable time labels and highlights the continuation keyframe on a selected player track', () => {

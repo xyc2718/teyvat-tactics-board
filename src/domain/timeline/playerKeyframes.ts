@@ -1,4 +1,4 @@
-import type { MoveKeyframeReference, TacticAction, TacticDocumentV1 } from '../model/types'
+import type { MoveKeyframeReference, QMoveAction, TacticAction, TacticDocumentV1 } from '../model/types'
 import { actionEndTime } from './durations'
 
 const INSTANT_ACTION_EPSILON = 1e-6
@@ -18,7 +18,26 @@ export function actionActorId(action: TacticAction | undefined): string | null {
   return action.actorId ?? null
 }
 
+export function instantQActionAtKeyframe(
+  document: TacticDocumentV1,
+  reference: MoveKeyframeReference | null | undefined,
+): QMoveAction | null {
+  if (!reference) return null
+  const action = document.actions.find((candidate) => candidate.id === reference.actionId)
+  return action?.type === 'qMove'
+    && action.actorId === reference.playerId
+    && action.duration <= INSTANT_ACTION_EPSILON
+    ? action
+    : null
+}
+
 export function actionTimelineKeyframes(action: TacticAction): Array<{ edge: 'start' | 'end'; time: number }> {
+  if (action.type === 'qMove' && action.duration <= INSTANT_ACTION_EPSILON) {
+    return [
+      { edge: 'start', time: action.startTime },
+      { edge: 'end', time: action.startTime },
+    ]
+  }
   if (action.type === 'pass' || action.duration <= INSTANT_ACTION_EPSILON) {
     return [{ edge: 'start', time: action.startTime }]
   }

@@ -3,6 +3,7 @@ import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
 import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
+import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
 
 export const MAX_TACTIC_FILE_BYTES = 2 * 1024 * 1024
 export const DRAFT_STORAGE_KEY = 'teyvat-tactics-board:draft:v1'
@@ -52,15 +53,17 @@ const actionBase = {
   label: z.string().max(120).optional(),
 }
 
+const moveKeyframeReferenceSchema = z.object({
+  playerId: z.string().min(1).max(100),
+  actionId: z.string().min(1).max(120),
+  edge: z.enum(['start', 'end']),
+})
+
 const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fixed') }),
   z.object({
     kind: z.literal('keyframe'),
-    reference: z.object({
-      playerId: z.string().min(1).max(100),
-      actionId: z.string().min(1).max(120),
-      edge: z.enum(['start', 'end']),
-    }),
+    reference: moveKeyframeReferenceSchema,
   }),
 ])
 
@@ -88,6 +91,7 @@ const actionSchema = z.discriminatedUnion('type', [
     type: z.literal('pass'),
     actorId: z.string(),
     targetPlayerId: z.string().optional(),
+    originKeyframe: moveKeyframeReferenceSchema.optional(),
     path: z.array(vec2Schema).min(2).max(20),
   }),
   z.object({ ...actionBase, type: z.literal('receive'), actorId: z.string(), sourceActionId: z.string().optional() }),
@@ -372,6 +376,13 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     if ('actorId' in action && action.actorId && !knownPlayers.has(action.actorId)) return `动作 ${action.id} 的执行者不存在。`
     if ('targetId' in action && action.targetId && !knownPlayers.has(action.targetId)) return `动作 ${action.id} 的目标不存在。`
     if (action.type === 'pass' && action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的接球队员不存在。`
+    if (action.type === 'pass' && action.originKeyframe) {
+      const reference = action.originKeyframe
+      const source = instantQActionAtKeyframe(document, reference)
+      if (!source) return `动作 ${action.id} 的出球关键帧不存在。`
+      if (reference.playerId !== action.actorId) return `动作 ${action.id} 的出球关键帧不属于传球者。`
+      if (Math.abs(source.startTime - action.startTime) > 1e-6) return `动作 ${action.id} 的出球关键帧与传球时刻不一致。`
+    }
     if (action.type === 'move') {
       const followFields = [action.targetPlayerId, action.syncActionId, action.followGap]
       const hasFollowField = followFields.some((value) => value !== undefined)

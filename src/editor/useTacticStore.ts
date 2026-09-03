@@ -19,8 +19,8 @@ import { actionEndTime, documentDuration, movementDuration, passDuration, qDurat
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { solvePassReception } from '../domain/timeline/passReception'
-import { resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
-import { projectFrame } from '../domain/timeline/projectFrame'
+import { instantQActionAtKeyframe, resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
+import { projectFrame, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
@@ -46,6 +46,7 @@ interface TacticStore extends HistoryState {
   boardMode: BoardMode
   activeStepId: string
   currentTime: number
+  currentKeyframe: MoveKeyframeReference | null
   isPlaying: boolean
   playbackSpeed: number
   showAdvancedTimeline: boolean
@@ -59,6 +60,7 @@ interface TacticStore extends HistoryState {
   reselectToolActor: () => void
   cancelTool: () => void
   setCurrentTime: (time: number) => void
+  setTimelineKeyframe: (reference: MoveKeyframeReference) => void
   setPlaying: (playing: boolean) => void
   setPlaybackSpeed: (speed: number) => void
   setAdvancedTimeline: (show: boolean) => void
@@ -325,6 +327,11 @@ function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
     .sort((left, right) => left.startTime - right.startTime)
 
   for (const action of passes) {
+    if (action.originKeyframe) {
+      const source = instantQActionAtKeyframe(document, action.originKeyframe)
+      if (source && source.actorId === action.actorId) action.startTime = source.startTime
+      else delete action.originKeyframe
+    }
     const resolution = solvePassReception(document, action)
     action.path = resolution.path
     action.duration = resolution.duration
@@ -558,6 +565,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   boardMode: 'simulation',
   activeStepId: startingDocument.stepMarkers[0]?.id ?? '',
   currentTime: 0,
+  currentKeyframe: null,
   isPlaying: false,
   playbackSpeed: 1,
   showAdvancedTimeline: false,
@@ -571,7 +579,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   setTool: (tool) => {
     let current = get()
     if (current.isPlaying) {
-      set({ isPlaying: false, currentTime: nearestTimelineJoint(current.document, current.currentTime) })
+      set({ isPlaying: false, currentTime: nearestTimelineJoint(current.document, current.currentTime), currentKeyframe: null })
       current = get()
     }
     if (current.boardMode === 'basic' && tool !== 'select' && tool !== 'move' && !isRangeInspectionTool(tool)) {
@@ -595,6 +603,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           ...(prepared.changed ? applyDocument(state, prepared.document) : {}),
           activeStepId: prepared.targetStepId,
           currentTime: prepared.time,
+          currentKeyframe: null,
           isPlaying: false,
           notice: null,
         }
@@ -612,7 +621,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     set((state) => {
       if (tool === 'select') return { tool, notice: null, isPlaying: false }
-      const frame = projectFrame(state.document, state.currentTime)
+      const frame = projectFrameAtKeyframe(state.document, state.currentTime, state.currentKeyframe)
 
       if (tool === 'pass') {
         const carrier = frame.ball.carrierId
@@ -647,6 +656,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     tool: 'select',
     selection: null,
     currentTime: nearestTimelineJoint(state.document, state.currentTime),
+    currentKeyframe: null,
     isPlaying: false,
     showRules: false,
     showLogic: false,
@@ -667,7 +677,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         })
         return
       }
-      set({ currentTime, selection: { kind: 'player', id: playerId }, isPlaying: false, notice: null })
+      set({ currentTime, currentKeyframe: null, selection: { kind: 'player', id: playerId }, isPlaying: false, notice: null })
       if (immediateTool === 'wait') get().createWait(playerId)
       if (immediateTool === 'shoot') get().createShot(playerId)
       if (immediateTool === 'eZone') get().createEZone(playerId)
@@ -693,6 +703,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       return {
         currentTime,
+        currentKeyframe: state.tool === 'move' || state.tool === 'qMove' ? null : state.currentKeyframe,
         selection: { kind: 'player' as const, id: player.id },
         isPlaying: false,
         notice: null,
@@ -717,7 +728,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   })),
   setCurrentTime: (rawTime) => set((state) => {
     const currentTime = nearestTimelineJoint(state.document, rawTime)
-    if (state.tool !== 'pass') return { currentTime, isPlaying: false, notice: null }
+    if (state.tool !== 'pass') return { currentTime, currentKeyframe: null, isPlaying: false, notice: null }
     const frame = projectFrame(state.document, currentTime)
     const carrier = frame.ball.carrierId
       ? frame.players.find((player) => player.id === frame.ball.carrierId)
@@ -725,19 +736,49 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     return carrier
       ? {
           currentTime,
+          currentKeyframe: null,
           isPlaying: false,
           selection: { kind: 'player' as const, id: carrier.id },
           notice: null,
         }
       : {
           currentTime,
+          currentKeyframe: null,
+          isPlaying: false,
+          selection: null,
+          notice: missingPassCarrierNotice(state.document, currentTime),
+        }
+  }),
+  setTimelineKeyframe: (reference) => set((state) => {
+    const action = instantQActionAtKeyframe(state.document, reference)
+    if (!action) return {}
+    const currentTime = action.startTime
+    const currentKeyframe = { ...reference }
+    const frame = projectFrameAtKeyframe(state.document, currentTime, currentKeyframe)
+    if (state.tool !== 'pass') {
+      return { currentTime, currentKeyframe, isPlaying: false, notice: null }
+    }
+    const carrier = frame.ball.carrierId
+      ? frame.players.find((player) => player.id === frame.ball.carrierId)
+      : undefined
+    return carrier
+      ? {
+          currentTime,
+          currentKeyframe,
+          isPlaying: false,
+          selection: { kind: 'player' as const, id: carrier.id },
+          notice: null,
+        }
+      : {
+          currentTime,
+          currentKeyframe,
           isPlaying: false,
           selection: null,
           notice: missingPassCarrierNotice(state.document, currentTime),
         }
   }),
   setPlaying: (isPlaying) => set((state) => {
-    if (!isPlaying) return { isPlaying: false, currentTime: nearestTimelineJoint(state.document, state.currentTime) }
+    if (!isPlaying) return { isPlaying: false, currentTime: nearestTimelineJoint(state.document, state.currentTime), currentKeyframe: null }
     if (state.boardMode === 'basic') return { isPlaying: false, notice: '基础模式没有时间轴播放。' }
     const duration = timelineDuration(state.document)
     if (duration <= JOINT_EPSILON) return { isPlaying: false, currentTime: 0, tool: 'select' as const, notice: '当前只有静态初始帧；添加动作后即可播放。' }
@@ -747,6 +788,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     return {
       isPlaying: true,
       currentTime: state.currentTime >= duration ? 0 : state.currentTime,
+      currentKeyframe: null,
       activeStepId: playbackStep?.id ?? state.activeStepId,
       tool: 'select' as const,
       notice: null,
@@ -999,6 +1041,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       tool: 'select' as const,
       selection: { kind: 'action' as const, id: action.id },
       currentTime: actionEndTime(action),
+      currentKeyframe: null,
       isPlaying: false,
       notice: '已添加 1 秒等待；可在右侧修改时长。',
     }
@@ -1032,6 +1075,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: shooter.id },
       currentTime: shotTime,
+      currentKeyframe: null,
       notice: null,
       isPlaying: false,
     }
@@ -1060,6 +1104,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: actor.id },
+      currentKeyframe: null,
       notice: null,
       isPlaying: false,
     }
@@ -1091,7 +1136,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           notice: null,
         }
       }
-      const frame = projectFrame(document, state.currentTime)
+      const frame = projectFrameAtKeyframe(document, state.currentTime, state.currentKeyframe)
       const effectiveActorId = state.tool === 'pass' ? frame.ball.carrierId : actorId
       const actor = effectiveActorId
         ? frame.players.find((player) => player.id === effectiveActorId)
@@ -1215,11 +1260,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         const endpoint = targetPlayer?.position ?? clampedTarget
         const path = [{ ...actor.position }, { ...endpoint }]
         if (pathLength(path) < MIN_AUTHORED_PATH_LENGTH) return { notice: '传球目标与持球者位置重合。' }
+        const originQ = instantQActionAtKeyframe(document, state.currentKeyframe)
         action = {
           id: uid('pass'),
           type: 'pass',
           actorId: actor.id,
           targetPlayerId: targetPlayer?.team === actor.team ? targetPlayer.id : undefined,
+          originKeyframe: originQ?.actorId === actor.id && state.currentKeyframe
+            ? { ...state.currentKeyframe }
+            : undefined,
           path,
           startTime: state.currentTime,
           duration: passDuration(path, document.rulesSnapshot),
@@ -1253,6 +1302,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         currentTime: action.type === 'move' || action.type === 'qMove' || action.type === 'pass'
           ? actionEndTime(action)
           : action.startTime,
+        currentKeyframe: action.type === 'qMove' && action.duration <= JOINT_EPSILON
+          ? { playerId: action.actorId, actionId: action.id, edge: 'end' as const }
+          : null,
         notice: null,
       }
     }),
@@ -1765,6 +1817,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       boardMode: 'simulation' as const,
       activeStepId: next.stepMarkers[0]?.id ?? '',
       currentTime: 0,
+      currentKeyframe: null,
       isPlaying: false,
       notice: '战术文件已导入。',
     }
@@ -1788,6 +1841,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       boardMode: 'simulation' as const,
       activeStepId: next.stepMarkers[0]?.id ?? '',
       currentTime: 0,
+      currentKeyframe: null,
       isPlaying: false,
       notice,
     }
@@ -1802,6 +1856,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       boardMode: 'simulation' as const,
       activeStepId: document.stepMarkers[0]?.id ?? '',
       currentTime: 0,
+      currentKeyframe: null,
       isPlaying: false,
       notice: '已新建战术。',
     }
@@ -1819,6 +1874,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       tool: 'select' as const,
       activeStepId: document.stepMarkers[0]?.id ?? '',
       currentTime: 0,
+      currentKeyframe: null,
       isPlaying: false,
       playbackSpeed: 1,
       showAdvancedTimeline: false,
@@ -1837,6 +1893,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       past: state.past.slice(0, -1),
       future: [cloneDocument(state.document), ...state.future].slice(0, 50),
       selection: null,
+      currentKeyframe: null,
       notice: null,
     }
   }),
@@ -1850,6 +1907,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       past: [...state.past, cloneDocument(state.document)].slice(-50),
       future: state.future.slice(1),
       selection: null,
+      currentKeyframe: null,
       notice: null,
     }
   }),

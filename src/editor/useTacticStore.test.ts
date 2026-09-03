@@ -26,6 +26,7 @@ describe('tactic store timeline edits', () => {
       boardMode: 'simulation',
       activeStepId: editableStep.id,
       currentTime: 0,
+      currentKeyframe: null,
       isPlaying: false,
       showAdvancedTimeline: false,
       notice: null,
@@ -1758,6 +1759,49 @@ describe('tactic store timeline edits', () => {
     if (q?.type === 'qMove' && move?.type === 'move') {
       expect(move.path[0]).toEqual(q.path.at(-1))
     }
+  })
+
+  it.each(['start', 'end'] as const)('anchors a pass to the instant Water Q %s state', (edge) => {
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
+    useTacticStore.getState().setTool('qMove')
+    useTacticStore.getState().createAction('blue-water', { x: 8, y: 4.7 })
+
+    const q = useTacticStore.getState().document.actions.find((action) => action.type === 'qMove')
+    if (!q || q.type !== 'qMove') throw new Error('Expected Water Q')
+    expect(q.duration).toBe(0)
+    useTacticStore.getState().setTimelineKeyframe({
+      playerId: q.actorId,
+      actionId: q.id,
+      edge,
+    })
+    useTacticStore.getState().setTool('pass')
+    const receiver = useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    useTacticStore.getState().createAction('blue-water', receiver.position, receiver.id)
+
+    const pass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')
+    if (!pass || pass.type !== 'pass') throw new Error('Expected pass')
+    expect(pass.originKeyframe).toEqual({ playerId: q.actorId, actionId: q.id, edge })
+    expect(pass.path[0]).toEqual(edge === 'start' ? q.path[0] : q.path.at(-1))
+  })
+
+  it('keeps a pass anchored to an instant Water Q endpoint when the Q path is edited', () => {
+    useTacticStore.getState().select({ kind: 'player', id: 'blue-water' })
+    useTacticStore.getState().setTool('qMove')
+    useTacticStore.getState().createAction('blue-water', { x: 8, y: 4.7 })
+    const q = useTacticStore.getState().document.actions.find((action) => action.type === 'qMove')
+    if (!q || q.type !== 'qMove') throw new Error('Expected Water Q')
+
+    useTacticStore.getState().setTool('pass')
+    const receiver = useTacticStore.getState().document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    useTacticStore.getState().createAction('blue-water', receiver.position, receiver.id)
+    useTacticStore.getState().updateActionPathPoint(q.id, q.path.length - 1, { x: 7.5, y: 4.7 })
+
+    const document = useTacticStore.getState().document
+    const editedQ = document.actions.find((action) => action.id === q.id)
+    const pass = document.actions.find((action) => action.type === 'pass')
+    if (editedQ?.type !== 'qMove' || pass?.type !== 'pass') throw new Error('Expected Q and pass')
+    expect(pass.originKeyframe).toEqual({ playerId: q.actorId, actionId: q.id, edge: 'end' })
+    expect(pass.path[0]).toEqual(editedQ.path.at(-1))
   })
 
   it.each(['blue-water', 'blue-fire'] as const)('chains an instantaneous Q after an existing move for %s', (actorId) => {

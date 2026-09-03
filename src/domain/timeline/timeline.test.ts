@@ -4,7 +4,7 @@ import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { timelineJointTimes } from './keyframes'
-import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame } from './projectFrame'
+import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame, projectFrameAtKeyframe } from './projectFrame'
 import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
@@ -128,6 +128,32 @@ describe('projectFrame', () => {
     expect(frame.players.find((player) => player.id === action.actorId)?.position.x).toBe(8)
     expect(frame.cooldowns[action.actorId]?.q).toBe(7)
     expect(projectFrame(document, 2).statuses.some((status) => status.kind === 'boosted')).toBe(true)
+  })
+
+  it('projects both semantic edges of an instantaneous water Q at one rules time', () => {
+    const document = createDefaultDocument()
+    const actor = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const origin = { ...actor.position }
+    const endpoint = { x: origin.x + 2.5, y: origin.y }
+    document.actions.push({
+      id: 'semantic-water-q', type: 'qMove', actorId: actor.id, startTime: 1, duration: 0,
+      path: [origin, endpoint],
+    })
+
+    const before = projectFrameAtKeyframe(document, 1, {
+      playerId: actor.id, actionId: 'semantic-water-q', edge: 'start',
+    })
+    const after = projectFrameAtKeyframe(document, 1, {
+      playerId: actor.id, actionId: 'semantic-water-q', edge: 'end',
+    })
+
+    expect(before.players.find((player) => player.id === actor.id)?.position).toEqual(origin)
+    expect(before.ball.position).toEqual(origin)
+    expect(before.cooldowns[actor.id]?.q).toBe(0)
+    expect(before.statuses.some((status) => status.sourceActionId === 'semantic-water-q')).toBe(false)
+    expect(after.players.find((player) => player.id === actor.id)?.position).toEqual(endpoint)
+    expect(after.ball.position).toEqual(endpoint)
+    expect(after.cooldowns[actor.id]?.q).toBe(7)
   })
 
   it('plays ice Q for one second then freezes and moves the target opposite its facing', () => {

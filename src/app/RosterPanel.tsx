@@ -1,16 +1,17 @@
-import { projectFrame } from '../domain/timeline/projectFrame'
+import { projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { useTacticStore } from '../editor/useTacticStore'
 import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
 
 export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void }) {
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const currentKeyframe = useTacticStore((state) => state.currentKeyframe)
   const selection = useTacticStore((state) => state.selection)
   const tool = useTacticStore((state) => state.tool)
   const select = useTacticStore((state) => state.select)
   const chooseActor = useTacticStore((state) => state.chooseActorForTool)
   const createAction = useTacticStore((state) => state.createAction)
-  const frame = projectFrame(document, currentTime)
+  const frame = projectFrameAtKeyframe(document, currentTime, currentKeyframe)
   const selectedPlayer = selection?.kind === 'player'
     ? frame.players.find((player) => player.id === selection.id)
     : undefined

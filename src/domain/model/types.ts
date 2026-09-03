@@ -95,6 +95,8 @@ export interface PassAction extends BaseAction {
   type: 'pass'
   actorId: string
   targetPlayerId?: string
+  /** Optional same-time action edge that fixes whether the pass starts before or after an instant Q. */
+  originKeyframe?: MoveKeyframeReference
   path: Vec2[]
 }
 

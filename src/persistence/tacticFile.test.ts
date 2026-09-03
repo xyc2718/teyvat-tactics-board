@@ -121,6 +121,51 @@ describe('tactic file boundary', () => {
     ]))
   })
 
+  it('round-trips an instant-Q pass origin keyframe', () => {
+    const source = createDefaultDocument()
+    source.actions.push(
+      {
+        id: 'water-q', type: 'qMove', actorId: 'blue-water', startTime: 2, duration: 0,
+        path: [{ x: 5.5, y: 4.7 }, { x: 8, y: 4.7 }],
+      },
+      {
+        id: 'after-q-pass', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-fire',
+        originKeyframe: { playerId: 'blue-water', actionId: 'water-q', edge: 'end' },
+        startTime: 2, duration: 0.5, path: [{ x: 8, y: 4.7 }, { x: 3.5, y: 7 }],
+      },
+    )
+
+    const result = parseTactic(serializeTactic(source))
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.document.actions.find((action) => action.id === 'after-q-pass')).toMatchObject({
+      originKeyframe: { playerId: 'blue-water', actionId: 'water-q', edge: 'end' },
+    })
+  })
+
+  it('rejects a pass origin that does not resolve to the passer instant Q at that time', () => {
+    const source = createDefaultDocument()
+    source.actions.push(
+      {
+        id: 'water-q', type: 'qMove', actorId: 'blue-water', startTime: 2, duration: 0,
+        path: [{ x: 5.5, y: 4.7 }, { x: 8, y: 4.7 }],
+      },
+      {
+        id: 'bad-anchor-pass', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-fire',
+        originKeyframe: { playerId: 'blue-water', actionId: 'missing-q', edge: 'end' },
+        startTime: 2, duration: 0.5, path: [{ x: 8, y: 4.7 }, { x: 3.5, y: 7 }],
+      },
+    )
+    expect(parseTactic(serializeTactic(source))).toMatchObject({ ok: false })
+
+    const wrongTime = structuredClone(source)
+    const pass = wrongTime.actions.find((action) => action.id === 'bad-anchor-pass')
+    if (pass?.type !== 'pass') throw new Error('Expected pass')
+    pass.originKeyframe = { playerId: 'blue-water', actionId: 'water-q', edge: 'end' }
+    pass.startTime = 3
+    expect(parseTactic(serializeTactic(wrongTime))).toMatchObject({ ok: false })
+  })
+
   it('rejects dangling and same-player keyframe move timing references', () => {
     const dangling = createDefaultDocument()
     dangling.actions.push({

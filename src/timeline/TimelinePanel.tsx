@@ -1,4 +1,5 @@
 import { actionEndTime } from '../domain/timeline/durations'
+import type { MoveKeyframeReference, QMoveAction, TacticDocumentV1 } from '../domain/model/types'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { actionActorId, actionTimelineKeyframes } from '../domain/timeline/playerKeyframes'
 import { documentFreezeWindows } from '../domain/timeline/projectFrame'
@@ -9,10 +10,72 @@ import { useTacticStore } from '../editor/useTacticStore'
 import { actionLabels } from '../ui/labels'
 
 const INSTANT_ACTION_EPSILON = 1e-6
+const SCRUBBER_SCALE = 10_000
+const INSTANT_Q_EDGE_GAP = 32
+
+interface ScrubberPoint {
+  position: number
+  time: number
+  reference?: MoveKeyframeReference
+}
 
 function timePercent(time: number, duration: number): number {
   if (duration <= 0) return 0
   return Math.min(100, Math.max(0, (time / duration) * 100))
+}
+
+function sameTime(left: number, right: number): boolean {
+  return Math.abs(left - right) <= INSTANT_ACTION_EPSILON
+}
+
+/**
+ * Instant Q keeps a zero rules duration, but the editor still needs two ordered
+ * states. A tiny navigation-only gap makes a right-to-left drag encounter the
+ * post-Q edge before the pre-Q edge without changing any gameplay timestamp.
+ */
+function buildScrubberPoints(
+  document: TacticDocumentV1,
+  duration: number,
+  playerId: string | null,
+): ScrubberPoint[] {
+  if (duration <= 0) return [{ position: 0, time: 0 }]
+
+  const instantQs = document.actions.filter((action): action is QMoveAction => (
+    action.type === 'qMove'
+    && action.duration <= INSTANT_ACTION_EPSILON
+    && (!playerId || action.actorId === playerId)
+  ))
+  const instantTimes = instantQs.map((action) => action.startTime)
+  const points: ScrubberPoint[] = timelineJointTimes(document)
+    .filter((time) => !instantTimes.some((instantTime) => sameTime(time, instantTime)))
+    .map((time) => ({
+      position: Math.round((time / duration) * SCRUBBER_SCALE),
+      time,
+    }))
+
+  const grouped = new Map<string, typeof instantQs>()
+  for (const action of instantQs) {
+    const key = action.startTime.toFixed(6)
+    grouped.set(key, [...(grouped.get(key) ?? []), action])
+  }
+  for (const actions of grouped.values()) {
+    const time = actions[0]?.startTime ?? 0
+    const edgeCount = actions.length * 2
+    const span = (edgeCount - 1) * INSTANT_Q_EDGE_GAP
+    const base = Math.round((time / duration) * SCRUBBER_SCALE)
+    const first = Math.max(0, Math.min(SCRUBBER_SCALE - span, base - Math.floor(span / 2)))
+    actions.forEach((action, actionIndex) => {
+      for (const [edgeIndex, edge] of (['start', 'end'] as const).entries()) {
+        points.push({
+          position: first + (actionIndex * 2 + edgeIndex) * INSTANT_Q_EDGE_GAP,
+          time,
+          reference: { playerId: action.actorId, actionId: action.id, edge },
+        })
+      }
+    })
+  }
+
+  return points.sort((left, right) => left.position - right.position)
 }
 
 export function TimelinePanel() {
@@ -21,11 +84,13 @@ export function TimelinePanel() {
   const tool = useTacticStore((state) => state.tool)
   const activeStepId = useTacticStore((state) => state.activeStepId)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const currentKeyframe = useTacticStore((state) => state.currentKeyframe)
   const isPlaying = useTacticStore((state) => state.isPlaying)
   const playbackSpeed = useTacticStore((state) => state.playbackSpeed)
   const showAdvanced = useTacticStore((state) => state.showAdvancedTimeline)
   const setAdvanced = useTacticStore((state) => state.setAdvancedTimeline)
   const setCurrentTime = useTacticStore((state) => state.setCurrentTime)
+  const setTimelineKeyframe = useTacticStore((state) => state.setTimelineKeyframe)
   const setPlaying = useTacticStore((state) => state.setPlaying)
   const setPlaybackSpeed = useTacticStore((state) => state.setPlaybackSpeed)
   const addStep = useTacticStore((state) => state.addStep)
@@ -65,11 +130,53 @@ export function TimelinePanel() {
   const continuationTime = trackPlayerId
     ? latestActorSequenceJoint(document, trackPlayerId)
     : null
-  const trackKeyframeTimes = Array.from(new Set([
+  const instantTrackQs = trackActions.filter((action): action is QMoveAction => (
+    action.type === 'qMove' && action.duration <= INSTANT_ACTION_EPSILON
+  ))
+  const instantTrackTimes = instantTrackQs.map((action) => action.startTime)
+  const ordinaryTrackKeyframeTimes = Array.from(new Set([
     0,
     ...trackActions.flatMap((action) => actionTimelineKeyframes(action).map(({ time }) => time)),
     ...trackFreezeWindows.flatMap((window) => [window.startsAt, window.endsAt]),
-  ])).sort((left, right) => left - right)
+  ])).filter((time) => !instantTrackTimes.some((instantTime) => sameTime(time, instantTime)))
+  const trackKeyframes: Array<{
+    key: string
+    time: number
+    reference?: MoveKeyframeReference
+  }> = [
+    ...ordinaryTrackKeyframeTimes.map((time) => ({ key: `time-${time}`, time })),
+    ...instantTrackQs.flatMap((action) => actionTimelineKeyframes(action).map(({ edge, time }) => ({
+      key: `${action.id}-${edge}`,
+      time,
+      reference: { playerId: action.actorId, actionId: action.id, edge },
+    }))),
+  ]
+  trackKeyframes.sort((left, right) => (
+    left.time - right.time
+    || (left.reference?.edge === 'start' ? -1 : 1)
+  ))
+  const scrubberPoints = buildScrubberPoints(document, duration, trackPlayerId ?? null)
+  const exactScrubberPoint = currentKeyframe
+    ? scrubberPoints.find((point) => (
+        point.reference?.actionId === currentKeyframe.actionId
+        && point.reference.edge === currentKeyframe.edge
+        && point.reference.playerId === currentKeyframe.playerId
+      ))
+    : undefined
+  const sameTimeScrubberPoints = scrubberPoints.filter((point) => sameTime(point.time, currentTime))
+  const scrubberValue = exactScrubberPoint?.position
+    ?? sameTimeScrubberPoints.at(-1)?.position
+    ?? Math.round((Math.min(currentTime, duration) / Math.max(duration, 0.01)) * SCRUBBER_SCALE)
+
+  function scrubTo(position: number) {
+    const point = scrubberPoints.reduce((nearest, candidate) => (
+      Math.abs(candidate.position - position) < Math.abs(nearest.position - position)
+        ? candidate
+        : nearest
+    ), scrubberPoints[0] ?? { position: 0, time: 0 })
+    if (point.reference) setTimelineKeyframe(point.reference)
+    else setCurrentTime(point.time)
+  }
 
   function togglePlayback() {
     setPlaying(!isPlaying)
@@ -92,7 +199,7 @@ export function TimelinePanel() {
         <span className="timeline-scope">总时间轴</span>
         <span className="timeline-time current">{currentTime.toFixed(2)}</span>
         <div className="scrubber-wrap" role="group" aria-label="总体时间轴">
-          <input aria-label="播放位置" type="range" min="0" max={sliderMax} step="0.01" value={Math.min(currentTime, sliderMax)} disabled={duration <= 0} onChange={(event) => setCurrentTime(Number(event.target.value))} />
+          <input aria-label="播放位置" type="range" min="0" max={SCRUBBER_SCALE} step="1" value={scrubberValue} disabled={duration <= 0} onChange={(event) => scrubTo(Number(event.target.value))} />
           <div className="joint-ticks" aria-hidden="true">{duration > 0 && joints.map((time) => <i key={time} style={{ left: `${timePercent(time, duration)}%` }} />)}</div>
           <div className="global-player-ticks" aria-hidden="true">
             {duration > 0 && sortedActions.flatMap((action) => {
@@ -106,6 +213,7 @@ export function TimelinePanel() {
                   className={`team-${player.team}`}
                   data-timeline-action-id={action.id}
                   data-player-id={player.id}
+                  data-timeline-edge={edge}
                   style={{ left: `${timePercent(time, duration)}%` }}
                 />
               ))
@@ -179,21 +287,36 @@ export function TimelinePanel() {
                 ><span>{actionLabel}</span></button>
               )
             })}
-            {trackKeyframeTimes.map((time) => {
+            {trackKeyframes.map(({ key, time, reference }) => {
               const percent = timePercent(time, sliderMax)
-              const isContinuation = continuationTime !== null && Math.abs(time - continuationTime) <= INSTANT_ACTION_EPSILON
+              const isContinuation = reference?.edge !== 'start'
+                && continuationTime !== null
+                && Math.abs(time - continuationTime) <= INSTANT_ACTION_EPSILON
               const isFreezeStart = trackFreezeWindows.some((window) => Math.abs(time - window.startsAt) <= INSTANT_ACTION_EPSILON)
               const isFreezeEnd = trackFreezeWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
               const eventLabels = [
+                reference?.edge === 'start' ? 'Q 起点' : '',
+                reference?.edge === 'end' ? 'Q 终点' : '',
                 isFreezeStart ? '冻结' : '',
                 isFreezeEnd ? '解冻' : '',
                 isContinuation ? '续接' : '',
               ].filter(Boolean)
               const eventSuffix = eventLabels.length > 0 ? ` · ${eventLabels.join(' · ')}` : ''
+              const selectedEdge = Boolean(
+                reference
+                && currentKeyframe
+                && currentKeyframe.actionId === reference.actionId
+                && currentKeyframe.edge === reference.edge,
+              )
               return <span
-                key={`track-keyframe-${time}`}
-                className={`player-track-keyframe-marker ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''} ${isFreezeStart ? 'freeze-start' : ''} ${isFreezeEnd ? 'freeze-end' : ''}`}
-                style={{ left: `${percent}%` }}
+                key={`track-keyframe-${key}`}
+                className={`player-track-keyframe-marker ${reference ? `instant-q-${reference.edge}` : ''} ${selectedEdge ? 'selected-edge' : ''} ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''} ${isFreezeStart ? 'freeze-start' : ''} ${isFreezeEnd ? 'freeze-end' : ''}`}
+                data-action-id={reference?.actionId}
+                data-edge={reference?.edge}
+                style={{
+                  left: `${percent}%`,
+                  transform: reference ? `translateX(${reference.edge === 'start' ? '-4px' : '4px'})` : undefined,
+                }}
                 title={isFreezeStart
                   ? `${time.toFixed(2)}s 冻结开始`
                   : isFreezeEnd

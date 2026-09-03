@@ -13,6 +13,7 @@ import {
 import type {
   EZoneAction,
   MoveAction,
+  MoveKeyframeReference,
   PlayerState,
   PlayerStatus,
   ProjectedFrame,
@@ -23,6 +24,7 @@ import type {
 } from '../model/types'
 import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
 import { actionEndTime, passPathProgress } from './durations'
+import { instantQActionAtKeyframe } from './playerKeyframes'
 import {
   movementReceiveBoostWindowFor,
   receiveBoostWindowFor,
@@ -946,4 +948,33 @@ export function doesIceQHit(document: TacticDocumentV1, action: QMoveAction): bo
 export function projectFrame(document: TacticDocumentV1, time: number): ProjectedFrame {
   const hitMap = buildIceQHitMap(document)
   return projectSceneCore(document, time, true, true, hitMap)
+}
+
+/**
+ * Projects an editor-selected action edge. Instant Q actions have two semantic
+ * states at one rules timestamp, so their start edge restores the pre-Q actor
+ * position without inventing a non-zero gameplay duration.
+ */
+export function projectFrameAtKeyframe(
+  document: TacticDocumentV1,
+  time: number,
+  reference: MoveKeyframeReference | null,
+): ProjectedFrame {
+  const frame = projectFrame(document, time)
+  if (!reference || reference.edge !== 'start') return frame
+  const action = instantQActionAtKeyframe(document, reference)
+  if (
+    !action
+    || Math.abs(action.startTime - time) > POSITION_EPSILON
+  ) return frame
+
+  const actor = frame.players.find((player) => player.id === action.actorId)
+  const origin = action.path[0]
+  if (!actor || !origin) return frame
+  actor.position = { ...origin }
+  const cooldown = frame.cooldowns[actor.id]
+  if (cooldown) cooldown.q = 0
+  frame.statuses = frame.statuses.filter((status) => status.sourceActionId !== action.id)
+  if (frame.ball.carrierId === actor.id) frame.ball.position = { ...origin }
+  return frame
 }

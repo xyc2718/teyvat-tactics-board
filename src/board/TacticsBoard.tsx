@@ -11,7 +11,7 @@ import {
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
 import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame } from '../domain/timeline/projectFrame'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
@@ -83,6 +83,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const [isPassLegendDismissed, setIsPassLegendDismissed] = useState(false)
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const currentKeyframe = useTacticStore((state) => state.currentKeyframe)
   const activeStepId = useTacticStore((state) => state.activeStepId)
   const isPlaying = useTacticStore((state) => state.isPlaying)
   const selection = useTacticStore((state) => state.selection)
@@ -102,8 +103,8 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const frame = useMemo(
     () => boardMode === 'basic' || (isOpeningStep(document, activeStepId) && !isPlaying)
       ? openingFrame(document)
-      : projectFrame(document, currentTime),
-    [activeStepId, boardMode, currentTime, document, isPlaying],
+      : projectFrameAtKeyframe(document, currentTime, currentKeyframe),
+    [activeStepId, boardMode, currentKeyframe, currentTime, document, isPlaying],
   )
   const rules = document.rulesSnapshot
   const fieldWidth = rules.field.width * SCALE

@@ -9,7 +9,7 @@ import {
   shotPressureModeLabel,
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
-import { projectedMovePath, projectFrame } from '../domain/timeline/projectFrame'
+import { projectedMovePath, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { playerActionKeyframes } from '../domain/timeline/playerKeyframes'
 import { timelineDuration } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
@@ -18,9 +18,13 @@ import { actionLabels, matchupLabel } from '../ui/labels'
 export function InspectorPanel() {
   const document = useTacticStore((state) => state.document)
   const currentTime = useTacticStore((state) => state.currentTime)
+  const currentKeyframe = useTacticStore((state) => state.currentKeyframe)
   const selection = useTacticStore((state) => state.selection)
   const showAdvancedTimeline = useTacticStore((state) => state.showAdvancedTimeline)
-  const frame = useMemo(() => projectFrame(document, currentTime), [document, currentTime])
+  const frame = useMemo(
+    () => projectFrameAtKeyframe(document, currentTime, currentKeyframe),
+    [currentKeyframe, currentTime, document],
+  )
   const selectedPlayer = selection?.kind === 'player'
     ? frame.players.find((player) => player.id === selection.id)
     : undefined

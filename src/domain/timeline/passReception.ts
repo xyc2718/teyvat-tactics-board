@@ -1,7 +1,7 @@
 import { pathLength } from '../geometry/geometry'
 import type { PassAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { passDuration } from './durations'
-import { projectFrame } from './projectFrame'
+import { projectFrame, projectFrameAtKeyframe } from './projectFrame'
 
 const SOLVER_SAMPLES = 256
 const SOLVER_ITERATIONS = 36
@@ -37,7 +37,11 @@ export function solvePassReception(
   pass: PassAction,
 ): PassReceptionResolution {
   const projectionDocument = withoutPassPair(document, pass.id)
-  const startFrame = projectFrame(projectionDocument, pass.startTime)
+  const startFrame = projectFrameAtKeyframe(
+    projectionDocument,
+    pass.startTime,
+    pass.originKeyframe ?? null,
+  )
   const passer = startFrame.players.find((player) => player.id === pass.actorId)
   const origin = passer?.position ?? pass.path[0]
   const authoredEndpoint = pass.path.at(-1) ?? origin
