@@ -35,7 +35,7 @@ function latestPassTo(document: TacticDocumentV1, playerId: string, time: number
     .sort((a, b) => b.startTime - a.startTime)[0]
 }
 
-function isBadIceEscapeFacing(
+function isFavorableIceEscapeFacing(
   attackerFacing: number,
   defenderPosition: { x: number; y: number },
   defenderFacing: number,
@@ -55,10 +55,10 @@ function isBadIceEscapeFacing(
   }
   const attackerForward = angleToVector(attackerFacing)
 
-  // Ice escapes by continuing forward through the frozen defender. A backward
-  // fall opposing that direction opens separation; falling with or across the
-  // escape direction does not.
-  return defenderBackward.x * attackerForward.x + defenderBackward.y * attackerForward.y >= -1e-6
+  // Ice escapes by continuing forward through the frozen defender. Only a
+  // backward fall opposing that direction opens separation; every other
+  // orientation is neutral rather than a penalty.
+  return defenderBackward.x * attackerForward.x + defenderBackward.y * attackerForward.y < -1e-6
 }
 
 export function evaluateMatchup(
@@ -106,7 +106,7 @@ export function evaluateMatchup(
     longPass: passDistance > rules.passing.safeDistance,
     badFacing:
       attacker.role === 'ice' &&
-      isBadIceEscapeFacing(
+      isFavorableIceEscapeFacing(
         attacker.facing,
         defender.position,
         defender.facing,
@@ -386,7 +386,6 @@ export function evaluateWarnings(document: TacticDocumentV1): RuleWarning[] {
     const actor = document.initialScene.players.find((player) => player.id === qAction.actorId)
     if (!actor || actor.role !== 'ice') continue
     const hits = analyzeDocumentIceQHits(document, qAction)
-    const knockback = document.rulesSnapshot.roles.ice.q.facingKnockback ?? 0
     for (const hit of hits) {
       const freezeStart = hit.hitTime
       const freezeEnd = freezeStart + (document.rulesSnapshot.roles.ice.q.freezeDuration ?? 0)
@@ -408,22 +407,6 @@ export function evaluateWarnings(document: TacticDocumentV1): RuleWarning[] {
         })
       }
 
-      if (knockback <= 0) continue
-      const after = clampPoint(
-        oppositeFacingOffset(hit.target.position, hit.target.facing, knockback),
-        document.rulesSnapshot.field.width,
-        document.rulesSnapshot.field.height,
-      )
-      if (distance(after, hit.closestPoint) <= distance(hit.target.position, hit.closestPoint)) {
-        warnings.push({
-          id: `ice-facing-${qAction.id}-${hit.targetId}`,
-          severity: 'warning',
-          title: '冻结面向不利于拉开身位',
-          detail: `${hit.target.name} 会沿当前面向反向后退 ${knockback} 格，但该方向没有扩大与命中点的距离。`,
-          actionId: qAction.id,
-          playerIds: [qAction.actorId, hit.targetId],
-        })
-      }
     }
   }
 

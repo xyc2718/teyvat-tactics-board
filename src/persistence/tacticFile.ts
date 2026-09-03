@@ -265,7 +265,20 @@ function sanitizeDocument(document: TacticDocumentV1): TacticDocumentV1 {
     role.label = sanitize(role.label)
     role.shortLabel = sanitize(role.shortLabel)
   }
-  for (const modifier of clean.rulesSnapshot.modifiers) modifier.label = sanitize(modifier.label)
+  for (const modifier of clean.rulesSnapshot.modifiers) {
+    modifier.label = sanitize(modifier.label)
+    // Migrate only the untouched former default. Explicit user-customized
+    // labels or deltas remain authored data.
+    if (
+      modifier.id === 'bad-facing'
+      && modifier.condition === 'badFacing'
+      && modifier.label === '冰的面向不利于摆脱'
+      && modifier.delta === -1
+    ) {
+      modifier.label = '冰背面向利于摆脱'
+      modifier.delta = 1
+    }
+  }
   return clean
 }
 

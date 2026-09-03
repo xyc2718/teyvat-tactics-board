@@ -159,9 +159,9 @@ export const defaultRules: RuleSetV1 = {
     },
     {
       id: 'bad-facing',
-      label: '冰的面向不利于摆脱',
+      label: '冰背面向利于摆脱',
       condition: 'badFacing',
-      delta: -1,
+      delta: 1,
       enabled: true,
     },
   ],

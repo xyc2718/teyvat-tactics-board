@@ -10,6 +10,23 @@ describe('tactic file boundary', () => {
     expect(document.initialScene.ball.position.y).toBe(4.7)
   })
 
+  it('migrates the untouched legacy Ice facing penalty to the favorable bonus', () => {
+    const legacy = createDefaultDocument()
+    const modifier = legacy.rulesSnapshot.modifiers.find((candidate) => candidate.id === 'bad-facing')!
+    modifier.label = '冰的面向不利于摆脱'
+    modifier.delta = -1
+
+    const result = parseTactic(serializeTactic(legacy))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.document.rulesSnapshot.modifiers.find((candidate) => candidate.id === 'bad-facing')).toMatchObject({
+      label: '冰背面向利于摆脱',
+      condition: 'badFacing',
+      delta: 1,
+    })
+  })
+
   it('migrates an untouched legacy 20 by 10 field by translating every saved Y coordinate', () => {
     const legacy = createDefaultDocument()
     legacy.rulesSnapshot.version = 'teyvat-mvp-1'

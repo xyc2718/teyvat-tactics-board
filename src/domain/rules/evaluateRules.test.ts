@@ -90,7 +90,7 @@ describe('rule assistance', () => {
     },
   )
 
-  it('treats a defender falling backward against an attacking Ice player as favorable separation', () => {
+  it('adds one tier when a defender falls backward against an attacking Ice player', () => {
     const document = createDefaultDocument()
     const attacker = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     const defender = document.initialScene.players.find((player) => player.id === 'red-ice')!
@@ -101,10 +101,13 @@ describe('rule assistance', () => {
 
     const result = evaluateMatchup(document, 0, attacker.id, defender.id)
 
-    expect(result?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
+    expect(result?.appliedModifiers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ condition: 'badFacing', delta: 1 }),
+    ]))
+    expect(result?.final).toBe(2)
   })
 
-  it('applies the facing penalty only when a defender falls along an attacking Ice player escape direction', () => {
+  it('keeps other facings neutral and ignores facing for non-Ice attackers', () => {
     const document = createDefaultDocument()
     const iceAttacker = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     const waterAttacker = document.initialScene.players.find((player) => player.id === 'blue-water')!
@@ -119,8 +122,12 @@ describe('rule assistance', () => {
     const iceResult = evaluateMatchup(document, 0, iceAttacker.id, defender.id)
     const waterResult = evaluateMatchup(document, 0, waterAttacker.id, defender.id)
 
-    expect(iceResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(true)
+    expect(iceResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
     expect(waterResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
+
+    defender.facing = 90
+    const perpendicularResult = evaluateMatchup(document, 0, iceAttacker.id, defender.id)
+    expect(perpendicularResult?.appliedModifiers.some((modifier) => modifier.condition === 'badFacing')).toBe(false)
   })
 
   it('ignores facing when Ice has no configured freeze knockback', () => {
@@ -170,7 +177,7 @@ describe('rule assistance', () => {
     expect(warnings.some((candidate) => candidate.id === 'q-slowed-by-e-fire-q-through-zone')).toBe(false)
   })
 
-  it('recomputes the ice-Q facing warning when the target turns', () => {
+  it('does not emit a negative warning for neutral ice-Q facing', () => {
     const document = createDefaultDocument()
     const target = document.initialScene.players.find((player) => player.id === 'red-water')!
     target.position = { x: 4.5, y: 7.8 }
@@ -181,14 +188,14 @@ describe('rule assistance', () => {
     document.actions.push(q)
 
     target.facing = 90
-    expect(evaluateWarnings(document).some((warning) => warning.id === 'ice-facing-facing-q-red-water')).toBe(true)
+    expect(evaluateWarnings(document).some((warning) => warning.id === 'ice-facing-facing-q-red-water')).toBe(false)
     target.facing = 270
     expect(evaluateWarnings(document).some((warning) => warning.id === 'ice-facing-facing-q-red-water')).toBe(false)
 
     target.position = { x: 0, y: 7.3 }
     target.facing = 0
     q.path = [{ x: 3.5, y: 7.3 }, { x: 0.5, y: 7.3 }]
-    expect(evaluateWarnings(document).some((warning) => warning.id === 'ice-facing-facing-q-red-water')).toBe(true)
+    expect(evaluateWarnings(document).some((warning) => warning.id === 'ice-facing-facing-q-red-water')).toBe(false)
   })
 
   it('explains a configurable water mirror yellow-charge risk without a reaction parameter', () => {
