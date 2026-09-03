@@ -101,6 +101,35 @@ describe('phone layout', () => {
     expect(container.querySelector('.app-shell')).toHaveClass('mobile-panel-timeline')
   })
 
+  it('reserves object touches for dragging while leaving empty-field touches available for panning', () => {
+    installDeviceMedia(true, false)
+    const { container } = render(<App />)
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    const player = screen.getByRole('button', { name: /蓝方 1，水灵/ })
+    const visibleToken = player.querySelector('.token-body')!
+
+    expect(fireEvent.pointerDown(visibleToken, {
+      pointerId: 91,
+      pointerType: 'touch',
+      button: 0,
+      clientX: 311,
+      clientY: 257,
+    })).toBe(false)
+    fireEvent.pointerMove(board, { pointerId: 91, pointerType: 'touch', clientX: 361, clientY: 257 })
+    fireEvent.pointerUp(board, { pointerId: 91, pointerType: 'touch', button: 0, clientX: 361, clientY: 257 })
+
+    expect(useTacticStore.getState().document.initialScene.players.find((candidate) => candidate.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 4.7 })
+    expect(useTacticStore.getState().past).toHaveLength(1)
+    expect(fireEvent.pointerDown(container.querySelector('.pitch')!, {
+      pointerId: 92,
+      pointerType: 'touch',
+      button: 0,
+      clientX: 600,
+      clientY: 400,
+    })).toBe(true)
+  })
+
   it('opens low-frequency actions in a mobile dialog without duplicating tool buttons', () => {
     installDeviceMedia(true, false)
     render(<App />)
@@ -135,3 +164,20 @@ describe('phone layout', () => {
     expect(screen.getByText(/已请求横屏/)).toBeInTheDocument()
   })
 })
+
+function mockBoardRect(board: HTMLElement, width = 1072, height = 744) {
+  Object.defineProperty(board, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
+      toJSON: () => ({}),
+    }),
+  })
+}

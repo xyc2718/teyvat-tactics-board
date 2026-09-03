@@ -215,7 +215,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .selected-action .action-path { filter: drop-shadow(0 0 6px rgba(255, 238, 184, .9)); }
 .path-handle { fill: #fff9e8; stroke: #17221e; stroke-width: 3; cursor: grab; }
 .path-handle-target { cursor: grab; touch-action: none; }
-.svg-touch-hit-area { fill: transparent; stroke: none; pointer-events: all; }
+.svg-touch-hit-area { fill: transparent; stroke: none; pointer-events: all; touch-action:none; }
 .path-handle:active { cursor: grabbing; }
 .curve-handle { fill:#8ee9f7; stroke:#fff9e8; stroke-width:3; filter:drop-shadow(0 0 5px rgba(126,226,242,.55)); }
 .intercept-cone { fill: rgba(242, 179, 73, .12); stroke: rgba(242, 179, 73, .4); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
@@ -520,8 +520,9 @@ details summary { cursor: pointer; color: #abc0b8; font-size: 10px; } details ul
   .mobile-landscape .workspace-grid, .mobile-landscape .workspace-grid.basic-workspace { position:relative; display:grid; grid-template-columns:minmax(0,1fr); min-width:0; min-height:0; overflow:hidden; }
   .mobile-landscape .board-column, .mobile-landscape .basic-workspace .board-column { grid-column:1; grid-row:1; min-width:0; padding:4px max(4px,env(safe-area-inset-right)) 4px max(4px,env(safe-area-inset-left)); }
   .mobile-landscape .board-shell { gap:2px; }
+  .mobile-landscape .board-viewport { overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   .mobile-landscape .tactics-board.tool-select { touch-action:pan-x pan-y; }
-  .mobile-landscape .player-token, .mobile-landscape .ball-token, .mobile-landscape .facing-handle, .mobile-landscape .path-handle-target { touch-action:none; }
+  .mobile-landscape .player-token, .mobile-landscape .player-token *, .mobile-landscape .ball-token, .mobile-landscape .ball-token *, .mobile-landscape .facing-handle, .mobile-landscape .facing-handle *, .mobile-landscape .path-handle-target, .mobile-landscape .path-handle-target * { touch-action:none; -webkit-user-select:none; user-select:none; }
   .mobile-landscape .board-scale, .mobile-landscape .board-hint { display:none; }
   .mobile-landscape .board-zoom-controls { top:4px; right:5px; padding:1px; }
   .mobile-landscape .board-zoom-controls button { min-width:40px; height:40px; font-size:16px; }

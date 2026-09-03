@@ -203,6 +203,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
       createAction(actionActor?.id ?? null, point, id === 'ball' ? undefined : id)
       return
     }
+    if (touchOptimized) event.preventDefault()
     select(id === 'ball' ? { kind: 'ball', id: 'ball' } : { kind: 'player', id })
     setDrag({ kind: 'entity', id, point })
     svgRef.current?.setPointerCapture?.(event.pointerId)
@@ -244,6 +245,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   }
 
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (drag && touchOptimized) event.preventDefault()
     const logicalPoint = clientToLogicalPoint(event.clientX, event.clientY)
     const point = clientToField(event.clientX, event.clientY)
     if (drag?.kind === 'facing') {
@@ -255,6 +257,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
 
   function onPointerUp(event: React.PointerEvent<SVGSVGElement>) {
     if (!drag) return
+    if (touchOptimized) event.preventDefault()
     if (drag.kind === 'entity') moveEntity(drag.id, drag.point)
     if (drag.kind === 'path') updateActionPathPoint(drag.actionId, drag.index, drag.point)
     if (drag.kind === 'curve') updateMoveCurveControl(drag.actionId, drag.point)
@@ -370,6 +373,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             key={`${action.id}-handle-${index}`}
             className="path-handle-target"
             onPointerDown={(event) => {
+              if (touchOptimized) event.preventDefault()
               event.stopPropagation()
               setDrag({ kind: 'path', actionId: action.id, index, point })
               svgRef.current?.setPointerCapture?.(event.pointerId)
@@ -384,6 +388,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           role="slider"
           aria-label="调整跑动曲线"
           onPointerDown={(event) => {
+            if (touchOptimized) event.preventDefault()
             event.stopPropagation()
             setDrag({ kind: 'curve', actionId: action.id, point: action.curveControl! })
             svgRef.current?.setPointerCapture?.(event.pointerId)
@@ -443,6 +448,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         tabIndex={0}
         aria-label={`调整${player.name}移动箭头终点`}
         onPointerDown={(event) => {
+          if (touchOptimized) event.preventDefault()
           event.stopPropagation()
           setDrag({ kind: 'staticArrow', arrowId: arrow.id, point: target })
           svgRef.current?.setPointerCapture?.(event.pointerId)
