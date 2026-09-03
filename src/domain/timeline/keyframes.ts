@@ -1,5 +1,6 @@
 import type { TacticDocumentV1 } from '../model/types'
 import { actionEndTime } from './durations'
+import { documentFreezeWindows } from './projectFrame'
 
 const EPSILON = 1e-6
 
@@ -23,6 +24,7 @@ export function timelineJointTimes(document: TacticDocumentV1): number[] {
     ...document.stepMarkers.map((step) => step.time),
     ...document.actions.flatMap((action) => [action.startTime, actionEndTime(action)]),
     ...cooldownReadyTimes,
+    ...documentFreezeWindows(document).flatMap((window) => [window.startsAt, window.endsAt]),
   ]
     .filter((time) => Number.isFinite(time) && time >= 0)
     .map(stableTime)

@@ -7,6 +7,7 @@ import {
   pathLength,
   pointAlongPath,
   resolvedMovePath,
+  slicePath,
   truncatePath,
 } from '../geometry/geometry'
 import type {
@@ -94,6 +95,7 @@ function eZoneMultiplierAt(
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
 ): number {
+  if (effect === 'qMove' && movingActor.role !== 'water') return 1
   const activeZones = document.actions.filter(
     (candidate): candidate is EZoneAction =>
       candidate.type === 'eZone' &&
@@ -123,21 +125,52 @@ function moveDistanceWithEZoneSlow(
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
 ): number {
+  return traceMoveWithEZoneSlow(document, action, time, applyControlEffects, hitMap).traveled
+}
+
+export interface EZoneSlowSegment {
+  startTime: number
+  endTime: number
+  multiplier: number
+  path: PlayerState['position'][]
+}
+
+interface EZoneMoveTrace {
+  traveled: number
+  segments: EZoneSlowSegment[]
+}
+
+function traceMoveWithEZoneSlow(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  time: number,
+  applyControlEffects: boolean,
+  hitMap: IceQHitMap,
+): EZoneMoveTrace {
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
   const route = resolvedMovePath(action)
   const routeLength = pathLength(route)
   const end = Math.min(Math.max(time, action.startTime), actionEndTime(action))
-  if (!movingActor || routeLength <= 0 || end <= action.startTime) return 0
+  if (!movingActor || routeLength <= 0 || end <= action.startTime) return { traveled: 0, segments: [] }
 
   const hasOverlappingEnemyZone = document.actions.some((candidate) => {
     if (candidate.type !== 'eZone') return false
     const owner = document.initialScene.players.find((player) => player.id === candidate.actorId)
     return owner?.team !== movingActor.team && candidate.startTime < end && actionEndTime(candidate) > action.startTime
   })
-  if (!hasOverlappingEnemyZone) return moveDistanceWithoutEZoneSlow(document, action, end)
+  if (!hasOverlappingEnemyZone) {
+    return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [] }
+  }
 
   const steps = Math.max(1, Math.ceil((end - action.startTime) / E_ZONE_SAMPLE_SECONDS))
   let traveled = 0
+  const sampledSegments: Array<{
+    startDistance: number
+    endDistance: number
+    startTime: number
+    endTime: number
+    multiplier: number
+  }> = []
   for (let index = 0; index < steps; index += 1) {
     const stepStart = action.startTime + ((end - action.startTime) * index) / steps
     const stepEnd = action.startTime + ((end - action.startTime) * (index + 1)) / steps
@@ -149,7 +182,7 @@ function moveDistanceWithEZoneSlow(
     const probeDistance = Math.min(routeLength, traveled + unslowedStep / 2)
     const probePosition = pointAlongPath(route, probeDistance / Math.max(routeLength, 0.0001))
     const probeTime = (stepStart + stepEnd) / 2
-    traveled += unslowedStep * eZoneMultiplierAt(
+    const multiplier = eZoneMultiplierAt(
       document,
       movingActor,
       probePosition,
@@ -158,8 +191,37 @@ function moveDistanceWithEZoneSlow(
       applyControlEffects,
       hitMap,
     )
+    const nextTraveled = traveled + unslowedStep * multiplier
+    if (multiplier < 1 - 1e-6 && nextTraveled > traveled + 1e-6) {
+      const previous = sampledSegments.at(-1)
+      if (previous && Math.abs(previous.endDistance - traveled) <= 1e-6 && Math.abs(previous.multiplier - multiplier) <= 1e-6) {
+        previous.endDistance = nextTraveled
+        previous.endTime = stepEnd
+      } else {
+        sampledSegments.push({
+          startDistance: traveled,
+          endDistance: nextTraveled,
+          startTime: stepStart,
+          endTime: stepEnd,
+          multiplier,
+        })
+      }
+    }
+    traveled = nextTraveled
   }
-  return traveled
+  return {
+    traveled,
+    segments: sampledSegments.map((segment) => ({
+      startTime: segment.startTime,
+      endTime: segment.endTime,
+      multiplier: segment.multiplier,
+      path: slicePath(
+        route,
+        segment.startDistance / routeLength,
+        Math.min(segment.endDistance, routeLength) / routeLength,
+      ),
+    })),
+  }
 }
 
 function qDistanceWithEZoneEffect(
@@ -178,6 +240,9 @@ function qDistanceWithEZoneEffect(
     ? clamp((time - action.startTime) / action.duration, 0, 1)
     : 1
   const authoredDistance = routeLength * baseProgress
+  // The ice field only shortens Water's Q. Fire blink and Ice dash keep their
+  // authored distance, while ordinary running remains slowed for every enemy role.
+  if (movingActor.role !== 'water') return authoredDistance
   const steps = Math.max(1, Math.ceil(authoredDistance / E_ZONE_SAMPLE_DISTANCE))
   // The Q's own hit cannot move its slowing zone early enough to redefine the
   // same Q path. Earlier control effects still move the live zone center.
@@ -529,6 +594,54 @@ function buildIceQHitMap(document: TacticDocumentV1): IceQHitMap {
   return hitMap
 }
 
+/**
+ * Returns every frozen interval that belongs on a player's timeline.
+ * Ice-Q freezes are derived from the same effective-path hit map used by
+ * projection, so the editor never persists a second, drift-prone status action.
+ */
+export function documentFreezeWindows(
+  document: TacticDocumentV1,
+  playerId?: string,
+): PlayerStatus[] {
+  const hitMap = buildIceQHitMap(document)
+  const derived = document.actions.flatMap((action): PlayerStatus[] => {
+    if (action.type !== 'qMove' || getActorRole(document, action.actorId) !== 'ice') return []
+    const freezeDuration = document.rulesSnapshot.roles.ice.q.freezeDuration ?? 0
+    if (freezeDuration <= 0) return []
+    return (hitMap.get(action.id) ?? []).map((hit) => ({
+      id: `${action.id}-${hit.targetId}-freeze`,
+      playerId: hit.targetId,
+      kind: 'frozen',
+      sourceActionId: action.id,
+      startsAt: hit.hitTime,
+      endsAt: hit.hitTime + freezeDuration,
+    }))
+  })
+  const authored = document.actions.flatMap((action): PlayerStatus[] => (
+    action.type === 'status' && action.status === 'frozen'
+      ? [{
+          id: `${action.id}-status`,
+          playerId: action.targetId,
+          kind: 'frozen',
+          sourceActionId: action.id,
+          startsAt: action.startTime,
+          endsAt: actionEndTime(action),
+          separationDelta: action.separationDelta,
+        }]
+      : []
+  ))
+  const unique = new Map<string, PlayerStatus>()
+  for (const status of [...document.initialScene.statuses, ...authored, ...derived]) {
+    if (status.kind !== 'frozen' || status.endsAt <= status.startsAt) continue
+    if (playerId && status.playerId !== playerId) continue
+    const key = `${status.playerId}:${status.sourceActionId}:${status.startsAt}:${status.endsAt}`
+    unique.set(key, { ...status })
+  }
+  return [...unique.values()].sort(
+    (left, right) => left.startsAt - right.startsAt || left.endsAt - right.endsAt || left.playerId.localeCompare(right.playerId),
+  )
+}
+
 export interface QDistanceEffect {
   authoredDistance: number
   effectiveDistance: number
@@ -553,6 +666,19 @@ export function evaluateQDistanceEffect(document: TacticDocumentV1, action: QMov
 
 export function effectiveQPath(document: TacticDocumentV1, action: QMoveAction): PlayerState['position'][] {
   return truncatePath(action.path, evaluateQDistanceEffect(document, action).effectiveDistance)
+}
+
+/** Returns the actual portions of an ordinary run completed under an opposing ice-field slow. */
+export function eZoneSlowSegmentsForMove(
+  document: TacticDocumentV1,
+  action: MoveAction,
+): EZoneSlowSegment[] {
+  const hitMap = buildIceQHitMap(document)
+  const freeze = freezeWindowsFor(document, action.actorId, hitMap).find(
+    (window) => window.start < actionEndTime(action) && window.end > action.startTime,
+  )
+  const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
+  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).segments
 }
 
 export function analyzeDocumentIceQHits(document: TacticDocumentV1, action: QMoveAction): IceQHit[] {

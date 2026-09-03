@@ -1232,6 +1232,35 @@ describe('tactic store timeline edits', () => {
     expect(actions[1]?.path[0]).toEqual(actions[0]?.path.at(-1))
   })
 
+  it('continues a frozen player only after the derived thaw keyframe', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'red-water')!
+    target.position = { x: 6.8, y: 7.3 }
+    document.actions.push({
+      id: 'freeze-before-run',
+      type: 'qMove',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 1,
+      path: [{ x: 3.5, y: 7.3 }, { x: 6.5, y: 7.3 }],
+    })
+    useTacticStore.setState({
+      document,
+      tool: 'select',
+      selection: { kind: 'player', id: target.id },
+      currentTime: 0,
+      past: [],
+      future: [],
+    })
+
+    useTacticStore.getState().setTool('move')
+    expect(useTacticStore.getState().currentTime).toBe(2.75)
+
+    useTacticStore.getState().createAction(target.id, { x: 8.25, y: 7.3 })
+    const move = useTacticStore.getState().document.actions.find((action) => action.type === 'move')
+    expect(move).toMatchObject({ actorId: target.id, startTime: 2.75 })
+  })
+
   it.each([
     ['blue-water', { x: 8, y: 7 }, { x: 10, y: 7 }, 7],
     ['blue-fire', { x: 5.8, y: 4.7 }, { x: 8, y: 4.7 }, 9],

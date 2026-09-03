@@ -105,19 +105,23 @@ describe('rule assistance', () => {
     expect(ids).toContain('slow-chase-zone-chase')
   })
 
-  it('warns with authored and effective distances when an enemy Q crosses an ice zone', () => {
+  it('warns only when an enemy Water Q crosses an ice zone', () => {
     const document = createDefaultDocument()
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 5, y: 5 }
-    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 5, y: 6 }
     document.actions.push(
       { id: 'q-slow-zone', type: 'eZone', actorId: 'blue-ice', center: { x: 19, y: 9 }, radius: 2, startTime: 0, duration: 5 },
-      { id: 'q-through-zone', type: 'qMove', actorId: 'red-fire', startTime: 1, duration: 0, path: [{ x: 5, y: 5 }, { x: 7.3, y: 5 }] },
+      { id: 'q-through-zone', type: 'qMove', actorId: 'red-water', startTime: 1, duration: 0, path: [{ x: 5, y: 5 }, { x: 7.3, y: 5 }] },
+      { id: 'fire-q-through-zone', type: 'qMove', actorId: 'red-fire', startTime: 1, duration: 0, path: [{ x: 5, y: 6 }, { x: 7.3, y: 6 }] },
     )
 
-    const warning = evaluateWarnings(document).find((candidate) => candidate.id === 'q-slowed-by-e-q-through-zone')
+    const warnings = evaluateWarnings(document)
+    const warning = warnings.find((candidate) => candidate.id === 'q-slowed-by-e-q-through-zone')
     expect(warning?.title).toBe('Q 经过敌方随身冰圈')
     expect(warning?.detail).toContain('原路径 2.30 格')
     expect(warning?.detail).toContain('实际位移为 1.70 格')
+    expect(warnings.some((candidate) => candidate.id === 'q-slowed-by-e-fire-q-through-zone')).toBe(false)
   })
 
   it('recomputes the ice-Q facing warning when the target turns', () => {

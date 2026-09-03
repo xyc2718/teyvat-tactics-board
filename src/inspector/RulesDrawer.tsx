@@ -79,7 +79,7 @@ export function RulesDrawer() {
                   <RuleInput label="E 持续" value={rule.e.duration} suffix="s" onChange={(value) => updateRoleExtra(role, 'eDuration', value)} />
                   <RuleInput label="E 冷却" value={rule.e.cooldown} suffix="s" onChange={(value) => updateRoleExtra(role, 'eCooldown', value)} />
                   <RuleInput label="E 圈内移速" value={rule.e.slowMultiplier} suffix="×" onChange={(value) => updateRoleExtra(role, 'eSlowMultiplier', value)} />
-                  <RuleInput label="E 圈内敌方 Q 距离" value={rule.e.qDistanceMultiplier} suffix="×" onChange={(value) => updateRoleExtra(role, 'eQDistanceMultiplier', value)} />
+                  <RuleInput label="E 圈内敌方水 Q 距离" value={rule.e.qDistanceMultiplier} suffix="×" onChange={(value) => updateRoleExtra(role, 'eQDistanceMultiplier', value)} />
                 </>}
               </RuleSection>
             })}

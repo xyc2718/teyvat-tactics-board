@@ -1,6 +1,7 @@
 import type { TacticAction } from '../domain/model/types'
 import { actionEndTime } from '../domain/timeline/durations'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
+import { documentFreezeWindows } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership, stepDuration } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { latestActorSequenceJoint } from '../editor/locomotionScheduling'
@@ -68,12 +69,17 @@ export function TimelinePanel() {
   const trackActions = trackPlayerId
     ? sortedActions.filter((action) => actionActorId(action) === trackPlayerId)
     : sortedActions
+  const freezeWindows = documentFreezeWindows(document)
+  const trackFreezeWindows = trackPlayerId
+    ? freezeWindows.filter((window) => window.playerId === trackPlayerId)
+    : []
   const continuationTime = trackPlayerId
     ? latestActorSequenceJoint(document, trackPlayerId)
     : null
   const trackKeyframeTimes = Array.from(new Set([
     0,
     ...trackActions.flatMap((action) => actorKeyframes(action).map(({ time }) => time)),
+    ...trackFreezeWindows.flatMap((window) => [window.startsAt, window.endsAt]),
   ])).sort((left, right) => left - right)
 
   function togglePlayback() {
@@ -115,6 +121,26 @@ export function TimelinePanel() {
                 />
               ))
             })}
+            {duration > 0 && freezeWindows.flatMap((window) => {
+              const player = document.initialScene.players.find((candidate) => candidate.id === window.playerId)
+              if (!player) return []
+              return [
+                <i
+                  key={`${window.id}-freeze-start-${window.startsAt}`}
+                  className={`team-${player.team} status-freeze freeze-start`}
+                  data-player-id={player.id}
+                  data-timeline-freeze-edge="start"
+                  style={{ left: `${timePercent(window.startsAt, duration)}%` }}
+                />,
+                <i
+                  key={`${window.id}-freeze-end-${window.endsAt}`}
+                  className={`team-${player.team} status-freeze freeze-end`}
+                  data-player-id={player.id}
+                  data-timeline-freeze-edge="end"
+                  style={{ left: `${timePercent(window.endsAt, duration)}%` }}
+                />,
+              ]
+            })}
           </div>
           <div className="step-ticks">{duration > 0 && document.stepMarkers.map((step) => <button key={step.id} style={{ left: `${timePercent(step.time, duration)}%` }} className={step.id === activeStepId ? 'active' : ''} onClick={() => selectStep(step.id)} aria-label={`跳到 ${step.name}`} />)}</div>
         </div>
@@ -136,6 +162,18 @@ export function TimelinePanel() {
             aria-label={trackPlayer ? `${trackPlayer.name}动作轨道` : '全部动作轨道总览'}
           >
             <i className="player-track-playhead" style={{ left: `${timePercent(currentTime, sliderMax)}%` }} aria-hidden="true" />
+            {trackFreezeWindows.map((window) => (
+              <span
+                key={`${window.id}-${window.startsAt}-${window.endsAt}`}
+                className="player-track-freeze-window"
+                data-freeze-source-action-id={window.sourceActionId}
+                style={{
+                  left: `${timePercent(window.startsAt, sliderMax)}%`,
+                  width: `${Math.max(1.2, timePercent(window.endsAt - window.startsAt, sliderMax))}%`,
+                }}
+                title={`冻结 ${window.startsAt.toFixed(2)}–${window.endsAt.toFixed(2)}s；期间不能安排跑动或 Q`}
+              ><span>冻结</span></span>
+            ))}
             {trackActions.map((action) => {
               const instant = action.duration <= INSTANT_ACTION_EPSILON
               const width = instant ? 1.2 : Math.max(1.2, timePercent(action.duration, sliderMax))
@@ -154,20 +192,34 @@ export function TimelinePanel() {
             {trackKeyframeTimes.map((time) => {
               const percent = timePercent(time, sliderMax)
               const isContinuation = continuationTime !== null && Math.abs(time - continuationTime) <= INSTANT_ACTION_EPSILON
+              const isFreezeStart = trackFreezeWindows.some((window) => Math.abs(time - window.startsAt) <= INSTANT_ACTION_EPSILON)
+              const isFreezeEnd = trackFreezeWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
+              const eventLabels = [
+                isFreezeStart ? '冻结' : '',
+                isFreezeEnd ? '解冻' : '',
+                isContinuation ? '续接' : '',
+              ].filter(Boolean)
+              const eventSuffix = eventLabels.length > 0 ? ` · ${eventLabels.join(' · ')}` : ''
               return <span
                 key={`track-keyframe-${time}`}
-                className={`player-track-keyframe-marker ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''}`}
+                className={`player-track-keyframe-marker ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''} ${isFreezeStart ? 'freeze-start' : ''} ${isFreezeEnd ? 'freeze-end' : ''}`}
                 style={{ left: `${percent}%` }}
-                title={isContinuation ? `下一项个人动作从 ${time.toFixed(2)}s 继续` : `关键帧 ${time.toFixed(2)}s`}
+                title={isFreezeStart
+                  ? `${time.toFixed(2)}s 冻结开始`
+                  : isFreezeEnd
+                    ? `${time.toFixed(2)}s 冻结结束`
+                    : isContinuation
+                      ? `下一项个人动作从 ${time.toFixed(2)}s 继续`
+                      : `关键帧 ${time.toFixed(2)}s`}
               >
                 <i aria-hidden="true" />
-                {trackPlayer && <b>{time.toFixed(2)}s{isContinuation ? ' · 续接' : ''}</b>}
+                {trackPlayer && <b>{time.toFixed(2)}s{eventSuffix}</b>}
               </span>
             })}
-            {trackActions.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
+            {trackActions.length === 0 && trackFreezeWindows.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
           </div>
           <small>{trackPlayer && continuationTime !== null
-            ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点；出球与接球也会形成个人节点`
+            ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点；冻结区间内不能安排跑动或 Q`
             : '总览汇集所有球员关键帧；选择球员可切换个人轨道，不会移动播放头'}</small>
         </div>
         <div className="player-track-tabs" role="tablist" aria-label="切换球员动作轨道">

@@ -42,6 +42,21 @@ describe('App shell', () => {
     expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
   })
 
+  it('renders Q cooldowns as a compact lowercase q badge', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'cooldown-label-q', type: 'qMove', actorId: 'blue-fire', startTime: 0, duration: 0,
+      path: [{ x: 3.5, y: 4.7 }, { x: 5.8, y: 4.7 }],
+    })
+    document.stepMarkers.push({
+      id: 'cooldown-label-step', time: 3, name: '步骤 1', note: '', snapshot: structuredClone(document.initialScene),
+    })
+    useTacticStore.setState({ document, activeStepId: 'cooldown-label-step', currentTime: 3 })
+    const { container } = render(<App />)
+
+    expect(container.querySelector('.cd-text')).toHaveTextContent('q 6.0')
+  })
+
   it('opens the browser-local tactic library from the toolbar', () => {
     render(<App />)
 
@@ -270,7 +285,7 @@ describe('App shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '规则设置' }))
     expect(screen.getByRole('dialog', { name: '规则设置' })).toBeInTheDocument()
     expect(screen.getByText('基础移速')).toBeInTheDocument()
-    expect(screen.getByText('E 圈内敌方 Q 距离')).toBeInTheDocument()
+    expect(screen.getByText('E 圈内敌方水 Q 距离')).toBeInTheDocument()
   })
 
   it('renders the opening setup as a disabled zero-second timeline', () => {
@@ -635,16 +650,16 @@ describe('App shell', () => {
     expect(renderedZone).toHaveAttribute('cx', '350')
     expect(renderedZone).toHaveAttribute('cy', '250')
     expect(renderedZone?.querySelector('title')).toHaveTextContent('敌方圈内移速 0.5×')
-    expect(renderedZone?.querySelector('title')).toHaveTextContent('敌方 Q 距离 0.7×')
+    expect(renderedZone?.querySelector('title')).toHaveTextContent('仅敌方水 Q 距离 0.7×')
   })
 
-  it('renders the shortened effective enemy Q path while retaining the authored action', () => {
+  it('renders the shortened effective enemy Water Q path while retaining the authored action', () => {
     const document = createDefaultDocument()
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 5, y: 5 }
-    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 5, y: 5 }
     document.actions.push(
       { id: 'render-q-zone', type: 'eZone', actorId: 'blue-ice', center: { x: 19, y: 9 }, radius: 2, startTime: 0, duration: 5 },
-      { id: 'render-short-q', type: 'qMove', actorId: 'red-fire', startTime: 1, duration: 0, path: [{ x: 5, y: 5 }, { x: 7.3, y: 5 }] },
+      { id: 'render-short-q', type: 'qMove', actorId: 'red-water', startTime: 1, duration: 0, path: [{ x: 5, y: 5 }, { x: 7.3, y: 5 }] },
     )
     useTacticStore.setState({ document, currentTime: 1 })
     const { container } = render(<App />)
@@ -654,6 +669,27 @@ describe('App shell', () => {
     expect(renderedQ?.querySelector('title')).toHaveTextContent('实际 Q 位移 1.70 格')
     const savedQ = useTacticStore.getState().document.actions.find((action) => action.id === 'render-short-q')
     if (savedQ?.type === 'qMove') expect(savedQ.path.at(-1)).toEqual({ x: 7.3, y: 5 })
+  })
+
+  it('marks the actual section of an enemy run slowed by the moving ice zone', () => {
+    const document = createDefaultDocument()
+    document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 6, y: 5 }
+    const move: MoveAction = {
+      id: 'render-slowed-run', type: 'move', actorId: 'red-fire', startTime: 0, duration: 4,
+      path: [{ x: 6, y: 5 }, { x: 10, y: 5 }],
+    }
+    document.actions.push(
+      { id: 'render-moving-zone', type: 'eZone', actorId: 'blue-ice', center: { x: 19, y: 9 }, radius: 2, startTime: 0, duration: 5 },
+      { id: 'render-zone-owner-run', type: 'move', actorId: 'blue-ice', startTime: 0, duration: 4, path: [{ x: 5, y: 5 }, { x: 9, y: 5 }] },
+      move,
+    )
+    useTacticStore.setState({ document, selection: { kind: 'action', id: move.id } })
+    const { container } = render(<App />)
+
+    const slowRoute = container.querySelector('[data-action-id="render-slowed-run"] .e-zone-slow-route')
+    expect(slowRoute?.querySelector('.e-zone-slow-segment')).toHaveAttribute('points', '300,250 400,250')
+    expect(slowRoute?.querySelector('title')).toHaveTextContent('敌方冰圈减速段 · 移速 0.50×')
   })
 
   it('supports switching the locomotion actor and completing a point target from the keyboard', () => {

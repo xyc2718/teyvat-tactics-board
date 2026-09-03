@@ -89,7 +89,7 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
     }
     case 'eZone': {
       const eRule = actor ? document.rulesSnapshot.roles[actor.role].e : undefined
-      return `${timing}，${name} 开启以自身为圆心、随移动跟随的 ${action.radius.toFixed(2)} 格冰圈，持续 ${action.duration.toFixed(2)}s；圈内敌方跑动速度为 ${eRule?.slowMultiplier ?? 1}×，敌方 Q 距离为 ${eRule?.qDistanceMultiplier ?? 1}×。`
+      return `${timing}，${name} 开启以自身为圆心、随移动跟随的 ${action.radius.toFixed(2)} 格冰圈，持续 ${action.duration.toFixed(2)}s；圈内敌方跑动速度为 ${eRule?.slowMultiplier ?? 1}×，仅敌方水 Q 距离为 ${eRule?.qDistanceMultiplier ?? 1}×。`
     }
     case 'receive':
       return `${timing}，${name} 接球并取得球权。`

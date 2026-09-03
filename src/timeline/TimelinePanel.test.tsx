@@ -173,6 +173,36 @@ describe('TimelinePanel player tracks', () => {
     expect(container.querySelector('.player-track-keyframe-marker.continuation')).toHaveTextContent('4.00s · 续接')
   })
 
+  it('shows derived freeze windows and both boundary keyframes on the frozen player track', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'red-water')!
+    target.position = { x: 6.8, y: 7.3 }
+    document.actions.push({
+      id: 'visible-freeze',
+      type: 'qMove',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 1,
+      path: [{ x: 3.5, y: 7.3 }, { x: 6.5, y: 7.3 }],
+    })
+    useTacticStore.setState({
+      document,
+      selection: { kind: 'player', id: target.id },
+      currentTime: 1,
+    })
+
+    const { container } = render(<TimelinePanel />)
+
+    expect(container.querySelector('.player-track-freeze-window')).toHaveAttribute(
+      'title',
+      '冻结 1.00–2.75s；期间不能安排跑动或 Q',
+    )
+    const labels = Array.from(container.querySelectorAll('.player-track-keyframe-marker b'))
+      .map((label) => label.textContent)
+    expect(labels).toEqual(['0.00s', '1.00s · 冻结', '2.75s · 解冻 · 续接'])
+    expect(container.querySelectorAll('.global-player-ticks [data-player-id="red-water"][data-timeline-freeze-edge]')).toHaveLength(2)
+  })
+
   it('shows an automatic catch on the receiver track and locks its derived timing', () => {
     const document = createDefaultDocument()
     document.actions.push(

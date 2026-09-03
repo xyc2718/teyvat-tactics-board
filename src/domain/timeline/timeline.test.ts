@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from './projectFrame'
+import { timelineJointTimes } from './keyframes'
+import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectFrame } from './projectFrame'
 import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
@@ -26,6 +27,16 @@ describe('timeline defaults', () => {
     player.position = { x: 14, y: 5 }
     expect(shotDuration(player, 'yellow', document.rulesSnapshot)).toBe(0.8)
     expect(shotDuration(player, 'red', document.rulesSnapshot)).toBe(1.6)
+  })
+
+  it('keeps ice Q distance, travel time, cooldown, and freeze time as separate rule values', () => {
+    const iceQ = createDefaultDocument().rulesSnapshot.roles.ice.q
+    expect(iceQ).toMatchObject({
+      maxDistance: 3,
+      duration: 1,
+      cooldown: 7,
+      freezeDuration: 1.75,
+    })
   })
 })
 
@@ -114,6 +125,30 @@ describe('projectFrame', () => {
     const hitFrame = projectFrame(document, 1.2)
     expect(hitFrame.statuses.some((status) => status.playerId === target.id && status.kind === 'frozen')).toBe(true)
     expect(hitFrame.players.find((player) => player.id === target.id)?.position.x).toBeCloseTo(7.25)
+  })
+
+  it('derives ice-Q freeze start and end as editable timeline joints', () => {
+    const document = createDefaultDocument()
+    const target = document.initialScene.players.find((player) => player.id === 'red-water')!
+    target.position = { x: 6.8, y: 7.3 }
+    document.actions.push({
+      id: 'timeline-freeze',
+      type: 'qMove',
+      actorId: 'blue-ice',
+      startTime: 0,
+      duration: 1,
+      path: [{ x: 3.5, y: 7.3 }, { x: 6.5, y: 7.3 }],
+    })
+
+    expect(documentFreezeWindows(document, target.id)).toEqual([
+      expect.objectContaining({
+        playerId: target.id,
+        sourceActionId: 'timeline-freeze',
+        startsAt: 1,
+        endsAt: 2.75,
+      }),
+    ])
+    expect(timelineJointTimes(document)).toEqual(expect.arrayContaining([1, 2.75]))
   })
 
   it('does not freeze a target outside the ice attack radius at the dash endpoint', () => {
@@ -333,9 +368,16 @@ describe('projectFrame', () => {
     expect(frame.players.find((player) => player.id === teammate.id)?.position.x).toBeCloseTo(10)
     expect(frame.statuses.some((status) => status.playerId === enemy.id && status.kind === 'slowed')).toBe(true)
     expect(projectFrame(document, 5).statuses.some((status) => status.kind === 'slowed')).toBe(false)
+    const slowSegments = eZoneSlowSegmentsForMove(document, enemyMove)
+    expect(slowSegments).toHaveLength(1)
+    expect(slowSegments[0]?.multiplier).toBe(0.5)
+    expect(slowSegments[0]?.path[0]?.x).toBeCloseTo(6)
+    expect(slowSegments[0]?.path.at(-1)?.x).toBeCloseTo(8)
+    expect(eZoneSlowSegmentsForMove(document, teammateMove)).toEqual([])
 
     document.rulesSnapshot.roles.ice.e!.slowMultiplier = 0.25
     expect(projectFrame(document, 4).players.find((player) => player.id === enemy.id)?.position.x).toBeCloseTo(7)
+    expect(eZoneSlowSegmentsForMove(document, enemyMove)[0]?.path.at(-1)?.x).toBeCloseTo(7)
   })
 
   it('restores enemy move speed after leaving or outlasting the moving ice zone', () => {
@@ -354,11 +396,11 @@ describe('projectFrame', () => {
     expect(projectFrame(expiredZone, 4).players.find((player) => player.id === 'red-water')?.position.x).toBeCloseTo(9.5, 1)
   })
 
-  it('reduces only the enemy Q distance authored inside the moving ice zone', () => {
+  it('reduces only the enemy Water Q distance authored inside the moving ice zone', () => {
     const document = createDefaultDocument()
     const ice = document.initialScene.players.find((player) => player.id === 'blue-ice')!
-    const enemy = document.initialScene.players.find((player) => player.id === 'red-fire')!
-    const teammate = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    const enemy = document.initialScene.players.find((player) => player.id === 'red-water')!
+    const teammate = document.initialScene.players.find((player) => player.id === 'blue-water')!
     ice.position = { x: 5, y: 5 }
     enemy.position = { x: 5, y: 5 }
     teammate.position = { x: 5, y: 5 }
@@ -411,22 +453,29 @@ describe('projectFrame', () => {
     expect(projectFrame(document, 1).players.find((player) => player.id === 'red-water')?.position.x).toBeCloseTo(4.05, 1)
   })
 
-  it('does not freeze a target beyond an ice Q endpoint shortened by the enemy zone', () => {
+  it('does not shorten Fire or Ice Q inside the enemy zone', () => {
     const document = createDefaultDocument()
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 5, y: 5 }
     document.initialScene.players.find((player) => player.id === 'red-ice')!.position = { x: 5, y: 5 }
+    document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 5, y: 6 }
     document.initialScene.players.find((player) => player.id === 'blue-water')!.position = { x: 8, y: 5 }
-    const q: QMoveAction = {
-      id: 'shortened-ice-q', type: 'qMove', actorId: 'red-ice', startTime: 1, duration: 1,
+    const iceQ: QMoveAction = {
+      id: 'unshortened-ice-q', type: 'qMove', actorId: 'red-ice', startTime: 1, duration: 1,
       path: [{ x: 5, y: 5 }, { x: 8, y: 5 }],
+    }
+    const fireQ: QMoveAction = {
+      id: 'unshortened-fire-q', type: 'qMove', actorId: 'red-fire', startTime: 2, duration: 0,
+      path: [{ x: 5, y: 6 }, { x: 7.3, y: 6 }],
     }
     document.actions.push(
       { id: 'enemy-zone-for-ice-q', type: 'eZone', actorId: 'blue-ice', center: { x: 19, y: 9 }, radius: 2, startTime: 0, duration: 5 },
-      q,
+      iceQ,
+      fireQ,
     )
 
-    expect(evaluateQDistanceEffect(document, q).effectiveDistance).toBeCloseTo(2.4, 1)
-    expect(analyzeDocumentIceQHits(document, q).some((hit) => hit.targetId === 'blue-water')).toBe(false)
+    expect(evaluateQDistanceEffect(document, iceQ).effectiveDistance).toBeCloseTo(3)
+    expect(evaluateQDistanceEffect(document, fireQ).effectiveDistance).toBeCloseTo(2.3)
+    expect(analyzeDocumentIceQHits(document, iceQ).some((hit) => hit.targetId === 'blue-water')).toBe(true)
   })
 
   it('turns overlong passes into a free ball at the configured maximum distance', () => {

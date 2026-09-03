@@ -11,7 +11,7 @@ import {
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
 import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, projectFrame } from '../domain/timeline/projectFrame'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectFrame } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
@@ -302,7 +302,7 @@ export function TacticsBoard() {
       return (
         <g key={action.id} data-action-id={action.id} className={isSelected ? 'selected-action' : ''} pointerEvents={elevated ? 'none' : undefined} onPointerDown={(event) => { event.stopPropagation(); select({ kind: 'action', id: action.id }) }}>
           <circle cx={center.x * SCALE} cy={center.y * SCALE} r={action.radius * SCALE} className={`ice-zone ${active ? 'active' : ''}`}>
-            <title>随身冰圈 · 持续 {action.duration.toFixed(1)} 秒 · 敌方圈内移速 {multiplier ?? 1}× · 敌方 Q 距离 {owner ? rules.roles[owner.role].e?.qDistanceMultiplier ?? 1 : 1}×</title>
+            <title>随身冰圈 · 持续 {action.duration.toFixed(1)} 秒 · 敌方圈内移速 {multiplier ?? 1}× · 仅敌方水 Q 距离 {owner ? rules.roles[owner.role].e?.qDistanceMultiplier ?? 1 : 1}×</title>
           </circle>
         </g>
       )
@@ -322,6 +322,7 @@ export function TacticsBoard() {
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const waterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
     const receiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
+    const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
       <g
@@ -348,6 +349,7 @@ export function TacticsBoard() {
             </polyline>}
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
         {receiveBoost && <ReceiveBoostRoute effect={receiveBoost} />}
+        {eZoneSlowSegments.length > 0 && <EZoneSlowRoute segments={eZoneSlowSegments} />}
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
@@ -652,8 +654,9 @@ export function TacticsBoard() {
               <text y="39" textAnchor="middle" className="player-name">{player.name}</text>
               {boardMode === 'simulation' && player.hasBall && <circle cx="16" cy="-16" r="6" className="possession-dot" />}
               {(cooldown?.q ?? 0) > 0.05 && <g transform="translate(-27 -27)">
+                <title>Q 剩余冷却 {cooldown?.q.toFixed(1)} 秒</title>
                 <rect x="-4" y="-8" width="31" height="15" rx="7" className="cd-badge" />
-                <text x="11" y="3" textAnchor="middle" className="cd-text">Q {cooldown?.q.toFixed(1)}</text>
+                <text x="11.5" y="3" textAnchor="middle" className="cd-text">q {cooldown?.q.toFixed(1)}</text>
               </g>}
               {shot && <circle r="27" className={`charge-ring ${shot.interrupted ? 'interrupted' : ''}`} pathLength="1" strokeDasharray={`${shot.progress} 1`} />}
             </g>
@@ -888,6 +891,23 @@ function ReceiveBoostRoute({
     <polyline points={pointsAttribute(effect.path)} className="ice-receive-boost-segment">
       <title>冰接球加速段，累计身位收益 {effect.separationGain.toFixed(2)} 格</title>
     </polyline>
+  </g>
+}
+
+function EZoneSlowRoute({
+  segments,
+}: {
+  segments: ReturnType<typeof eZoneSlowSegmentsForMove>
+}) {
+  return <g className="e-zone-slow-route" pointerEvents="none">
+    {segments.map((segment, index) => <polyline
+      key={`${segment.startTime}-${segment.endTime}-${index}`}
+      points={pointsAttribute(segment.path)}
+      className="e-zone-slow-segment"
+      data-slow-multiplier={segment.multiplier}
+    >
+      <title>敌方冰圈减速段 · 移速 {segment.multiplier.toFixed(2)}×</title>
+    </polyline>)}
   </g>
 }
 
