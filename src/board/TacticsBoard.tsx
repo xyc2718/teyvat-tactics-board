@@ -72,6 +72,7 @@ type DragState =
   | { kind: 'curve'; actionId: string; point: Vec2 }
   | { kind: 'staticArrow'; arrowId: string; point: Vec2 }
   | { kind: 'facing'; playerId: string; center: Vec2; initialFacing: number; facing: number }
+  | { kind: 'viewport'; clientX: number; clientY: number; scrollLeft: number; scrollTop: number }
   | null
 
 export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { initialZoom?: number; touchOptimized?: boolean }) {
@@ -224,6 +225,17 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     const point = clientToField(event.clientX, event.clientY)
     if (tool === 'select') {
       select(null)
+      if (touchOptimized && boardViewportRef.current) {
+        event.preventDefault()
+        setDrag({
+          kind: 'viewport',
+          clientX: event.clientX,
+          clientY: event.clientY,
+          scrollLeft: boardViewportRef.current.scrollLeft,
+          scrollTop: boardViewportRef.current.scrollTop,
+        })
+        svgRef.current?.setPointerCapture?.(event.pointerId)
+      }
       return
     }
     if (isRangeInspectionTool(tool)) {
@@ -247,6 +259,13 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
 
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
     if (drag && touchOptimized) event.preventDefault()
+    if (drag?.kind === 'viewport') {
+      const viewport = boardViewportRef.current
+      if (!viewport) return
+      viewport.scrollLeft = drag.scrollLeft - (event.clientX - drag.clientX)
+      viewport.scrollTop = drag.scrollTop - (event.clientY - drag.clientY)
+      return
+    }
     const logicalPoint = clientToLogicalPoint(event.clientX, event.clientY)
     const point = clientToField(event.clientX, event.clientY)
     if (drag?.kind === 'facing') {
@@ -679,7 +698,6 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
                 }
               }}
             >
-              {touchOptimized && <circle r="38" className="svg-touch-hit-area entity-touch-hit" />}
               {statuses.map((status, index) => <circle key={status.id} r={27 + index * 5} className={`status-ring status-${status.kind}`} />)}
               <circle r="22" className="token-shadow" />
               <circle r="20" className="token-body" />
@@ -696,6 +714,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
                 <text x="11.5" y="3" textAnchor="middle" className="cd-text">q {cooldown?.q.toFixed(1)}</text>
               </g>}
               {shot && <circle r="27" className={`charge-ring ${shot.interrupted ? 'interrupted' : ''}`} pathLength="1" strokeDasharray={`${shot.progress} 1`} />}
+              {touchOptimized && <circle r="38" className="svg-touch-hit-area entity-touch-hit" />}
             </g>
           )
         })}
@@ -761,10 +780,10 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             }
           }}
         >
-          {touchOptimized && <circle r="26" className="svg-touch-hit-area entity-touch-hit" />}
           <circle r="11" className="ball-shadow" />
           <circle r="9" className="ball-body" />
           <path d="M0 -4 L4 -1 L3 4 L-3 4 L-4 -1 Z" className="ball-mark" />
+          {touchOptimized && <circle r="26" className="svg-touch-hit-area entity-touch-hit" />}
         </g>}
         </g>
 

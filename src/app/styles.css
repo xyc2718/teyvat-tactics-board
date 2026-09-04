@@ -536,7 +536,7 @@ details summary { cursor: pointer; color: #abc0b8; font-size: 10px; } details ul
   .mobile-landscape .board-column, .mobile-landscape .basic-workspace .board-column { grid-column:1; grid-row:1; min-width:0; padding:4px max(4px,env(safe-area-inset-right)) 4px max(4px,env(safe-area-inset-left)); }
   .mobile-landscape .board-shell { gap:2px; }
   .mobile-landscape .board-viewport { overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
-  .mobile-landscape .tactics-board.tool-select { touch-action:pan-x pan-y; }
+  .mobile-landscape .tactics-board.tool-select { touch-action:none; }
   .mobile-landscape .player-token, .mobile-landscape .player-token *, .mobile-landscape .ball-token, .mobile-landscape .ball-token *, .mobile-landscape .facing-handle, .mobile-landscape .facing-handle *, .mobile-landscape .path-handle-target, .mobile-landscape .path-handle-target * { touch-action:none; -webkit-user-select:none; user-select:none; }
   .mobile-landscape .board-scale, .mobile-landscape .board-hint { display:none; }
   .mobile-landscape .board-zoom-controls { top:4px; right:5px; padding:1px; }

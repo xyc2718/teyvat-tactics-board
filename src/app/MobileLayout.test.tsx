@@ -101,15 +101,20 @@ describe('phone layout', () => {
     expect(container.querySelector('.app-shell')).toHaveClass('mobile-panel-timeline')
   })
 
-  it('reserves object touches for dragging while leaving empty-field touches available for panning', () => {
+  it('separates object dragging from explicit empty-field panning', () => {
     installDeviceMedia(true, false)
     const { container } = render(<App />)
     const board = screen.getByRole('application', { name: '战术编辑球场' })
+    const viewport = container.querySelector<HTMLElement>('.board-viewport')!
     mockBoardRect(board)
+    viewport.scrollLeft = 120
+    viewport.scrollTop = 80
     const player = screen.getByRole('button', { name: /蓝方 1，水灵/ })
-    const visibleToken = player.querySelector('.token-body')!
+    const touchTarget = player.querySelector('.entity-touch-hit')!
+    expect(player.lastElementChild).toBe(touchTarget)
+    expect(container.querySelector('.ball-token')?.lastElementChild).toHaveClass('entity-touch-hit')
 
-    expect(fireEvent.pointerDown(visibleToken, {
+    expect(fireEvent.pointerDown(touchTarget, {
       pointerId: 91,
       pointerType: 'touch',
       button: 0,
@@ -121,13 +126,22 @@ describe('phone layout', () => {
 
     expect(useTacticStore.getState().document.initialScene.players.find((candidate) => candidate.id === 'blue-water')?.position).toEqual({ x: 6.5, y: 4.7 })
     expect(useTacticStore.getState().past).toHaveLength(1)
-    expect(fireEvent.pointerDown(container.querySelector('.pitch')!, {
+    expect(viewport.scrollLeft).toBe(120)
+    expect(viewport.scrollTop).toBe(80)
+
+    expect(fireEvent.pointerDown(container.querySelector('.pitch-stripe')!, {
       pointerId: 92,
       pointerType: 'touch',
       button: 0,
       clientX: 600,
       clientY: 400,
-    })).toBe(true)
+    })).toBe(false)
+    fireEvent.pointerMove(board, { pointerId: 92, pointerType: 'touch', clientX: 550, clientY: 370 })
+    fireEvent.pointerUp(board, { pointerId: 92, pointerType: 'touch', button: 0, clientX: 550, clientY: 370 })
+
+    expect(viewport.scrollLeft).toBe(170)
+    expect(viewport.scrollTop).toBe(110)
+    expect(useTacticStore.getState().past).toHaveLength(1)
   })
 
   it('opens low-frequency actions in a mobile dialog without duplicating tool buttons', () => {
