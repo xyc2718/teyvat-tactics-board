@@ -1103,6 +1103,45 @@ describe('tactic store timeline edits', () => {
     expect(useTacticStore.getState().notice).toBeNull()
   })
 
+  it('allows an immediate return pass from the exact automatic catch keyframe', () => {
+    const document = createDefaultDocument()
+    const passer = document.initialScene.players.find((player) => player.id === 'blue-water')!
+    const receiver = document.initialScene.players.find((player) => player.id === 'blue-fire')!
+    passer.position = { x: 1, y: 7 }
+    receiver.position = { x: 5, y: 7 }
+    document.initialScene.ball = { carrierId: passer.id, position: { ...passer.position }, isFree: false }
+    document.initialScene.players.forEach((player) => { player.hasBall = player.id === passer.id })
+    useTacticStore.setState({ document, currentTime: 0 })
+
+    useTacticStore.getState().setTool('pass')
+    useTacticStore.getState().createAction(passer.id, receiver.position, receiver.id)
+    const firstPass = useTacticStore.getState().document.actions.find((action) => action.type === 'pass')
+    if (!firstPass || firstPass.type !== 'pass') throw new Error('Expected first pass')
+
+    // Timeline navigation goes through the compact catch marker rather than
+    // retaining the raw floating-point action end returned by creation.
+    useTacticStore.getState().setCurrentTime(actionEndTime(firstPass))
+    expect(useTacticStore.getState().currentTime).toBe(actionEndTime(firstPass))
+    expect(projectFrame(useTacticStore.getState().document, useTacticStore.getState().currentTime).ball.carrierId).toBe(receiver.id)
+    useTacticStore.getState().setTool('pass')
+
+    expect(useTacticStore.getState()).toMatchObject({
+      tool: 'pass',
+      selection: { kind: 'player', id: receiver.id },
+      notice: null,
+    })
+
+    const returnTarget = document.initialScene.players.find((player) => player.id === 'blue-ice')!
+    useTacticStore.getState().createAction(receiver.id, returnTarget.position, returnTarget.id)
+    const passes = useTacticStore.getState().document.actions.filter((action) => action.type === 'pass')
+    expect(passes).toHaveLength(2)
+    expect(passes[1]).toMatchObject({
+      actorId: receiver.id,
+      targetPlayerId: returnTarget.id,
+      startTime: actionEndTime(firstPass),
+    })
+  })
+
   it('keeps possession through simultaneous Fire and Water Q actions before a named pass', () => {
     useTacticStore.getState().givePossession('blue-fire')
 

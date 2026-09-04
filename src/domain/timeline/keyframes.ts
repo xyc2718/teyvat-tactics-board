@@ -4,8 +4,27 @@ import { documentFreezeWindows } from './projectFrame'
 
 const EPSILON = 1e-6
 
-function stableTime(time: number): number {
-  return Number(Math.max(0, time).toFixed(6))
+function coalesceTimelineJoints(candidates: number[]): number[] {
+  const joints: number[] = []
+  for (const time of candidates) {
+    const previous = joints.at(-1)
+    if (
+      previous === undefined
+      || time - previous > EPSILON
+      // Time zero is the protected opening frame and must remain navigable
+      // even if an imported action starts within the coalescing tolerance.
+      || (previous === 0 && time > 0)
+    ) {
+      joints.push(time)
+      continue
+    }
+
+    // Keep the latest authoritative boundary for effectively simultaneous
+    // events. Rounding down here can leave a pass infinitesimally in flight at
+    // its catch marker, preventing the receiver from passing immediately.
+    joints[joints.length - 1] = time
+  }
+  return joints
 }
 
 /** All editable joints. Continuous in-between time is reserved for playback. */
@@ -27,10 +46,9 @@ export function timelineJointTimes(document: TacticDocumentV1): number[] {
     ...documentFreezeWindows(document).flatMap((window) => [window.startsAt, window.endsAt]),
   ]
     .filter((time) => Number.isFinite(time) && time >= 0)
-    .map(stableTime)
     .sort((left, right) => left - right)
 
-  return candidates.filter((time, index) => index === 0 || Math.abs(time - (candidates[index - 1] ?? time)) > EPSILON)
+  return coalesceTimelineJoints(candidates)
 }
 
 export function nearestTimelineJoint(document: TacticDocumentV1, rawTime: number): number {
