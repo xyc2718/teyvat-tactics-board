@@ -11,7 +11,7 @@ import {
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
 import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
@@ -338,6 +338,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
       ? { ...rawReceiveBoost, path: projectedMovePathSegment(document, moveAction, rawReceiveBoost.overlapStart, rawReceiveBoost.overlapEnd) }
       : rawReceiveBoost
     const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
+    const statusSlowSegments = moveAction ? statusSlowSegmentsForMove(document, moveAction) : []
     const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
     return (
       <g
@@ -366,6 +367,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
         {receiveBoost && <ReceiveBoostRoute effect={receiveBoost} />}
         {eZoneSlowSegments.length > 0 && <EZoneSlowRoute segments={eZoneSlowSegments} />}
+        {statusSlowSegments.length > 0 && <StatusSlowRoute segments={statusSlowSegments} />}
         {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
@@ -943,6 +945,22 @@ function EZoneSlowRoute({
       data-slow-multiplier={segment.multiplier}
     >
       <title>敌方冰圈减速段 · 移速 {segment.multiplier.toFixed(2)}×</title>
+    </polyline>)}
+  </g>
+}
+
+function StatusSlowRoute({
+  segments,
+}: {
+  segments: ReturnType<typeof statusSlowSegmentsForMove>
+}) {
+  return <g className="status-slow-route" pointerEvents="none">
+    {segments.map((segment, index) => <polyline
+      key={`${segment.startTime}-${segment.endTime}-${index}`}
+      points={pointsAttribute(segment.path)}
+      className="status-slow-segment"
+    >
+      <title>挂冰减速段 · 普通跑动按累计身位损失结算</title>
     </polyline>)}
   </g>
 }

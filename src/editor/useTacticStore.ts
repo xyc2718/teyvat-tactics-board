@@ -77,6 +77,7 @@ interface TacticStore extends HistoryState {
   createWait: (actorId: string) => void
   createShot: (actorId: string) => void
   createEZone: (actorId: string) => void
+  createSlowStatus: (targetId: string, startTime: number) => void
   createAction: (actorId: string | null, target: Vec2, targetPlayerId?: string) => void
   updateActionPathPoint: (actionId: string, index: number, point: Vec2) => void
   setMovePathMode: (actionId: string, mode: 'straight' | 'curve') => void
@@ -138,6 +139,7 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
   'pass',
   'shoot',
   'annotation',
+  'slow',
   'eZone',
 ])
 
@@ -1078,6 +1080,55 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       currentKeyframe: null,
       notice: null,
       isPlaying: false,
+    }
+  }),
+
+  createSlowStatus: (targetId, rawStartTime) => set((state) => {
+    const target = state.document.initialScene.players.find((player) => player.id === targetId)
+    if (!target) return { notice: '未找到要挂冰的球员。' }
+    const slow = state.document.rulesSnapshot.roles.ice.slow
+    if (!slow || slow.duration <= 0) return { notice: '当前规则没有配置挂冰持续时间。' }
+
+    const startTime = Math.max(0, rawStartTime)
+    const endTime = startTime + slow.duration
+    const next = cloneDocument(state.document)
+    const activeStatus = next.actions.find((action): action is Extract<TacticAction, { type: 'status' }> => (
+      action.type === 'status'
+      && action.status === 'slowed'
+      && action.targetId === targetId
+      && action.startTime <= startTime + JOINT_EPSILON
+      && actionEndTime(action) > startTime + JOINT_EPSILON
+    ))
+    const action: Extract<TacticAction, { type: 'status' }> = activeStatus ?? {
+      id: uid('slow'),
+      type: 'status',
+      targetId,
+      status: 'slowed',
+      startTime,
+      duration: slow.duration,
+      separationDelta: -slow.fullSeparationLoss,
+    }
+
+    if (activeStatus) {
+      delete activeStatus.actorId
+      activeStatus.duration = Math.max(activeStatus.duration, endTime - activeStatus.startTime)
+      activeStatus.separationDelta = -slow.fullSeparationLoss
+    } else {
+      next.actions.push(action)
+    }
+    const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
+    refreshStepSnapshots(next)
+    return {
+      ...applyDocument(state, next),
+      activeStepId,
+      tool: 'select' as const,
+      selection: { kind: 'player' as const, id: targetId },
+      currentTime: startTime,
+      currentKeyframe: null,
+      isPlaying: false,
+      notice: activeStatus
+        ? `已刷新${target.name}的挂冰结束时间。`
+        : `已为${target.name}添加 ${slow.duration.toFixed(1)} 秒挂冰。`,
     }
   }),
 

@@ -4,7 +4,7 @@ import { createDefaultDocument } from '../model/createDocument'
 import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../model/types'
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { timelineJointTimes } from './keyframes'
-import { analyzeDocumentIceQHits, documentFreezeWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame, projectFrameAtKeyframe } from './projectFrame'
+import { analyzeDocumentIceQHits, documentFreezeWindows, documentSlowWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from './projectFrame'
 import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
@@ -42,6 +42,45 @@ describe('timeline defaults', () => {
 })
 
 describe('projectFrame', () => {
+  it('applies target-only hang ice to ordinary movement without slowing Q', () => {
+    const document = createDefaultDocument()
+    const player = document.initialScene.players.find((candidate) => candidate.id === 'blue-water')!
+    const slow = document.rulesSnapshot.roles.ice.slow!
+    const run: MoveAction = {
+      id: 'hang-ice-run', type: 'move', actorId: player.id, startTime: 0, duration: slow.duration,
+      path: [{ ...player.position }, { x: player.position.x + slow.duration, y: player.position.y }],
+    }
+    document.actions.push(
+      run,
+      {
+        id: 'hang-ice', type: 'status', targetId: player.id, status: 'slowed', startTime: 0,
+        duration: slow.duration, separationDelta: -slow.fullSeparationLoss,
+      },
+      // A second overlapping application must not double the slowdown.
+      {
+        id: 'overlapping-hang-ice', type: 'status', targetId: player.id, status: 'slowed', startTime: 1,
+        duration: slow.duration, separationDelta: -slow.fullSeparationLoss,
+      },
+    )
+
+    expect(projectFrame(document, slow.duration).players.find((candidate) => candidate.id === player.id)?.position.x)
+      .toBeCloseTo(player.position.x + slow.duration - slow.fullSeparationLoss, 2)
+    expect(documentSlowWindows(document, player.id)).toHaveLength(2)
+    expect(statusSlowSegmentsForMove(document, run)).not.toHaveLength(0)
+
+    const qDocument = createDefaultDocument()
+    const qPlayer = qDocument.initialScene.players.find((candidate) => candidate.id === 'blue-water')!
+    qDocument.actions.push(
+      { id: 'q-hang-ice', type: 'status', targetId: qPlayer.id, status: 'slowed', startTime: 0, duration: slow.duration },
+      {
+        id: 'q-while-slowed', type: 'qMove', actorId: qPlayer.id, startTime: 0, duration: 0,
+        path: [{ ...qPlayer.position }, { x: qPlayer.position.x + 2, y: qPlayer.position.y }],
+      },
+    )
+    expect(projectFrame(qDocument, 0).players.find((candidate) => candidate.id === qPlayer.id)?.position.x)
+      .toBeCloseTo(qPlayer.position.x + 2)
+  })
+
   it('treats an explicit move duration as an exact arrival contract', () => {
     const document = createDefaultDocument()
     document.actions.push(

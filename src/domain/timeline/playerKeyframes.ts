@@ -14,6 +14,7 @@ export interface PlayerActionKeyframe {
 }
 
 export function actionActorId(action: TacticAction | undefined): string | null {
+  if (action?.type === 'status') return action.targetId
   if (!action || !('actorId' in action)) return null
   return action.actorId ?? null
 }
@@ -84,7 +85,7 @@ function actionTypeLabel(type: TacticAction['type']): string {
     shoot: '射门',
     attack: '攻击',
     eZone: '冰圈',
-    status: '状态',
+    status: '挂冰',
     wait: '等待',
     annotation: '说明',
   }

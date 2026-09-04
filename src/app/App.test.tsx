@@ -35,11 +35,27 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: '跑动' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '攻击范围' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '打击范围' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '挂冰' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '冰圈' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument()
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '推演模式' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
+  })
+
+  it('adds source-free hang ice from a chosen player timeline', () => {
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: '挂冰' }))
+    expect(screen.getByRole('dialog', { name: '添加挂冰起始时间' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '红方 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '为红方 2添加挂冰' }))
+
+    const status = useTacticStore.getState().document.actions.find((action) => action.type === 'status')
+    expect(status).toMatchObject({ targetId: 'red-fire', status: 'slowed', startTime: 0, duration: 7 })
+    expect(status).not.toHaveProperty('actorId')
+    expect(screen.queryByRole('dialog', { name: '添加挂冰起始时间' })).not.toBeInTheDocument()
+    expect(screen.getByTitle('挂冰 0.00–7.00s；普通跑动减速，Q 不受影响')).toBeInTheDocument()
   })
 
   it('renders Q cooldowns as a compact lowercase q badge', () => {

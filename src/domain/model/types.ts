@@ -12,6 +12,7 @@ export type ToolId =
   | 'annotation'
   | 'attack'
   | 'strikeRange'
+  | 'slow'
   | 'eZone'
 
 export interface Vec2 {
@@ -135,7 +136,8 @@ export interface EZoneAction extends BaseAction {
 
 export interface StatusAction extends BaseAction {
   type: 'status'
-  actorId: string
+  /** Legacy imports may identify a source, but authored statuses belong only to their target. */
+  actorId?: string
   targetId: string
   status: StatusKind
   separationDelta?: number

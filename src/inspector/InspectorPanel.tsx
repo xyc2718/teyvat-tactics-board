@@ -13,7 +13,7 @@ import { projectedMovePath, projectFrameAtKeyframe } from '../domain/timeline/pr
 import { playerActionKeyframes } from '../domain/timeline/playerKeyframes'
 import { timelineDuration } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
-import { actionLabels, matchupLabel } from '../ui/labels'
+import { actionLabel, matchupLabel } from '../ui/labels'
 
 export function InspectorPanel() {
   const document = useTacticStore((state) => state.document)
@@ -69,7 +69,7 @@ export function InspectorPanel() {
   return (
     <aside id="inspector-panel" className="inspector-panel panel-surface">
       <div className="panel-heading inspector-heading">
-        <div><span className="eyebrow">检查器</span><h2>{selectedPlayer ? selectedPlayer.name : selectedAction ? actionLabels[selectedAction.type] : '战术提示'}</h2></div>
+        <div><span className="eyebrow">检查器</span><h2>{selectedPlayer ? selectedPlayer.name : selectedAction ? actionLabel(selectedAction) : '战术提示'}</h2></div>
         <span className="time-chip">{currentTime.toFixed(2)}s</span>
       </div>
 
@@ -141,7 +141,7 @@ export function InspectorPanel() {
       {selectedAction && (
         <div className="inspector-content">
           <section className="inspector-section">
-            <div className="action-kind"><span className={`action-dot type-${selectedAction.type}`} />{actionLabels[selectedAction.type]}</div>
+            <div className="action-kind"><span className={`action-dot type-${selectedAction.type}`} />{actionLabel(selectedAction)}</div>
             {showAdvancedTimeline
               ? <>
                   <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>

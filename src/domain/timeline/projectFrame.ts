@@ -66,6 +66,63 @@ function freezeWindowsFor(document: TacticDocumentV1, actorId: string, hitMap: I
   }).sort((left, right) => left.start - right.start)
 }
 
+function authoredSlowWindowsFor(
+  document: TacticDocumentV1,
+  playerId: string,
+): Array<{ id: string; sourceActionId: string; start: number; end: number }> {
+  const initial = document.initialScene.statuses
+    .filter((status) => status.playerId === playerId && status.kind === 'slowed' && status.endsAt > status.startsAt)
+    .map((status) => ({
+      id: status.id,
+      sourceActionId: status.sourceActionId,
+      start: status.startsAt,
+      end: status.endsAt,
+    }))
+  const authored = document.actions
+    .filter((action) => action.type === 'status' && action.status === 'slowed' && action.targetId === playerId && action.duration > 0)
+    .map((action) => ({
+      id: `${action.id}-status`,
+      sourceActionId: action.id,
+      start: action.startTime,
+      end: actionEndTime(action),
+    }))
+  return [...initial, ...authored].sort((left, right) => left.start - right.start || left.end - right.end)
+}
+
+function intervalUnionOverlap(
+  windows: Array<{ start: number; end: number }>,
+  startTime: number,
+  endTime: number,
+): number {
+  if (endTime <= startTime) return 0
+  let overlap = 0
+  let coveredUntil = startTime
+  for (const window of windows) {
+    const start = Math.max(startTime, window.start, coveredUntil)
+    const end = Math.min(endTime, window.end)
+    if (end <= start) continue
+    overlap += end - start
+    coveredUntil = end
+  }
+  return overlap
+}
+
+function isAuthoredSlowActiveAt(document: TacticDocumentV1, playerId: string, time: number): boolean {
+  return authoredSlowWindowsFor(document, playerId).some((window) => window.start <= time && window.end > time)
+}
+
+function authoredSlowLoss(
+  document: TacticDocumentV1,
+  playerId: string,
+  startTime: number,
+  endTime: number,
+): number {
+  const slow = document.rulesSnapshot.roles.ice.slow
+  if (!slow || slow.duration <= 0 || slow.fullSeparationLoss <= 0) return 0
+  const elapsed = intervalUnionOverlap(authoredSlowWindowsFor(document, playerId), startTime, endTime)
+  return elapsed * (slow.fullSeparationLoss / slow.duration)
+}
+
 function moveDistanceWithoutEZoneSlow(
   document: TacticDocumentV1,
   action: MoveAction,
@@ -75,26 +132,26 @@ function moveDistanceWithoutEZoneSlow(
   const effectiveTime = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   let traveled = clamp((effectiveTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1) * routeLength
 
-  // An explicit timing constraint is an authored arrival contract. It scales
-  // the route uniformly to reach the endpoint at that time instead of adding
-  // rule-derived boosts that could make the actor arrive early.
-  if (action.timingConstraint) return traveled
+  // An explicit timing constraint is an authored arrival contract. It omits
+  // optional acceleration, while gameplay control effects can still reduce
+  // how much of that authored route is completed.
+  if (!action.timingConstraint) {
+    const role = getActorRole(document, action.actorId)
+    const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
+    if (boostRule) {
+      traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
+    }
 
-  const role = getActorRole(document, action.actorId)
-  const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
-  if (boostRule) {
-    traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
+    const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, effectiveTime)
+    if (receiveWindow) {
+      const elapsed = Math.max(
+        0,
+        Math.min(effectiveTime, receiveWindow.end) - Math.max(action.startTime, receiveWindow.start),
+      )
+      traveled += (elapsed / receiveWindow.boost.duration) * receiveWindow.boost.netSeparationGain
+    }
   }
-
-  const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, effectiveTime)
-  if (receiveWindow) {
-    const elapsed = Math.max(
-      0,
-      Math.min(effectiveTime, receiveWindow.end) - Math.max(action.startTime, receiveWindow.start),
-    )
-    traveled += (elapsed / receiveWindow.boost.duration) * receiveWindow.boost.netSeparationGain
-  }
-  return traveled
+  return Math.max(0, traveled - authoredSlowLoss(document, action.actorId, action.startTime, effectiveTime))
 }
 
 function followMoveDistanceBudget(
@@ -134,7 +191,7 @@ function followMoveDistanceBudget(
         * receiveWindow.boost.netSeparationGain
     }
   }
-  return budget
+  return Math.max(0, budget - authoredSlowLoss(document, action.actorId, startTime, endTime))
 }
 
 function eZoneMultiplierAt(
@@ -187,9 +244,16 @@ export interface EZoneSlowSegment {
   path: PlayerState['position'][]
 }
 
+export interface StatusSlowSegment {
+  startTime: number
+  endTime: number
+  path: PlayerState['position'][]
+}
+
 interface EZoneMoveTrace {
   traveled: number
   segments: EZoneSlowSegment[]
+  statusSegments: StatusSlowSegment[]
 }
 
 interface FollowMoveTrace extends EZoneMoveTrace {
@@ -211,7 +275,7 @@ function traceFollowMove(
   const targetPlayerId = action.targetPlayerId
   if (!movingActor || !origin || !targetPlayerId || time <= action.startTime) {
     const position = { ...(origin ?? movingActor?.position ?? { x: 0, y: 0 }) }
-    return { traveled: 0, position, path: [position, { ...position }], segments: [] }
+    return { traveled: 0, position, path: [position, { ...position }], segments: [], statusSegments: [] }
   }
 
   let end = Math.min(time, actionEndTime(action))
@@ -222,7 +286,7 @@ function traceFollowMove(
     if (freeze) end = Math.min(end, freeze.start)
   }
   if (end <= action.startTime) {
-    return { traveled: 0, position: { ...origin }, path: [{ ...origin }, { ...origin }], segments: [] }
+    return { traveled: 0, position: { ...origin }, path: [{ ...origin }, { ...origin }], segments: [], statusSegments: [] }
   }
 
   const nextIgnored = new Set(ignoredActionIds)
@@ -231,6 +295,7 @@ function traceFollowMove(
   const gap = Math.max(0, action.followGap ?? document.rulesSnapshot.roles[movingActor.role].attackRadius)
   const path: PlayerState['position'][] = [{ ...origin }]
   const segments: EZoneSlowSegment[] = []
+  const statusSegments: StatusSlowSegment[] = []
   let position = { ...origin }
   let traveled = 0
   let fallbackUnit = { x: movingActor.team === 'blue' ? -1 : 1, y: 0 }
@@ -296,10 +361,19 @@ function traceFollowMove(
         segments.push({ startTime: stepStart, endTime: stepEnd, multiplier, path: [previous, { ...position }] })
       }
     }
+    if (isAuthoredSlowActiveAt(document, action.actorId, (stepStart + stepEnd) / 2) && distance(previous, position) > POSITION_EPSILON) {
+      const last = statusSegments.at(-1)
+      if (last && Math.abs(last.endTime - stepStart) <= POSITION_EPSILON) {
+        last.endTime = stepEnd
+        last.path.push({ ...position })
+      } else {
+        statusSegments.push({ startTime: stepStart, endTime: stepEnd, path: [previous, { ...position }] })
+      }
+    }
   }
 
   if (path.length === 1) path.push({ ...position })
-  return { traveled, position, path, segments }
+  return { traveled, position, path, segments, statusSegments }
 }
 
 function traceMoveWithEZoneSlow(
@@ -316,21 +390,18 @@ function traceMoveWithEZoneSlow(
   const route = resolvedMovePath(action)
   const routeLength = pathLength(route)
   const end = Math.min(Math.max(time, action.startTime), actionEndTime(action))
-  if (!movingActor || routeLength <= 0 || end <= action.startTime) return { traveled: 0, segments: [] }
-
-  // Fixed/keyframe timing is an explicit presentation contract and therefore
-  // takes precedence over automatic speed modifiers for this one move.
-  if (action.timingConstraint) {
-    return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [] }
-  }
+  if (!movingActor || routeLength <= 0 || end <= action.startTime) return { traveled: 0, segments: [], statusSegments: [] }
 
   const hasOverlappingEnemyZone = document.actions.some((candidate) => {
     if (candidate.type !== 'eZone') return false
     const owner = document.initialScene.players.find((player) => player.id === candidate.actorId)
     return owner?.team !== movingActor.team && candidate.startTime < end && actionEndTime(candidate) > action.startTime
   })
-  if (!hasOverlappingEnemyZone) {
-    return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [] }
+  const hasOverlappingSlow = authoredSlowWindowsFor(document, action.actorId).some(
+    (window) => window.start < end && window.end > action.startTime,
+  )
+  if ((!hasOverlappingEnemyZone || action.timingConstraint) && !hasOverlappingSlow) {
+    return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [], statusSegments: [] }
   }
 
   const steps = Math.max(1, Math.ceil((end - action.startTime) / E_ZONE_SAMPLE_SECONDS))
@@ -341,6 +412,12 @@ function traceMoveWithEZoneSlow(
     startTime: number
     endTime: number
     multiplier: number
+  }> = []
+  const sampledStatusSegments: Array<{
+    startDistance: number
+    endDistance: number
+    startTime: number
+    endTime: number
   }> = []
   for (let index = 0; index < steps; index += 1) {
     const stepStart = action.startTime + ((end - action.startTime) * index) / steps
@@ -353,15 +430,15 @@ function traceMoveWithEZoneSlow(
     const probeDistance = Math.min(routeLength, traveled + unslowedStep / 2)
     const probePosition = pointAlongPath(route, probeDistance / Math.max(routeLength, 0.0001))
     const probeTime = (stepStart + stepEnd) / 2
-    const multiplier = eZoneMultiplierAt(
-      document,
-      movingActor,
-      probePosition,
-      probeTime,
-      'move',
-      applyControlEffects,
-      hitMap,
-    )
+    const multiplier = action.timingConstraint ? 1 : eZoneMultiplierAt(
+        document,
+        movingActor,
+        probePosition,
+        probeTime,
+        'move',
+        applyControlEffects,
+        hitMap,
+      )
     const nextTraveled = traveled + unslowedStep * multiplier
     if (multiplier < 1 - 1e-6 && nextTraveled > traveled + 1e-6) {
       const previous = sampledSegments.at(-1)
@@ -378,6 +455,20 @@ function traceMoveWithEZoneSlow(
         })
       }
     }
+    if (isAuthoredSlowActiveAt(document, action.actorId, probeTime) && nextTraveled > traveled + 1e-6) {
+      const previous = sampledStatusSegments.at(-1)
+      if (previous && Math.abs(previous.endDistance - traveled) <= 1e-6 && Math.abs(previous.endTime - stepStart) <= 1e-6) {
+        previous.endDistance = nextTraveled
+        previous.endTime = stepEnd
+      } else {
+        sampledStatusSegments.push({
+          startDistance: traveled,
+          endDistance: nextTraveled,
+          startTime: stepStart,
+          endTime: stepEnd,
+        })
+      }
+    }
     traveled = nextTraveled
   }
   return {
@@ -386,6 +477,15 @@ function traceMoveWithEZoneSlow(
       startTime: segment.startTime,
       endTime: segment.endTime,
       multiplier: segment.multiplier,
+      path: slicePath(
+        route,
+        segment.startDistance / routeLength,
+        Math.min(segment.endDistance, routeLength) / routeLength,
+      ),
+    })),
+    statusSegments: sampledStatusSegments.map((segment) => ({
+      startTime: segment.startTime,
+      endTime: segment.endTime,
       path: slicePath(
         route,
         segment.startDistance / routeLength,
@@ -838,6 +938,30 @@ export function documentFreezeWindows(
   )
 }
 
+/** Returns authored target-only hang-ice intervals for timeline and editor UI. */
+export function documentSlowWindows(
+  document: TacticDocumentV1,
+  playerId?: string,
+): PlayerStatus[] {
+  const playerIds = playerId
+    ? [playerId]
+    : document.initialScene.players.map((player) => player.id)
+  return playerIds.flatMap((targetId) => authoredSlowWindowsFor(document, targetId).map((window) => {
+    const source = document.actions.find((action) => action.id === window.sourceActionId)
+    return {
+      id: window.id,
+      playerId: targetId,
+      kind: 'slowed' as const,
+      sourceActionId: window.sourceActionId,
+      startsAt: window.start,
+      endsAt: window.end,
+      separationDelta: source?.type === 'status' ? source.separationDelta : undefined,
+    }
+  })).sort(
+    (left, right) => left.startsAt - right.startsAt || left.endsAt - right.endsAt || left.playerId.localeCompare(right.playerId),
+  )
+}
+
 export interface QDistanceEffect {
   authoredDistance: number
   effectiveDistance: number
@@ -875,6 +999,19 @@ export function eZoneSlowSegmentsForMove(
   )
   const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
   return traceMoveWithEZoneSlow(document, action, end, true, hitMap).segments
+}
+
+/** Returns the portions of an ordinary run completed while target-only hang ice is active. */
+export function statusSlowSegmentsForMove(
+  document: TacticDocumentV1,
+  action: MoveAction,
+): StatusSlowSegment[] {
+  const hitMap = buildIceQHitMap(document)
+  const freeze = freezeWindowsFor(document, action.actorId, hitMap).find(
+    (window) => window.start < actionEndTime(action) && window.end > action.startTime,
+  )
+  const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
+  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).statusSegments
 }
 
 /** Shared formal route for both fixed-point and player-following moves. */

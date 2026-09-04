@@ -17,6 +17,7 @@ export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = 
   annotation: { label: '说明', shortcut: 'A' },
   attack: { label: '攻击范围', shortcut: 'K' },
   strikeRange: { label: '打击范围', shortcut: 'R' },
+  slow: { label: '挂冰', shortcut: 'G' },
   eZone: { label: '冰圈', shortcut: 'E' },
 }
 
@@ -32,6 +33,13 @@ export const actionLabels: Record<TacticAction['type'], string> = {
   status: '状态',
   wait: '等待',
   annotation: '说明',
+}
+
+export function actionLabel(action: TacticAction): string {
+  if (action.type !== 'status') return actionLabels[action.type]
+  if (action.status === 'slowed') return '挂冰'
+  if (action.status === 'frozen') return '冻结'
+  return '加速'
 }
 
 export function matchupLabel(rating: MatchupRating): string {

@@ -89,6 +89,23 @@ describe('tactic file boundary', () => {
     }
   })
 
+  it('round-trips a target-only hang-ice status without an applier', () => {
+    const source = createDefaultDocument()
+    source.actions.push({
+      id: 'target-only-slow', type: 'status', targetId: 'red-fire', status: 'slowed',
+      startTime: 1.25, duration: 7, separationDelta: -1.2,
+    })
+
+    const result = parseTactic(serializeTactic(source))
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.document.actions[0]).toMatchObject({
+        id: 'target-only-slow', targetId: 'red-fire', status: 'slowed', startTime: 1.25, duration: 7,
+      })
+      expect(result.document.actions[0]).not.toHaveProperty('actorId')
+    }
+  })
+
   it('round-trips fixed and other-player keyframe move timing constraints', () => {
     const source = createDefaultDocument()
     source.actions.push(

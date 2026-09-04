@@ -2,12 +2,12 @@ import { actionEndTime } from '../domain/timeline/durations'
 import type { MoveKeyframeReference, QMoveAction, TacticDocumentV1 } from '../domain/model/types'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { actionActorId, actionTimelineKeyframes } from '../domain/timeline/playerKeyframes'
-import { documentFreezeWindows } from '../domain/timeline/projectFrame'
+import { documentFreezeWindows, documentSlowWindows } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership, stepDuration } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { latestActorSequenceJoint } from '../editor/locomotionScheduling'
 import { useTacticStore } from '../editor/useTacticStore'
-import { actionLabels } from '../ui/labels'
+import { actionLabel } from '../ui/labels'
 
 const INSTANT_ACTION_EPSILON = 1e-6
 const SCRUBBER_SCALE = 10_000
@@ -26,6 +26,12 @@ function timePercent(time: number, duration: number): number {
 
 function sameTime(left: number, right: number): boolean {
   return Math.abs(left - right) <= INSTANT_ACTION_EPSILON
+}
+
+function timelineActionLabel(action: TacticDocumentV1['actions'][number]): string {
+  if (action.type === 'move' && action.targetPlayerId) return '贴身跟随'
+  if (action.type === 'status' && action.status === 'slowed') return '挂冰'
+  return actionLabel(action)
 }
 
 /**
@@ -127,6 +133,10 @@ export function TimelinePanel() {
   const trackFreezeWindows = trackPlayerId
     ? freezeWindows.filter((window) => window.playerId === trackPlayerId)
     : []
+  const slowWindows = documentSlowWindows(document)
+  const trackSlowWindows = trackPlayerId
+    ? slowWindows.filter((window) => window.playerId === trackPlayerId)
+    : []
   const continuationTime = trackPlayerId
     ? latestActorSequenceJoint(document, trackPlayerId)
     : null
@@ -210,7 +220,7 @@ export function TimelinePanel() {
               return times.map(({ edge, time }) => (
                 <i
                   key={`${action.id}-${edge}`}
-                  className={`team-${player.team}`}
+                  className={`team-${player.team} ${action.type === 'status' && action.status === 'slowed' ? 'status-slow' : ''}`}
                   data-timeline-action-id={action.id}
                   data-player-id={player.id}
                   data-timeline-edge={edge}
@@ -271,11 +281,23 @@ export function TimelinePanel() {
                 title={`冻结 ${window.startsAt.toFixed(2)}–${window.endsAt.toFixed(2)}s；期间不能安排跑动或 Q`}
               ><span>冻结</span></span>
             ))}
+            {trackSlowWindows.map((window) => (
+              <span
+                key={`${window.id}-${window.startsAt}-${window.endsAt}`}
+                className="player-track-slow-window"
+                data-slow-source-action-id={window.sourceActionId}
+                style={{
+                  left: `${timePercent(window.startsAt, sliderMax)}%`,
+                  width: `${Math.max(1.2, timePercent(window.endsAt - window.startsAt, sliderMax))}%`,
+                }}
+                title={`挂冰 ${window.startsAt.toFixed(2)}–${window.endsAt.toFixed(2)}s；普通跑动减速，Q 不受影响`}
+              ><span>挂冰</span></span>
+            ))}
             {trackActions.map((action) => {
               const instant = action.duration <= INSTANT_ACTION_EPSILON
               const width = instant ? 1.2 : Math.max(1.2, timePercent(action.duration, sliderMax))
               const actionSelected = selection?.kind === 'action' && selection.id === action.id
-              const actionLabel = action.type === 'move' && action.targetPlayerId ? '贴身跟随' : actionLabels[action.type]
+              const actionLabel = timelineActionLabel(action)
               return (
                 <button
                   key={action.id}
@@ -294,11 +316,15 @@ export function TimelinePanel() {
                 && Math.abs(time - continuationTime) <= INSTANT_ACTION_EPSILON
               const isFreezeStart = trackFreezeWindows.some((window) => Math.abs(time - window.startsAt) <= INSTANT_ACTION_EPSILON)
               const isFreezeEnd = trackFreezeWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
+              const isSlowStart = trackSlowWindows.some((window) => Math.abs(time - window.startsAt) <= INSTANT_ACTION_EPSILON)
+              const isSlowEnd = trackSlowWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
               const eventLabels = [
                 reference?.edge === 'start' ? 'Q 起点' : '',
                 reference?.edge === 'end' ? 'Q 终点' : '',
                 isFreezeStart ? '冻结' : '',
                 isFreezeEnd ? '解冻' : '',
+                isSlowStart ? '挂冰' : '',
+                isSlowEnd ? '挂冰结束' : '',
                 isContinuation ? '续接' : '',
               ].filter(Boolean)
               const eventSuffix = eventLabels.length > 0 ? ` · ${eventLabels.join(' · ')}` : ''
@@ -310,26 +336,30 @@ export function TimelinePanel() {
               )
               return <span
                 key={`track-keyframe-${key}`}
-                className={`player-track-keyframe-marker ${reference ? `instant-q-${reference.edge}` : ''} ${selectedEdge ? 'selected-edge' : ''} ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''} ${isFreezeStart ? 'freeze-start' : ''} ${isFreezeEnd ? 'freeze-end' : ''}`}
+                className={`player-track-keyframe-marker ${reference ? `instant-q-${reference.edge}` : ''} ${selectedEdge ? 'selected-edge' : ''} ${percent <= 3 ? 'near-start' : ''} ${percent >= 97 ? 'near-end' : ''} ${isContinuation ? 'continuation' : ''} ${isFreezeStart ? 'freeze-start' : ''} ${isFreezeEnd ? 'freeze-end' : ''} ${isSlowStart ? 'slow-start' : ''} ${isSlowEnd ? 'slow-end' : ''}`}
                 data-action-id={reference?.actionId}
                 data-edge={reference?.edge}
                 style={{
                   left: `${percent}%`,
                   transform: reference ? `translateX(${reference.edge === 'start' ? '-4px' : '4px'})` : undefined,
                 }}
-                title={isFreezeStart
-                  ? `${time.toFixed(2)}s 冻结开始`
-                  : isFreezeEnd
-                    ? `${time.toFixed(2)}s 冻结结束`
-                    : isContinuation
-                      ? `下一项个人动作从 ${time.toFixed(2)}s 继续`
-                      : `关键帧 ${time.toFixed(2)}s`}
+                title={isSlowStart
+                  ? `${time.toFixed(2)}s 挂冰开始`
+                  : isSlowEnd
+                    ? `${time.toFixed(2)}s 挂冰结束`
+                    : isFreezeStart
+                      ? `${time.toFixed(2)}s 冻结开始`
+                      : isFreezeEnd
+                        ? `${time.toFixed(2)}s 冻结结束`
+                        : isContinuation
+                          ? `下一项个人动作从 ${time.toFixed(2)}s 继续`
+                          : `关键帧 ${time.toFixed(2)}s`}
               >
                 <i aria-hidden="true" />
                 {trackPlayer && <b>{time.toFixed(2)}s{eventSuffix}</b>}
               </span>
             })}
-            {trackActions.length === 0 && trackFreezeWindows.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
+            {trackActions.length === 0 && trackFreezeWindows.length === 0 && trackSlowWindows.length === 0 && <span className="player-track-empty">{trackPlayer ? '该球员还没有动作' : '尚未添加动作'}</span>}
           </div>
           <small>{trackPlayer && continuationTime !== null
             ? `续编点 ${continuationTime.toFixed(2)}s · 跑动从此续接；Q 会先跳到不早于此处的最早可用起点；冻结区间内不能安排跑动或 Q`
@@ -405,11 +435,11 @@ export function TimelinePanel() {
           <div className="action-table">
             {trackActions.map((action) => (
               <div className={`action-row ${selection?.kind === 'action' && selection.id === action.id ? 'selected' : ''}`} key={action.id} data-timeline-action-id={action.id}>
-                <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{actionLabels[action.type]}</button>
+                <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{timelineActionLabel(action)}</button>
                 <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId)} title={action.type === 'receive' && action.sourceActionId ? '由对应传球自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
                 <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId)) || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'move' && (Boolean(action.targetPlayerId) || action.timingConstraint?.kind === 'keyframe'))} title={(action.type === 'receive' && action.sourceActionId) || (action.type === 'pass' && action.targetPlayerId) ? '由传球与接球队员轨迹自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
                 <div className="mini-track"><span style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${Math.max(timePercent(action.duration, sliderMax), 1.5)}%` }} /></div>
-                <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${actionLabels[action.type]}`}>×</button>
+                <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${timelineActionLabel(action)}`}>×</button>
               </div>
             ))}
           </div>

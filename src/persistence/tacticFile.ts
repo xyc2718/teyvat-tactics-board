@@ -108,7 +108,7 @@ const actionSchema = z.discriminatedUnion('type', [
   z.object({
     ...actionBase,
     type: z.literal('status'),
-    actorId: z.string(),
+    actorId: z.string().optional(),
     targetId: z.string(),
     status: z.enum(['frozen', 'slowed', 'boosted']),
     separationDelta: finiteNumber.optional(),

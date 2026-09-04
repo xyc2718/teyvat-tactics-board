@@ -4,6 +4,7 @@ import { createDefaultDocument } from '../domain/model/createDocument'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
 import { actionEndTime, documentDuration, passDuration } from '../domain/timeline/durations'
 import { projectFrame } from '../domain/timeline/projectFrame'
+import { playerActionKeyframes } from '../domain/timeline/playerKeyframes'
 import { getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from './useTacticStore'
@@ -33,6 +34,26 @@ describe('tactic store timeline edits', () => {
       past: [],
       future: [],
     })
+  })
+
+  it('creates a source-free hang-ice interval on the target track and refreshes without stacking', () => {
+    useTacticStore.getState().createSlowStatus('red-fire', 2)
+
+    let state = useTacticStore.getState()
+    let statuses = state.document.actions.filter((action) => action.type === 'status' && action.status === 'slowed')
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0]).toMatchObject({ targetId: 'red-fire', startTime: 2, duration: 7, separationDelta: -1.2 })
+    expect(statuses[0]).not.toHaveProperty('actorId')
+    expect(state.selection).toEqual({ kind: 'player', id: 'red-fire' })
+    expect(state.currentTime).toBe(2)
+    expect(playerActionKeyframes(state.document, 'red-fire').map((keyframe) => [keyframe.edge, keyframe.time]))
+      .toEqual([['start', 2], ['end', 9]])
+
+    useTacticStore.getState().createSlowStatus('red-fire', 4)
+    state = useTacticStore.getState()
+    statuses = state.document.actions.filter((action) => action.type === 'status' && action.status === 'slowed')
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0]).toMatchObject({ startTime: 2, duration: 9 })
   })
 
   it('resizes and locks an ordinary move to its fixed duration at base speed', () => {

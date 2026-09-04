@@ -115,6 +115,9 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
     }
     case 'status': {
       const target = startFrame.players.find((player) => player.id === action.targetId)?.name ?? action.targetId
+      if (action.status === 'slowed') {
+        return `${timing}，${target} 处于挂冰状态；普通跑动按冰减速规则累计损失身位，Q 位移不受影响。`
+      }
       return `${timing}，${target} 获得“${action.status}”状态${action.separationDelta === undefined ? '' : `，身位变化 ${action.separationDelta.toFixed(2)} 格`}。`
     }
     case 'wait':
@@ -145,7 +148,9 @@ export function buildTacticNarrative(document: TacticDocumentV1): TacticNarrativ
       id: `action-${action.id}`,
       time: action.startTime,
       kind: 'action' as const,
-      title: `${actionTitles[action.type]} · ${actorName(document, action)}`,
+      title: action.type === 'status' && action.status === 'slowed'
+        ? `挂冰 · ${document.initialScene.players.find((player) => player.id === action.targetId)?.name ?? action.targetId}`
+        : `${actionTitles[action.type]} · ${actorName(document, action)}`,
       detail: actionDetail(document, action),
     })),
   ].sort((left, right) => left.time - right.time || (
