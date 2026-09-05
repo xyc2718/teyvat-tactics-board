@@ -1,0 +1,445 @@
+{
+  "rulesSnapshot": {
+    "version": "teyvat-mvp-2",
+    "field": {
+      "width": 20,
+      "height": 14,
+      "baseMoveSpeed": 1,
+      "smallPenaltyRadius": 4,
+      "largePenaltyRadius": 7
+    },
+    "passing": {
+      "safeDistance": 4,
+      "maxDistance": 8,
+      "ballSpeed": 8,
+      "interceptStartWidth": 0.18,
+      "interceptEndWidth": 0.8
+    },
+    "shooting": {
+      "outerYellow": 0.8,
+      "outerRed": 1.6,
+      "innerYellow": 0.4,
+      "innerRed": 0.8,
+      "interruptedByAttack": true
+    },
+    "roles": {
+      "water": {
+        "id": "water",
+        "label": "水灵",
+        "shortLabel": "水",
+        "attackInnerRadius": 0.2,
+        "attackRadius": 1,
+        "q": {
+          "kind": "blink",
+          "maxDistance": 2.5,
+          "fixedDistance": false,
+          "cooldown": 7,
+          "duration": 0,
+          "turnable": true
+        },
+        "afterQBoost": {
+          "duration": 4.3,
+          "netSeparationGain": 0.8
+        }
+      },
+      "fire": {
+        "id": "fire",
+        "label": "蛮牛",
+        "shortLabel": "火",
+        "attackRadius": 1.5,
+        "q": {
+          "kind": "blink",
+          "maxDistance": 2.3,
+          "fixedDistance": true,
+          "cooldown": 9,
+          "duration": 0,
+          "turnable": false
+        }
+      },
+      "ice": {
+        "id": "ice",
+        "label": "霜役",
+        "shortLabel": "冰",
+        "attackRadius": 0.5,
+        "q": {
+          "kind": "dash",
+          "maxDistance": 3,
+          "fixedDistance": false,
+          "cooldown": 7,
+          "duration": 1,
+          "turnable": false,
+          "freezeDuration": 1.75,
+          "facingKnockback": 0.45
+        },
+        "receiveBoost": {
+          "duration": 4.3,
+          "netSeparationGain": 0.8,
+          "transfersOnPass": true
+        },
+        "slow": {
+          "duration": 7,
+          "fullSeparationLoss": 1.2,
+          "effectiveDuration": 4.5,
+          "effectiveSeparationLoss": 0.77
+        },
+        "e": {
+          "radius": 2,
+          "duration": 5,
+          "cooldown": 10,
+          "slowMultiplier": 0.5,
+          "qDistanceMultiplier": 0.7
+        }
+      }
+    },
+    "matchups": {
+      "water": {
+        "water": 1,
+        "fire": -2,
+        "ice": 1
+      },
+      "fire": {
+        "water": 0,
+        "fire": 0,
+        "ice": 1
+      },
+      "ice": {
+        "water": -1,
+        "fire": 0,
+        "ice": 1
+      }
+    },
+    "modifiers": [
+      {
+        "id": "defender-q-down",
+        "label": "防守方 Q 冷却中",
+        "condition": "defenderQUnavailable",
+        "delta": 1,
+        "enabled": true
+      },
+      {
+        "id": "attacker-q-down",
+        "label": "进攻方 Q 冷却中",
+        "condition": "attackerQUnavailable",
+        "delta": -1,
+        "enabled": true
+      },
+      {
+        "id": "inner-zone",
+        "label": "进攻方位于小禁区",
+        "condition": "innerZone",
+        "delta": 1,
+        "enabled": true
+      },
+      {
+        "id": "defender-controlled",
+        "label": "防守方受控",
+        "condition": "defenderControlled",
+        "delta": 2,
+        "enabled": true
+      },
+      {
+        "id": "attacker-controlled",
+        "label": "进攻方受控",
+        "condition": "attackerControlled",
+        "delta": -2,
+        "enabled": true
+      },
+      {
+        "id": "separation",
+        "label": "进攻方身位领先",
+        "condition": "separationAdvantage",
+        "delta": 1,
+        "enabled": true
+      },
+      {
+        "id": "long-pass",
+        "label": "接球来自风险传球",
+        "condition": "longPass",
+        "delta": -1,
+        "enabled": true
+      },
+      {
+        "id": "bad-facing",
+        "label": "冰背面向利于摆脱",
+        "condition": "badFacing",
+        "delta": 1,
+        "enabled": true
+      }
+    ]
+  },
+  "initialScene": {
+    "players": [
+      {
+        "id": "blue-water",
+        "name": "蓝方 1",
+        "team": "blue",
+        "role": "water",
+        "position": {
+          "x": 8.5430285847153,
+          "y": 5.204318824686251
+        },
+        "facing": 0,
+        "hasBall": false
+      },
+      {
+        "id": "blue-fire",
+        "name": "蓝方 2",
+        "team": "blue",
+        "role": "fire",
+        "position": {
+          "x": 3.339214701202827,
+          "y": 7.409324548996455
+        },
+        "facing": 0,
+        "hasBall": true
+      },
+      {
+        "id": "blue-ice",
+        "name": "蓝方 3",
+        "team": "blue",
+        "role": "ice",
+        "position": {
+          "x": 14.871964351304499,
+          "y": 3.9315193201646053
+        },
+        "facing": 0,
+        "hasBall": false
+      },
+      {
+        "id": "red-water",
+        "name": "红方 1",
+        "team": "red",
+        "role": "water",
+        "position": {
+          "x": 4.353520514578811,
+          "y": 7.607775157719471
+        },
+        "facing": 180,
+        "hasBall": false
+      },
+      {
+        "id": "red-fire",
+        "name": "红方 2",
+        "team": "red",
+        "role": "fire",
+        "position": {
+          "x": 14.871964351304499,
+          "y": 4.146538605900734
+        },
+        "facing": 180,
+        "hasBall": false
+      },
+      {
+        "id": "red-ice",
+        "name": "红方 3",
+        "team": "red",
+        "role": "ice",
+        "position": {
+          "x": 9.22658307176927,
+          "y": 4.542817107393189
+        },
+        "facing": 180,
+        "hasBall": false
+      }
+    ],
+    "ball": {
+      "position": {
+        "x": 3.339214701202827,
+        "y": 7.409324548996455
+      },
+      "carrierId": "blue-fire",
+      "isFree": false
+    },
+    "statuses": []
+  },
+  "actions": [
+    {
+      "id": "zone-7bdc1d76-c43c-4ccf-89b9-de105a552ac0",
+      "startTime": 0,
+      "duration": 5,
+      "type": "eZone",
+      "actorId": "red-ice",
+      "center": {
+        "x": 9.22658307176927,
+        "y": 4.542817107393189
+      },
+      "radius": 2
+    },
+    {
+      "id": "slow-8d7c349e-fb8c-4760-88c3-3f53e93022d9",
+      "startTime": 0,
+      "duration": 7,
+      "type": "status",
+      "targetId": "blue-water",
+      "status": "slowed",
+      "separationDelta": -1.2
+    },
+    {
+      "id": "q-cb510db9-8067-4c32-b3ad-91283ec2eaea",
+      "startTime": 0,
+      "duration": 0,
+      "type": "qMove",
+      "actorId": "blue-water",
+      "path": [
+        {
+          "x": 8.5430285847153,
+          "y": 5.204318824686251
+        },
+        {
+          "x": 8.565079483774273,
+          "y": 6.49424778138585
+        },
+        {
+          "x": 8.585758995780516,
+          "y": 7.703953620405457
+        }
+      ]
+    },
+    {
+      "id": "q-9389ccb6-076c-4a15-b4a1-928a7330d59b",
+      "startTime": 0,
+      "duration": 0,
+      "type": "qMove",
+      "actorId": "blue-fire",
+      "path": [
+        {
+          "x": 3.339214701202827,
+          "y": 7.409324548996455
+        },
+        {
+          "x": 5.531797875682411,
+          "y": 8.1040036281323
+        }
+      ]
+    },
+    {
+      "id": "pass-27cd790e-3a81-405e-89e5-eff3e94110d2",
+      "startTime": 0,
+      "duration": 0.220941991144055,
+      "type": "pass",
+      "actorId": "blue-fire",
+      "targetPlayerId": "blue-water",
+      "originKeyframe": {
+        "playerId": "blue-fire",
+        "actionId": "q-9389ccb6-076c-4a15-b4a1-928a7330d59b",
+        "edge": "end"
+      },
+      "path": [
+        {
+          "x": 5.531797875682411,
+          "y": 8.1040036281323
+        },
+        {
+          "x": 8.579349434120735,
+          "y": 7.329008401047576
+        }
+      ]
+    },
+    {
+      "id": "receive-2db2885e-53e9-4250-a9da-62e5aaf4726e",
+      "startTime": 0.220941991144055,
+      "duration": 0,
+      "type": "receive",
+      "actorId": "blue-water",
+      "sourceActionId": "pass-27cd790e-3a81-405e-89e5-eff3e94110d2"
+    },
+    {
+      "id": "q-9a34cbbf-a902-4a09-ba73-de1f73c70340",
+      "startTime": 0,
+      "duration": 1,
+      "type": "qMove",
+      "actorId": "red-ice",
+      "path": [
+        {
+          "x": 9.22658307176927,
+          "y": 4.542817107393189
+        },
+        {
+          "x": 9.049696014578394,
+          "y": 7.537597728573704
+        }
+      ]
+    },
+    {
+      "id": "zone-763fddaf-92d8-4f9c-9ca3-d2ab92fe4bc3",
+      "startTime": 0,
+      "duration": 5,
+      "type": "eZone",
+      "actorId": "blue-ice",
+      "center": {
+        "x": 14.871964351304499,
+        "y": 3.9315193201646053
+      },
+      "radius": 2
+    },
+    {
+      "id": "slow-a8849d0d-92b8-4beb-9f2a-1e92051922b5",
+      "startTime": 0,
+      "duration": 7,
+      "type": "status",
+      "targetId": "red-fire",
+      "status": "slowed",
+      "separationDelta": -1.2
+    },
+    {
+      "id": "q-34e8098c-8607-46f1-8f1e-db2e3c3f9ba1",
+      "startTime": 0,
+      "duration": 1,
+      "type": "qMove",
+      "actorId": "blue-ice",
+      "path": [
+        {
+          "x": 14.871964351304499,
+          "y": 3.9315193201646053
+        },
+        {
+          "x": 14.918833412903377,
+          "y": 6.931153179665602
+        }
+      ]
+    },
+    {
+      "id": "pass-eab6ffff-deb7-4c7d-8fa3-13be15cd06c9",
+      "startTime": 0.939835438512959,
+      "duration": 0.6126393803299361,
+      "type": "pass",
+      "actorId": "blue-water",
+      "targetPlayerId": "blue-ice",
+      "path": [
+        {
+          "x": 8.129349434120735,
+          "y": 7.329008401047576
+        },
+        {
+          "x": 14.927206668855733,
+          "y": 7.483564542727782
+        }
+      ]
+    },
+    {
+      "id": "receive-fe3525c7-f378-400b-839c-6c474508ea45",
+      "startTime": 1.5524748188428952,
+      "duration": 0,
+      "type": "receive",
+      "actorId": "blue-ice",
+      "sourceActionId": "pass-eab6ffff-deb7-4c7d-8fa3-13be15cd06c9"
+    },
+    {
+      "id": "move-c5d7290c-e0c8-4aa2-aec3-db4ee1d116e4",
+      "startTime": 1,
+      "duration": 4.789391348529458,
+      "type": "move",
+      "actorId": "blue-ice",
+      "path": [
+        {
+          "x": 14.918833412903377,
+          "y": 6.931153179665602
+        },
+        {
+          "x": 14.99142097390975,
+          "y": 11.719994431508887
+        }
+      ]
+    }
+  ]
+}

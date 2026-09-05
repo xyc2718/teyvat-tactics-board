@@ -213,15 +213,19 @@ function eZoneMultiplierAt(
   )
   if (activeZones.length === 0) return 1
 
-  // Resolve moving zone centers without E effects to avoid recursive zone-to-zone projection.
-  const centerFrame = projectSceneCore(document, time, false, applyControlEffects, hitMap, false, ignoredActionIds)
   let multiplier = 1
   for (const zone of activeZones) {
-    const owner = centerFrame.players.find((player) => player.id === zone.actorId)
+    const owner = document.initialScene.players.find((player) => player.id === zone.actorId)
     if (!owner || owner.team === movingActor.team) continue
     const eRule = document.rulesSnapshot.roles[owner.role].e
     const configured = effect === 'move' ? eRule?.slowMultiplier : eRule?.qDistanceMultiplier
-    if (configured === undefined || distance(position, owner.position) > zone.radius) continue
+    if (configured === undefined || configured >= multiplier) continue
+    // Only the opposing circle's owner is needed. Projecting the entire scene
+    // here would also replay every unrelated chase for every distance sample.
+    const center = projectSceneCore(
+      document, time, false, applyControlEffects, hitMap, false, ignoredActionIds, owner.id,
+    ).players[0]?.position
+    if (!center || distance(position, center) > zone.radius) continue
     multiplier = Math.min(multiplier, configured)
   }
   return multiplier
@@ -262,6 +266,54 @@ interface FollowMoveTrace extends EZoneMoveTrace {
   path: PlayerState['position'][]
 }
 
+interface FollowMoveTimeline extends FollowMoveTrace {
+  samples: Array<{ time: number; position: PlayerState['position']; traveled: number }>
+}
+
+interface ProjectionMemo {
+  hitCount: number
+  frames: Map<string, ProjectedFrame>
+  followTraces: Map<string, FollowMoveTimeline>
+  moveTraces: Map<string, EZoneMoveTrace>
+  qDistances: Map<string, number>
+}
+
+// The hit map belongs to one validated document signature. A document edit
+// (including in-place edits during reflow) creates a new map and drops all of
+// its derived results. During hit discovery each new hit-map stage is isolated.
+const projectionMemos = new WeakMap<IceQHitMap, ProjectionMemo>()
+
+function projectionMemo(hitMap: IceQHitMap): ProjectionMemo {
+  let memo = projectionMemos.get(hitMap)
+  if (!memo || memo.hitCount !== hitMap.size) {
+    memo = {
+      hitCount: hitMap.size,
+      frames: new Map(),
+      followTraces: new Map(),
+      moveTraces: new Map(),
+      qDistances: new Map(),
+    }
+    projectionMemos.set(hitMap, memo)
+  }
+  return memo
+}
+
+function memoized<T>(cache: Map<string, T>, key: string, limit: number, calculate: () => T): T {
+  const cached = cache.get(key)
+  if (cached !== undefined) {
+    cache.delete(key)
+    cache.set(key, cached)
+    return cached
+  }
+  const result = calculate()
+  if (cache.size >= limit) {
+    const oldest = cache.keys().next()
+    if (!oldest.done) cache.delete(oldest.value)
+  }
+  cache.set(key, result)
+  return result
+}
+
 function traceFollowMove(
   document: TacticDocumentV1,
   action: MoveAction,
@@ -271,12 +323,66 @@ function traceFollowMove(
   applyEZoneEffects: boolean,
   ignoredActionIds: ReadonlySet<string>,
 ): FollowMoveTrace {
+  const origin = action.path[0]
+  if (time <= action.startTime && origin) {
+    return { position: origin, traveled: 0, path: [origin, origin], segments: [], statusSegments: [] }
+  }
+  const key = JSON.stringify([action, applyControlEffects, applyEZoneEffects, [...ignoredActionIds].sort()])
+  const full = memoized(projectionMemo(hitMap).followTraces, key, 128, () => computeFollowMove(
+    document, action, actionEndTime(action), applyControlEffects, hitMap, applyEZoneEffects, ignoredActionIds,
+  ))
+  const last = full.samples.at(-1)
+  if (!last || time >= last.time) return full
+
+  // Integrate once on an action-anchored grid, then read the same trajectory
+  // at any playhead time. Scrubbing no longer restarts the chase simulation.
+  let low = 0
+  let high = full.samples.length - 1
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2)
+    if (full.samples[middle]!.time <= time) low = middle
+    else high = middle
+  }
+  const start = full.samples[low]!
+  const end = full.samples[high]!
+  const progress = clamp((time - start.time) / Math.max(end.time - start.time, POSITION_EPSILON), 0, 1)
+  const position = {
+    x: start.position.x + (end.position.x - start.position.x) * progress,
+    y: start.position.y + (end.position.y - start.position.y) * progress,
+  }
+  const traveled = start.traveled + (end.traveled - start.traveled) * progress
+  return {
+    position,
+    traveled,
+    path: full.traveled > POSITION_EPSILON ? slicePath(full.path, 0, traveled / full.traveled) : full.path,
+    segments: full.segments.filter((segment) => segment.startTime < time).map((segment) => ({
+      ...segment,
+      endTime: Math.min(time, segment.endTime),
+      path: time >= segment.endTime ? segment.path : slicePath(segment.path, 0, (time - segment.startTime) / (segment.endTime - segment.startTime)),
+    })),
+    statusSegments: full.statusSegments.filter((segment) => segment.startTime < time).map((segment) => ({
+      ...segment,
+      endTime: Math.min(time, segment.endTime),
+      path: time >= segment.endTime ? segment.path : slicePath(segment.path, 0, (time - segment.startTime) / (segment.endTime - segment.startTime)),
+    })),
+  }
+}
+
+function computeFollowMove(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  time: number,
+  applyControlEffects: boolean,
+  hitMap: IceQHitMap,
+  applyEZoneEffects: boolean,
+  ignoredActionIds: ReadonlySet<string>,
+): FollowMoveTimeline {
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
   const origin = action.path[0]
   const targetPlayerId = action.targetPlayerId
   if (!movingActor || !origin || !targetPlayerId || time <= action.startTime) {
     const position = { ...(origin ?? movingActor?.position ?? { x: 0, y: 0 }) }
-    return { traveled: 0, position, path: [position, { ...position }], segments: [], statusSegments: [] }
+    return { traveled: 0, position, path: [position, { ...position }], segments: [], statusSegments: [], samples: [] }
   }
 
   let end = Math.min(time, actionEndTime(action))
@@ -287,7 +393,7 @@ function traceFollowMove(
     if (freeze) end = Math.min(end, freeze.start)
   }
   if (end <= action.startTime) {
-    return { traveled: 0, position: { ...origin }, path: [{ ...origin }, { ...origin }], segments: [], statusSegments: [] }
+    return { traveled: 0, position: { ...origin }, path: [{ ...origin }, { ...origin }], segments: [], statusSegments: [], samples: [] }
   }
 
   const nextIgnored = new Set(ignoredActionIds)
@@ -300,6 +406,7 @@ function traceFollowMove(
   let position = { ...origin }
   let traveled = 0
   let fallbackUnit = { x: movingActor.team === 'blue' ? -1 : 1, y: 0 }
+  const samples: FollowMoveTimeline['samples'] = [{ time: action.startTime, position: { ...origin }, traveled: 0 }]
 
   for (let index = 0; index < steps; index += 1) {
     const stepStart = action.startTime + ((end - action.startTime) * index) / steps
@@ -312,6 +419,7 @@ function traceFollowMove(
       hitMap,
       applyEZoneEffects,
       nextIgnored,
+      targetPlayerId,
     )
     const target = targetFrame.players.find((player) => player.id === targetPlayerId)
     if (!target) continue
@@ -353,6 +461,7 @@ function traceFollowMove(
       traveled += distance(previous, position)
       path.push({ ...position })
     }
+    samples.push({ time: stepEnd, position: { ...position }, traveled })
     if (multiplier < 1 - POSITION_EPSILON && distance(previous, position) > POSITION_EPSILON) {
       const last = segments.at(-1)
       if (last && Math.abs(last.endTime - stepStart) <= POSITION_EPSILON && Math.abs(last.multiplier - multiplier) <= POSITION_EPSILON) {
@@ -374,10 +483,24 @@ function traceFollowMove(
   }
 
   if (path.length === 1) path.push({ ...position })
-  return { traveled, position, path, segments, statusSegments }
+  return { traveled, position, path, segments, statusSegments, samples }
 }
 
 function traceMoveWithEZoneSlow(
+  document: TacticDocumentV1,
+  action: MoveAction,
+  time: number,
+  applyControlEffects: boolean,
+  hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
+): EZoneMoveTrace {
+  const key = JSON.stringify([action, time, applyControlEffects, [...ignoredActionIds].sort()])
+  return memoized(projectionMemo(hitMap).moveTraces, key, 128, () => computeMoveWithEZoneSlow(
+    document, action, time, applyControlEffects, hitMap, ignoredActionIds,
+  ))
+}
+
+function computeMoveWithEZoneSlow(
   document: TacticDocumentV1,
   action: MoveAction,
   time: number,
@@ -504,6 +627,24 @@ function qDistanceWithEZoneEffect(
   time: number,
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
+): number {
+  const role = getActorRole(document, action.actorId)
+  const q = role ? document.rulesSnapshot.roles[role].q : undefined
+  const sampleTime = q?.kind === 'blink' && time >= action.startTime ? action.startTime : time
+  const key = JSON.stringify([action, sampleTime, applyControlEffects, [...ignoredActionIds].sort()])
+  return memoized(projectionMemo(hitMap).qDistances, key, 128, () => computeQDistanceWithEZoneEffect(
+    document, action, sampleTime, applyControlEffects, hitMap, ignoredActionIds,
+  ))
+}
+
+function computeQDistanceWithEZoneEffect(
+  document: TacticDocumentV1,
+  action: QMoveAction,
+  time: number,
+  applyControlEffects: boolean,
+  hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string>,
 ): number {
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
   const routeLength = pathLength(action.path)
@@ -542,6 +683,7 @@ function qDistanceWithEZoneEffect(
       'qMove',
       applyControlEffects,
       priorHitMap,
+      ignoredActionIds,
     )
   }
   return traveled
@@ -584,7 +726,7 @@ function movementProgress(
       : effectiveTime >= action.startTime ? 1 : 0
     if (applyControlEffects && applyEZoneEffects) {
       return clamp(
-        qDistanceWithEZoneEffect(document, action, effectiveTime, applyControlEffects, hitMap) /
+        qDistanceWithEZoneEffect(document, action, effectiveTime, applyControlEffects, hitMap, ignoredActionIds) /
           Math.max(pathLength(action.path), 0.0001),
         0,
         1,
@@ -635,10 +777,33 @@ function projectSceneCore(
   hitMap: IceQHitMap = new Map(),
   applyEZoneEffects = true,
   ignoredActionIds: ReadonlySet<string> = new Set(),
+  positionOnlyPlayerId?: string,
+): ProjectedFrame {
+  const key = JSON.stringify([
+    Math.max(0, rawTime), includeShots, applyControlEffects, applyEZoneEffects,
+    [...ignoredActionIds].sort(), positionOnlyPlayerId,
+  ])
+  return memoized(projectionMemo(hitMap).frames, key, 1024, () => computeSceneCore(
+    document, rawTime, includeShots, applyControlEffects, hitMap,
+    applyEZoneEffects, ignoredActionIds, positionOnlyPlayerId,
+  ))
+}
+
+function computeSceneCore(
+  document: TacticDocumentV1,
+  rawTime: number,
+  includeShots: boolean,
+  applyControlEffects = true,
+  hitMap: IceQHitMap = new Map(),
+  applyEZoneEffects = true,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
+  positionOnlyPlayerId?: string,
 ): ProjectedFrame {
   const time = Math.max(0, rawTime)
   const rules = document.rulesSnapshot
-  const players = clonePlayers(document.initialScene.players)
+  const players = clonePlayers(positionOnlyPlayerId
+    ? document.initialScene.players.filter((player) => player.id === positionOnlyPlayerId)
+    : document.initialScene.players)
   const ball = { ...document.initialScene.ball, position: { ...document.initialScene.ball.position } }
   const statuses = document.initialScene.statuses.map((status) => ({ ...status }))
   const cooldowns = Object.fromEntries(players.map((player) => [player.id, { q: 0, e: 0 }]))
@@ -658,6 +823,9 @@ function projectSceneCore(
   for (const action of ordered) {
     if (ignoredActionIds.has(action.id)) continue
     if (action.startTime > time) continue
+    if (positionOnlyPlayerId && (
+      (action.type !== 'move' && action.type !== 'qMove') || action.actorId !== positionOnlyPlayerId
+    )) continue
     const actor = 'actorId' in action
       ? players.find((player) => player.id === action.actorId)
       : undefined
@@ -840,7 +1008,7 @@ function projectSceneCore(
     }
   }
 
-  if (applyControlEffects) for (const zone of ordered.filter((action): action is EZoneAction => action.type === 'eZone')) {
+  if (applyControlEffects && !positionOnlyPlayerId) for (const zone of ordered.filter((action): action is EZoneAction => action.type === 'eZone')) {
     if (time < zone.startTime || time >= actionEndTime(zone)) continue
     const owner = players.find((player) => player.id === zone.actorId)
     const eRule = owner ? rules.roles[owner.role].e : undefined
@@ -1010,7 +1178,9 @@ export function eZoneSlowSegmentsForMove(
     (window) => window.start < actionEndTime(action) && window.end > action.startTime,
   )
   const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
-  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).segments
+  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).segments.map((segment) => ({
+    ...segment, path: segment.path.map((point) => ({ ...point })),
+  }))
 }
 
 /** Returns the portions of an ordinary run completed while target-only hang ice is active. */
@@ -1023,14 +1193,16 @@ export function statusSlowSegmentsForMove(
     (window) => window.start < actionEndTime(action) && window.end > action.startTime,
   )
   const end = freeze ? Math.min(actionEndTime(action), freeze.start) : actionEndTime(action)
-  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).statusSegments
+  return traceMoveWithEZoneSlow(document, action, end, true, hitMap).statusSegments.map((segment) => ({
+    ...segment, path: segment.path.map((point) => ({ ...point })),
+  }))
 }
 
 /** Shared formal route for both fixed-point and player-following moves. */
 export function projectedMovePath(document: TacticDocumentV1, action: MoveAction): PlayerState['position'][] {
   if (!action.targetPlayerId || !action.syncActionId) return resolvedMovePath(action)
   const hitMap = buildIceQHitMap(document)
-  return traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set()).path
+  return traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set()).path.map((point) => ({ ...point }))
 }
 
 export function projectedMovePathSegment(
@@ -1049,7 +1221,7 @@ export function projectedMovePathSegment(
   }
   const hitMap = buildIceQHitMap(document)
   const full = traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set())
-  if (full.traveled <= POSITION_EPSILON) return full.path
+  if (full.traveled <= POSITION_EPSILON) return full.path.map((point) => ({ ...point }))
   const start = traceFollowMove(document, action, startTime, true, hitMap, true, new Set())
   const end = traceFollowMove(document, action, endTime, true, hitMap, true, new Set())
   return slicePath(
@@ -1078,9 +1250,8 @@ export function doesEZoneSlowMove(
   const steps = Math.max(1, Math.ceil((end - start) / E_ZONE_SAMPLE_SECONDS))
   for (let index = 0; index <= steps; index += 1) {
     const sampleTime = start + ((end - start) * index) / steps
-    const frame = projectSceneCore(document, sampleTime, false, true, hitMap)
-    const projectedOwner = frame.players.find((player) => player.id === owner.id)
-    const projectedRunner = frame.players.find((player) => player.id === runner.id)
+    const projectedOwner = projectSceneCore(document, sampleTime, false, true, hitMap, true, new Set(), owner.id).players[0]
+    const projectedRunner = projectSceneCore(document, sampleTime, false, true, hitMap, true, new Set(), runner.id).players[0]
     if (projectedOwner && projectedRunner && distance(projectedOwner.position, projectedRunner.position) <= zone.radius) {
       return true
     }
@@ -1096,7 +1267,25 @@ export function doesIceQHit(document: TacticDocumentV1, action: QMoveAction): bo
 
 export function projectFrame(document: TacticDocumentV1, time: number): ProjectedFrame {
   const hitMap = buildIceQHitMap(document)
-  return projectSceneCore(document, time, true, true, hitMap)
+  const frame = projectSceneCore(document, time, true, true, hitMap)
+  // Callers own their frame (drag previews and instant-Q edges edit it).
+  // Never expose mutable references into the internal projection cache.
+  return {
+    ...frame,
+    players: clonePlayers(frame.players),
+    ball: { ...frame.ball, position: { ...frame.ball.position } },
+    statuses: frame.statuses.map((status) => ({ ...status })),
+    cooldowns: Object.fromEntries(Object.entries(frame.cooldowns).map(([id, value]) => [id, { ...value }])),
+    shots: frame.shots.map((shot) => ({ ...shot })),
+  }
+}
+
+/** Position queries share the full projection's movement and knockback rules,
+ * but do not evaluate unrelated players, possession, or shooting. */
+export function projectPlayerPosition(document: TacticDocumentV1, playerId: string, time: number): PlayerState['position'] | undefined {
+  const hitMap = buildIceQHitMap(document)
+  const position = projectSceneCore(document, time, false, true, hitMap, true, new Set(), playerId).players[0]?.position
+  return position ? { ...position } : undefined
 }
 
 /**

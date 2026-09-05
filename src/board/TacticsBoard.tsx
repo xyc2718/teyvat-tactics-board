@@ -75,6 +75,49 @@ type DragState =
   | { kind: 'viewport'; clientX: number; clientY: number; scrollLeft: number; scrollTop: number }
   | null
 
+function previewActionPath(action: TacticAction, drag: DragState): Vec2[] | null {
+  const path = actionPath(action)
+  if (!path) return null
+  if (drag?.kind === 'path' && drag.actionId === action.id) {
+    return path.map((point, index) => index === drag.index ? drag.point : point)
+  }
+  if (action.type === 'pass' && drag?.kind === 'entity' && drag.id !== 'ball') {
+    return action.actorId === drag.id
+      ? path.map((point, index) => index === 0 ? drag.point : point)
+      : path
+  }
+  if (action.type === 'shoot' && drag?.kind === 'entity' && drag.id === action.actorId) {
+    return path.map((point, index) => index === 0 ? drag.point : point)
+  }
+  return path
+}
+function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, drag: DragState) {
+  const path = previewActionPath(action, drag)
+  if (!path) return null
+  const qAction = action.type === 'qMove' ? { ...action, path } : null
+  const qEffect = qAction ? evaluateQDistanceEffect(document, qAction) : null
+  const moveAction = action.type === 'move'
+    ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
+    : null
+  const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? projectedMovePath(document, moveAction) : path
+  const rawWaterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
+  const waterBoost = rawWaterBoost && moveAction?.targetPlayerId
+    ? { ...rawWaterBoost, path: projectedMovePathSegment(document, moveAction, rawWaterBoost.overlapStart, rawWaterBoost.overlapEnd) }
+    : rawWaterBoost
+  const rawReceiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
+  const receiveBoost = rawReceiveBoost && moveAction?.targetPlayerId
+    ? { ...rawReceiveBoost, path: projectedMovePathSegment(document, moveAction, rawReceiveBoost.overlapStart, rawReceiveBoost.overlapEnd) }
+    : rawReceiveBoost
+  const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
+  const statusSlowSegments = moveAction ? statusSlowSegmentsForMove(document, moveAction) : []
+  const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
+  return {
+    path, qEffect, moveAction, renderedPath, waterBoost, receiveBoost,
+    eZoneSlowSegments, statusSlowSegments, shotPressure,
+    passFrame: action.type === 'pass' ? projectFrame(document, action.startTime) : null,
+  }
+}
+
 export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { initialZoom?: number; touchOptimized?: boolean }) {
   const svgRef = useRef<SVGSVGElement>(null)
   const boardViewportRef = useRef<HTMLDivElement>(null)
@@ -108,6 +151,9 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     [activeStepId, boardMode, currentKeyframe, currentTime, document, isPlaying],
   )
   const rules = document.rulesSnapshot
+  const actionGeometry = useMemo(() => new Map(boardMode === 'basic' ? [] : document.actions.map((action) => (
+    [action.id, deriveActionGeometry(document, action, drag)] as const
+  ))), [boardMode, document, drag])
   const fieldWidth = rules.field.width * SCALE
   const fieldHeight = rules.field.height * SCALE
   const fieldCenterX = fieldWidth / 2
@@ -298,24 +344,6 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   function onLostPointerCapture() {
     setDrag(null)
   }
-
-  function previewPath(action: TacticAction): Vec2[] | null {
-    const path = actionPath(action)
-    if (!path) return null
-    if (drag?.kind === 'path' && drag.actionId === action.id) {
-      return path.map((point, index) => index === drag.index ? drag.point : point)
-    }
-    if (action.type === 'pass' && drag?.kind === 'entity' && drag.id !== 'ball') {
-      return action.actorId === drag.id
-        ? path.map((point, index) => index === 0 ? drag.point : point)
-        : path
-    }
-    if (action.type === 'shoot' && drag?.kind === 'entity' && drag.id === action.actorId) {
-      return path.map((point, index) => index === 0 ? drag.point : point)
-    }
-    return path
-  }
-
   function renderAction(action: TacticAction, elevated: boolean) {
     const isSelected = selection?.kind === 'action' && selection.id === action.id
     if (action.type === 'eZone') {
@@ -335,30 +363,14 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         </g>
       )
     }
-    const path = previewPath(action)
-    if (!path) return null
-    const qAction = action.type === 'qMove' ? { ...action, path } : null
-    const qEffect = qAction ? evaluateQDistanceEffect(document, qAction) : null
-    const moveAction = action.type === 'move'
-      ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
-      : null
-    const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? projectedMovePath(document, moveAction) : path
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
     const remainingPlannedPath = (action.type === 'move' || action.type === 'qMove' || action.type === 'shoot')
       && action.startTime + action.duration >= currentTime - 1e-5
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
-    const rawWaterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
-    const waterBoost = rawWaterBoost && moveAction?.targetPlayerId
-      ? { ...rawWaterBoost, path: projectedMovePathSegment(document, moveAction, rawWaterBoost.overlapStart, rawWaterBoost.overlapEnd) }
-      : rawWaterBoost
-    const rawReceiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
-    const receiveBoost = rawReceiveBoost && moveAction?.targetPlayerId
-      ? { ...rawReceiveBoost, path: projectedMovePathSegment(document, moveAction, rawReceiveBoost.overlapStart, rawReceiveBoost.overlapEnd) }
-      : rawReceiveBoost
-    const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
-    const statusSlowSegments = moveAction ? statusSlowSegmentsForMove(document, moveAction) : []
-    const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
+    const geometry = actionGeometry.get(action.id)
+    if (!geometry) return null
+    const { path, qEffect, moveAction, renderedPath, waterBoost, receiveBoost, eZoneSlowSegments, statusSlowSegments, shotPressure, passFrame } = geometry
     return (
       <g
         key={action.id}
@@ -371,7 +383,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           ? <PassThreatLines
               path={path}
               passerId={action.actorId}
-              frame={projectFrame(document, action.startTime)}
+              frame={passFrame ?? frame}
               rules={rules}
               markerEnd="url(#arrow-pass)"
             />

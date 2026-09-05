@@ -1,7 +1,7 @@
 import { pathLength } from '../geometry/geometry'
 import type { PassAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { passDuration } from './durations'
-import { projectFrame, projectFrameAtKeyframe } from './projectFrame'
+import { projectFrameAtKeyframe, projectPlayerPosition } from './projectFrame'
 
 const SOLVER_SAMPLES = 256
 const SOLVER_ITERATIONS = 36
@@ -55,7 +55,8 @@ export function solvePassReception(
     }
   }
 
-  if (!pass.targetPlayerId) {
+  const targetPlayerId = pass.targetPlayerId
+  if (!targetPlayerId) {
     const path = [{ ...origin }, ...pass.path.slice(1).map((point) => ({ ...point }))]
     const duration = passDuration(path, document.rulesSnapshot)
     return {
@@ -66,10 +67,11 @@ export function solvePassReception(
     }
   }
 
-  const receiverAt = (elapsed: number) => projectFrame(
+  const receiverAt = (elapsed: number) => projectPlayerPosition(
     projectionDocument,
+    targetPlayerId,
     pass.startTime + elapsed,
-  ).players.find((player) => player.id === pass.targetPlayerId)?.position
+  )
 
   const candidateAt = (elapsed: number) => {
     const receiverPosition = receiverAt(elapsed)
