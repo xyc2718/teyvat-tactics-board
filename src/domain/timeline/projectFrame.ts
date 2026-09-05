@@ -233,8 +233,9 @@ function moveDistanceWithEZoneSlow(
   time: number,
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
 ): number {
-  return traceMoveWithEZoneSlow(document, action, time, applyControlEffects, hitMap).traveled
+  return traceMoveWithEZoneSlow(document, action, time, applyControlEffects, hitMap, ignoredActionIds).traveled
 }
 
 export interface EZoneSlowSegment {
@@ -382,9 +383,10 @@ function traceMoveWithEZoneSlow(
   time: number,
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
 ): EZoneMoveTrace {
   if (action.targetPlayerId && action.syncActionId) {
-    return traceFollowMove(document, action, time, applyControlEffects, hitMap, true, new Set())
+    return traceFollowMove(document, action, time, applyControlEffects, hitMap, true, ignoredActionIds)
   }
   const movingActor = document.initialScene.players.find((player) => player.id === action.actorId)
   const route = resolvedMovePath(action)
@@ -438,6 +440,7 @@ function traceMoveWithEZoneSlow(
         'move',
         applyControlEffects,
         hitMap,
+        ignoredActionIds,
       )
     const nextTraveled = traveled + unslowedStep * multiplier
     if (multiplier < 1 - 1e-6 && nextTraveled > traveled + 1e-6) {
@@ -562,6 +565,7 @@ function movementProgress(
   applyControlEffects: boolean,
   hitMap: IceQHitMap,
   applyEZoneEffects = true,
+  ignoredActionIds: ReadonlySet<string> = new Set(),
 ): number {
   if (action.duration <= 0 && action.type !== 'qMove') return time >= action.startTime ? 1 : 0
   let effectiveTime = time
@@ -594,7 +598,7 @@ function movementProgress(
 
   const routeLength = pathLength(resolvedMovePath(action))
   const traveled = applyControlEffects && applyEZoneEffects
-    ? moveDistanceWithEZoneSlow(document, action, effectiveTime, applyControlEffects, hitMap)
+    ? moveDistanceWithEZoneSlow(document, action, effectiveTime, applyControlEffects, hitMap, ignoredActionIds)
     : moveDistanceWithoutEZoneSlow(document, action, effectiveTime)
 
   return clamp(traveled / Math.max(routeLength, 0.0001), 0, 1)
@@ -674,7 +678,15 @@ function projectSceneCore(
       }
       const route = action.type === 'move' ? resolvedMovePath(action) : action.path
       actor.position = clampPoint(
-        pointAlongPath(route, movementProgress(document, action, time, applyControlEffects, hitMap, applyEZoneEffects)),
+        pointAlongPath(route, movementProgress(
+          document,
+          action,
+          time,
+          applyControlEffects,
+          hitMap,
+          applyEZoneEffects,
+          ignoredActionIds,
+        )),
         rules.field.width,
         rules.field.height,
       )
