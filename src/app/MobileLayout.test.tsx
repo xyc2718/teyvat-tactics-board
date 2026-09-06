@@ -144,6 +144,39 @@ describe('phone layout', () => {
     expect(useTacticStore.getState().past).toHaveLength(1)
   })
 
+  it('keeps basic role controls outside the touch field and drags a new-role player into a static arrow', () => {
+    installDeviceMedia(true, false)
+    const { container } = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
+    const control = screen.getByRole('group', { name: '基础模式球员角色' })
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    mockBoardRect(board)
+    const player = screen.getByRole('button', { name: '蓝方 1，水灵' })
+    fireEvent.keyDown(player, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：雷' }))
+    expect(board).not.toContainElement(control)
+    const viewport = container.querySelector<HTMLElement>('.board-viewport')!
+    viewport.scrollLeft = 120
+    viewport.scrollTop = 80
+    fireEvent.pointerDown(player.querySelector('.entity-touch-hit')!, {
+      pointerId: 94, pointerType: 'touch', button: 0, clientX: 311, clientY: 257,
+    })
+    fireEvent.pointerMove(board, { pointerId: 94, pointerType: 'touch', clientX: 361, clientY: 257 })
+    fireEvent.pointerUp(board, { pointerId: 94, pointerType: 'touch', button: 0, clientX: 361, clientY: 257 })
+    expect(useTacticStore.getState().document.initialScene.players[0]?.position).toEqual({ x: 6.5, y: 4.7 })
+    expect(viewport.scrollLeft).toBe(120)
+    expect(viewport.scrollTop).toBe(80)
+    fireEvent.click(screen.getByRole('button', { name: '移动箭头' }))
+    fireEvent.pointerDown(board, { pointerId: 95, pointerType: 'touch', button: 0, clientX: 486, clientY: 257 })
+    fireEvent.pointerUp(board, { pointerId: 95, pointerType: 'touch', button: 0, clientX: 486, clientY: 257 })
+    expect(useTacticStore.getState().document).toMatchObject({
+      basicPlayerRoles: { 'blue-water': 'electro' },
+      staticMoveArrows: [{ playerId: 'blue-water', target: { x: 9, y: 4.7 } }], actions: [],
+    })
+    expect(screen.getByRole('group', { name: '基础模式球员角色' })).toBe(control)
+    expect(container.querySelector('.timeline-panel')).not.toBeInTheDocument()
+  })
+
   it('opens low-frequency actions in a mobile dialog without duplicating tool buttons', () => {
     installDeviceMedia(true, false)
     render(<App />)

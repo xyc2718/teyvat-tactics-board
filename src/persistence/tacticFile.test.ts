@@ -1,9 +1,47 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
+import { BASIC_ROLE_IDS, effectiveBasicRole } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { parseTactic, serializeTactic } from './tacticFile'
 
 describe('tactic file boundary', () => {
+  it('round-trips all six basic identities while accepting old V1 files without overrides', () => {
+    const source = createDefaultDocument()
+    const legacy = parseTactic(serializeTactic(source))
+    expect(legacy.ok).toBe(true)
+    if (!legacy.ok) throw new Error(legacy.error)
+    expect(legacy.document.basicPlayerRoles).toBeUndefined()
+    legacy.document.initialScene.players.forEach((player) => {
+      expect(effectiveBasicRole(legacy.document, player)).toBe(player.role)
+    })
+    source.basicPlayerRoles = Object.fromEntries(source.initialScene.players.map((player, index) => [player.id, BASIC_ROLE_IDS[index]!]))
+    const parsed = parseTactic(serializeTactic(source))
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error(parsed.error)
+    expect(parsed.document.basicPlayerRoles).toEqual(source.basicPlayerRoles)
+    expect(parsed.document.initialScene).toEqual(source.initialScene)
+    expect(parsed.document.rulesSnapshot).toEqual(source.rulesSnapshot)
+  })
+
+  it.each([
+    { 'blue-water': 'dendro' },
+    { 'unknown-player': 'geo' },
+    Object.fromEntries([['__proto__', 'electro']]),
+    { constructor: 'anemo' },
+    Object.fromEntries(Array.from({ length: 7 }, (_, index) => [`player-${index}`, 'anemo'])),
+    ['electro'], null, { 'blue-water': 3 },
+  ])('rejects invalid basic role overrides: %j', (basicPlayerRoles) => {
+    const result = parseTactic(JSON.stringify({ ...createDefaultDocument(), basicPlayerRoles }))
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/basicPlayerRoles|基础角色/)
+  })
+
+  it('rejects new identities when used as simulation player or rule roles', () => {
+    const source = createDefaultDocument()
+    expect(parseTactic(serializeTactic(source).replace('"role": "water"', '"role": "electro"')).ok).toBe(false)
+    expect(parseTactic(serializeTactic(source).replace('"id": "water"', '"id": "geo"')).ok).toBe(false)
+  })
+
   it('round-trips bounded dense pass paths with explicit outcomes and accepts legacy passes', () => {
     const source = createDefaultDocument()
     source.actions.push({

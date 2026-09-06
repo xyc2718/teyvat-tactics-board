@@ -1,5 +1,6 @@
 export type TeamId = 'blue' | 'red'
 export type RoleId = 'water' | 'fire' | 'ice'
+export type BasicRoleId = RoleId | 'electro' | 'geo' | 'anemo'
 export type MatchupRating = -2 | -1 | 0 | 1 | 2 | null
 export type BoardMode = 'simulation' | 'basic'
 export type ToolId =
@@ -284,6 +285,8 @@ export interface TacticDocumentV1 {
   }
   rulesSnapshot: RuleSetV1
   initialScene: SceneState
+  /** Display identities for the basic board; never simulation roles or step state. */
+  basicPlayerRoles?: Record<string, BasicRoleId>
   staticMoveArrows: StaticMoveArrow[]
   stepMarkers: StepMarker[]
   actions: TacticAction[]

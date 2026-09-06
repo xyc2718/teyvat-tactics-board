@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
+import { BASIC_ROLE_IDS } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
@@ -227,6 +228,18 @@ const documentSchema = z.object({
   }),
   rulesSnapshot: rulesSchema,
   initialScene: sceneSchema,
+  // Validate entries before rebuilding the map: Zod records strip __proto__,
+  // but existing files permit that literal player ID. Integrity checks below
+  // still reject every key that does not identify a player in this document.
+  basicPlayerRoles: z.unknown().transform((value, context) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      context.addIssue({ code: 'custom', message: '基础角色必须为对象。' })
+      return z.NEVER
+    }
+    return Object.entries(value)
+  }).pipe(z.array(z.tuple([z.string().min(1).max(100), z.enum(BASIC_ROLE_IDS)]))
+    .max(6, '基础角色最多包含 6 名球员。'))
+    .transform((entries) => Object.fromEntries(entries)).optional(),
   staticMoveArrows: z.array(z.object({
     id: z.string().min(1).max(120),
     playerId: z.string().min(1).max(100),
@@ -325,6 +338,9 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
   const knownPlayers = new Set(playerIds)
   if (playerIds.length !== 6) return '初始场景必须包含 6 名球员。'
   if (knownPlayers.size !== playerIds.length) return '球员 ID 不能重复。'
+  for (const playerId of Object.keys(document.basicPlayerRoles ?? {})) {
+    if (!knownPlayers.has(playerId)) return `基础角色的球员 ${playerId} 不存在。`
+  }
   if (field.smallPenaltyRadius > field.largePenaltyRadius) return '小禁区半径不能大于大禁区半径。'
   if (document.rulesSnapshot.passing.safeDistance > document.rulesSnapshot.passing.maxDistance) {
     return '安全传球距离不能大于最大有效距离。'

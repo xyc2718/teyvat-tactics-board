@@ -15,6 +15,7 @@ import { MobilePanelDock, type MobilePanel } from './MobilePanelDock'
 import { useDeviceLayout } from './useDeviceLayout'
 import { useTacticLibraryController } from './useTacticLibraryController'
 import { SlowStatusDialog } from './SlowStatusDialog'
+import { BasicRoleControl } from './BasicRoleControl'
 
 export function App() {
   const deviceLayout = useDeviceLayout()
@@ -28,8 +29,8 @@ export function App() {
   const updateMeta = useTacticStore((state) => state.updateMeta)
   const setNotice = useTacticStore((state) => state.setNotice)
   const duration = useMemo(
-    () => timelineDuration(document),
-    [document],
+    () => boardMode === 'basic' ? 0 : timelineDuration(document),
+    [boardMode, document],
   )
   const mobileContext = `${deviceLayout}:${boardMode}`
   const [mobileUi, setMobileUi] = useState<{ context: string; panel: MobilePanel | null; actionsOpen: boolean }>(() => ({
@@ -156,6 +157,7 @@ export function App() {
       <main className={`workspace-grid ${boardMode === 'basic' ? 'basic-workspace' : ''}`}>
         {boardMode === 'simulation' && <RosterPanel onPlayerChosen={isMobileLandscape ? closeMobilePanel : undefined} />}
         <section className="board-column">
+          {boardMode === 'basic' && <BasicRoleControl />}
           <TacticsBoard key={deviceLayout} initialZoom={isMobileLandscape ? 1.75 : 1} touchOptimized={isMobileLandscape} />
         </section>
         {boardMode === 'simulation' && <InspectorPanel />}
@@ -165,8 +167,8 @@ export function App() {
         {activeMobilePanel && <button type="button" className="mobile-panel-backdrop" onClick={closeMobilePanel} aria-label="关闭手机面板" />}
         <MobilePanelDock activePanel={activeMobilePanel} onToggle={toggleMobilePanel} />
       </>}
-      <RulesDrawer />
-      <LogicDrawer />
+      {boardMode === 'simulation' && <RulesDrawer />}
+      {boardMode === 'simulation' && <LogicDrawer />}
       <TacticLibraryDrawer controller={library} />
       {boardMode === 'simulation' && tool === 'slow' && <SlowStatusDialog />}
       <div className="version-badge" aria-label={`Version ${packageJson.version}, Developer ${packageJson.author}`}>

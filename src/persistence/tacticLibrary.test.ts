@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
+import { parseTactic, serializeTactic } from './tacticFile'
 import {
   createTacticLibrary,
   MAX_TACTIC_SNAPSHOTS,
@@ -35,6 +36,60 @@ function deterministicLibrary(backend = new MemoryBackend()) {
 }
 
 describe('tactic library', () => {
+  it('deduplicates reordered overrides whose distinct player IDs collate equally', async () => {
+    const { library } = deterministicLibrary()
+    const composedId = '\u00e9'
+    const decomposedId = 'e\u0301'
+    const parsed = parseTactic(serializeTactic(createDefaultDocument())
+      .replaceAll('blue-water', composedId).replaceAll('red-fire', decomposedId))
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error(parsed.error)
+    const document = parsed.document
+    document.basicPlayerRoles = { [composedId]: 'electro', [decomposedId]: 'geo' }
+    const initialized = await library.initialize(document)
+    document.basicPlayerRoles = { [decomposedId]: 'geo', [composedId]: 'electro' }
+    expect(await library.save(initialized.activeId, document)).toBe(false)
+    expect(await library.snapshots(initialized.activeId)).toHaveLength(1)
+  })
+
+  it('deduplicates unchanged saves when a legacy document gains or loses its first basic override', async () => {
+    const { library } = deterministicLibrary()
+    const initialized = await library.initialize(createDefaultDocument())
+    const document = initialized.document
+    document.basicPlayerRoles = { 'blue-water': 'electro' }
+    expect(await library.save(initialized.activeId, document)).toBe(true)
+    expect(await library.save(initialized.activeId, document)).toBe(false)
+    expect(await library.save(initialized.activeId, (await library.open(initialized.activeId))!)).toBe(false)
+    delete document.basicPlayerRoles
+    expect(await library.save(initialized.activeId, document)).toBe(true)
+    expect(await library.save(initialized.activeId, document)).toBe(false)
+    expect(await library.snapshots(initialized.activeId)).toHaveLength(3)
+  })
+
+  it('retains basic roles in draft migration, semantic snapshots, copies and full-library backups', async () => {
+    const source = deterministicLibrary()
+    const document = createDefaultDocument()
+    document.basicPlayerRoles = { 'blue-water': 'electro', 'red-fire': 'geo' }
+    const first = await source.library.initialize(document)
+    const oldRoles = structuredClone(document.basicPlayerRoles)
+    expect(first.document.basicPlayerRoles).toEqual(oldRoles)
+    document.basicPlayerRoles['blue-water'] = 'anemo'
+    expect(await source.library.save(first.activeId, document)).toBe(true)
+    expect(await source.library.save(first.activeId, document)).toBe(false)
+    document.basicPlayerRoles = { 'red-fire': 'geo', 'blue-water': 'anemo' }
+    expect(await source.library.save(first.activeId, document)).toBe(false)
+    const copy = await source.library.duplicate(first.activeId)
+    expect((await source.library.open(copy!.id))?.basicPlayerRoles).toEqual(document.basicPlayerRoles)
+
+    const target = deterministicLibrary()
+    await target.library.importBackup(await source.library.exportBackup())
+    expect((await target.library.open(first.activeId))?.basicPlayerRoles).toEqual(document.basicPlayerRoles)
+    const snapshots = await target.library.snapshots(first.activeId)
+    expect(snapshots).toHaveLength(2)
+    expect((await target.library.restore(first.activeId, snapshots.at(-1)!.id))?.basicPlayerRoles).toEqual(oldRoles)
+    expect((await target.library.open(first.activeId))?.basicPlayerRoles).toEqual(oldRoles)
+  })
+
   it('migrates the current draft into the first local tactic', async () => {
     const { backend, library } = deterministicLibrary()
     const draft = createDefaultDocument()

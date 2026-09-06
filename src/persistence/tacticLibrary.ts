@@ -87,7 +87,14 @@ function parseStoredDocument(text: string): TacticDocumentV1 | null {
 }
 
 function documentSignature(document: TacticDocumentV1): string {
-  return JSON.stringify({ ...document, meta: { ...document.meta, updatedAt: '' } })
+  // Editing appends this optional field; parsing restores schema order. Neither
+  // the field's insertion position nor the order of player keys is an edit.
+  const { basicPlayerRoles, ...tactic } = document
+  return JSON.stringify({
+    ...tactic,
+    basicPlayerRoles: basicPlayerRoles && Object.fromEntries(Object.entries(basicPlayerRoles).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)),
+    meta: { ...document.meta, updatedAt: '' },
+  })
 }
 
 function entryFromRecord(record: StoredTacticRecord): TacticLibraryEntry | null {

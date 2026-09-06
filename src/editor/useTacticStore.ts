@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import { createDefaultDocument } from '../domain/model/createDocument'
+import { effectiveBasicRole, isBasicRoleId } from '../domain/model/basicRoles'
 import type {
+  BasicRoleId,
   BoardMode,
   MatchupRating,
   MoveKeyframeReference,
@@ -71,6 +73,7 @@ interface TacticStore extends HistoryState {
   updateMeta: (field: 'title' | 'author' | 'notes', value: string) => void
   moveEntity: (id: string, position: Vec2) => void
   setPlayerRole: (id: string, role: RoleId) => void
+  setBasicPlayerRole: (id: string, role: BasicRoleId) => void
   setPlayerTeam: (id: string, team: 'blue' | 'red') => void
   setPlayerFacing: (id: string, facing: number) => void
   givePossession: (id: string | null) => void
@@ -909,6 +912,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         currentTime: committedJoint.anchorEdge === 'end' ? actionEndTimeSafe(anchor) : anchor.startTime,
       }
     }),
+
+  setBasicPlayerRole: (id, role) => set((state) => {
+    if (state.boardMode !== 'basic' || !isBasicRoleId(role)) return state
+    const player = state.document.initialScene.players.find((candidate) => candidate.id === id)
+    if (!player || effectiveBasicRole(state.document, player) === role) return state
+    return mutateDocument(state, (draft) => {
+      draft.basicPlayerRoles = { ...draft.basicPlayerRoles, [id]: role }
+    })
+  }),
 
   setPlayerRole: (id, role) => set((state) => {
     const documentPatch = mutateDocument(state, (draft) => {

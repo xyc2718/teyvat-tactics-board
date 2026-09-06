@@ -106,7 +106,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .workspace-grid { display: grid; grid-template-columns: 236px minmax(550px, 1fr) 300px; min-height: 0; gap: 0; }
 .app-shell.basic-mode { grid-template-rows:72px 36px minmax(0,1fr); }
 .workspace-grid.basic-workspace { grid-template-columns:minmax(0,1fr); }
-.basic-workspace .board-column { padding:18px 28px 14px; }
+.basic-workspace .board-column { display:flex; flex-direction:column; padding:18px 28px 14px; }
+.basic-workspace .board-shell { flex:1; height:auto; }
+.basic-role-control { display:grid; flex:0 0 74px; height:74px; grid-template-columns:minmax(100px,160px) minmax(0,1fr); grid-template-rows:44px 18px; column-gap:12px; padding:4px 8px; }
+.basic-role-player { align-self:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px; }
+.basic-role-choices { display:flex; align-items:center; gap:5px; }
+.basic-role-choices button { width:44px; height:44px; padding:0 4px; overflow:hidden; border:1px solid var(--line-strong); border-radius:8px; background:var(--surface-2); cursor:pointer; }
+.basic-role-choices button[aria-pressed="true"] { color:var(--gold-light); border-color:var(--gold); background:rgba(223,189,114,.14); }
+.basic-role-choices button:disabled { opacity:.4; cursor:default; }
+.basic-role-note { grid-column:1 / -1; margin:0; overflow:hidden; color:var(--muted); font-size:11px; line-height:18px; white-space:nowrap; text-overflow:ellipsis; }
 .panel-surface { background: rgba(10, 25, 21, .94); }
 .roster-panel, .inspector-panel { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #2b4b40 transparent; }
 .roster-panel { padding: 18px 12px; border-right: 1px solid var(--line); }

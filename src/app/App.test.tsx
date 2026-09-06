@@ -1,12 +1,19 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
+import { BASIC_ROLE_IDS, basicRoleDisplay } from '../domain/model/basicRoles'
+import * as passReception from '../domain/timeline/passReception'
+import * as projection from '../domain/timeline/projectFrame'
+import * as narrative from '../domain/narrative/buildTacticNarrative'
+import { tacticLibrary } from '../persistence/tacticLibrary'
 import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../domain/model/types'
 import { useTacticStore } from '../editor/useTacticStore'
 import { App } from './App'
 
 describe('App shell', () => {
   afterEach(cleanup)
+  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => vi.unstubAllGlobals())
   beforeEach(() => {
     const document = createDefaultDocument()
     useTacticStore.setState({
@@ -41,6 +48,144 @@ describe('App shell', () => {
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '推演模式' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
+  })
+
+  it('offers six basic identities for both teams outside the field and isolates simulation labels', () => {
+    const { container } = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
+    const control = screen.getByRole('group', { name: '基础模式球员角色' })
+    const board = screen.getByRole('application', { name: '战术编辑球场' })
+    expect(board).not.toContainElement(control)
+    expect(within(control).getAllByRole('button')).toHaveLength(6)
+    within(control).getAllByRole('button').forEach((button) => expect(button).toBeDisabled())
+    const simulationScene = structuredClone(useTacticStore.getState().document.initialScene)
+
+    for (const team of ['蓝方', '红方']) {
+      const player = screen.getByRole('button', { name: `${team} 1，水灵` })
+      fireEvent.keyDown(player, { key: 'Enter' })
+      for (const role of BASIC_ROLE_IDS) {
+        const display = basicRoleDisplay(role, useTacticStore.getState().document.rulesSnapshot)
+        const choice = within(control).getByRole('button', { name: `基础角色：${display.shortLabel}` })
+        fireEvent.click(choice)
+        expect(choice).toHaveAttribute('aria-pressed', 'true')
+        expect(player).toHaveAccessibleName(`${team} 1，${display.label}`)
+        expect(player.querySelector('.role-glyph')).toHaveTextContent(display.shortLabel)
+      }
+    }
+    const basicDocument = useTacticStore.getState().document
+    expect(basicDocument.initialScene).toEqual(simulationScene)
+    expect(basicDocument.actions).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: '推演模式' }))
+    expect(screen.queryByRole('group', { name: '基础模式球员角色' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '蓝方 1，水灵' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '红方 1，水灵' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
+    expect(screen.getByRole('button', { name: '蓝方 1，风' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '红方 1，风' })).toBeInTheDocument()
+    expect(useTacticStore.getState().document).toBe(basicDocument)
+    expect(container.querySelectorAll('.player-token')).toHaveLength(6)
+  })
+
+  it('uses each effective original role saved range and omits unavailable ranges without inspection writes', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.roles.fire.attackRadius = 2.25
+    document.rulesSnapshot.roles.fire.q.maxDistance = 4.25
+    document.rulesSnapshot.roles.water.attackInnerRadius = 0.3
+    document.basicPlayerRoles = { 'blue-water': 'electro', 'red-water': 'geo', 'red-fire': 'anemo' }
+    useTacticStore.setState({ document, boardMode: 'basic' })
+    const { container } = render(<App />)
+    fireEvent.keyDown(screen.getByRole('button', { name: '蓝方 1，雷' }), { key: 'Enter' })
+    expect(screen.queryByText(/范围参数暂未提供/)).not.toBeInTheDocument()
+    const beforeInspection = useTacticStore.getState()
+
+    for (const tool of ['攻击范围', '打击范围']) {
+      fireEvent.click(screen.getByRole('button', { name: tool }))
+      for (const [name, label] of [['蓝方 1', '雷'], ['红方 1', '岩'], ['红方 2', '风']]) {
+        fireEvent.keyDown(screen.getByRole('button', { name: `${name}，${label}，范围参数暂未提供` }), { key: 'Enter' })
+        expect(screen.getByText(`${label}的范围参数暂未提供`)).toBeInTheDocument()
+        expect(container.querySelector('.analysis-ranges')).not.toBeInTheDocument()
+      }
+    }
+    expect(useTacticStore.getState().document).toBe(beforeInspection.document)
+    expect(useTacticStore.getState().past).toBe(beforeInspection.past)
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：火' }))
+    expect(container.querySelector('.strike-range')).toHaveAttribute('r', '325')
+    expect(screen.queryByText(/范围参数暂未提供/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '攻击范围' }))
+    expect(container.querySelector('.attack-range')).toHaveAttribute('r', '112.5')
+    expect(container.querySelector('.attack-inner-range')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：水' }))
+    expect(container.querySelector('.attack-range')).toHaveAttribute('r', '50')
+    expect(container.querySelector('.attack-inner-range')).toHaveAttribute('r', '15')
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：冰' }))
+    expect(container.querySelector('.attack-range')).toHaveAttribute('r', '25')
+    expect(useTacticStore.getState().document.initialScene).toEqual(document.initialScene)
+    expect(useTacticStore.getState().past).toHaveLength(beforeInspection.past.length + 3)
+  })
+
+  it('does not run hidden simulation analysis or pass solving when editing a basic role', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'preserved-basic-pass', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-fire',
+      startTime: 0, duration: 1, path: [{ x: 5.5, y: 4.7 }, { x: 3.5, y: 7 }],
+    })
+    useTacticStore.setState({ document, boardMode: 'basic', selection: { kind: 'player', id: 'blue-water' } })
+    render(<App />)
+    const solve = vi.spyOn(passReception, 'solvePassReception')
+    const project = vi.spyOn(projection, 'projectFrame')
+    const freeze = vi.spyOn(projection, 'documentFreezeWindows')
+    const buildNarrative = vi.spyOn(narrative, 'buildTacticNarrative')
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：雷' }))
+    expect(solve).not.toHaveBeenCalled()
+    expect(project).not.toHaveBeenCalled()
+    expect(freeze).not.toHaveBeenCalled()
+    expect(buildNarrative).not.toHaveBeenCalled()
+    expect(useTacticStore.getState().document.actions).toEqual(document.actions)
+  })
+
+  it('restores basic identities through App library initialization and debounced autosave', async () => {
+    const stored = createDefaultDocument()
+    stored.basicPlayerRoles = { 'blue-water': 'electro', 'red-fire': 'anemo' }
+    let saved = stored
+    vi.stubGlobal('indexedDB', {})
+    vi.spyOn(tacticLibrary, 'initialize').mockImplementation(async () => ({
+      activeId: 'basic-roles-library', document: structuredClone(saved), entries: [],
+    }))
+    const save = vi.spyOn(tacticLibrary, 'save').mockImplementation(async (_id, document) => {
+      saved = structuredClone(document)
+      return false
+    })
+    const first = render(<App />)
+    await waitFor(() => expect(useTacticStore.getState().document.basicPlayerRoles).toEqual(stored.basicPlayerRoles))
+    expect(useTacticStore.getState().boardMode).toBe('simulation')
+    fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: '蓝方 1，雷' }), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: '基础角色：岩' }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith('basic-roles-library', expect.objectContaining({
+      basicPlayerRoles: { 'blue-water': 'geo', 'red-fire': 'anemo' },
+    })))
+    first.unmount()
+    act(() => useTacticStore.getState().newDocument())
+    render(<App />)
+    await waitFor(() => expect(useTacticStore.getState().document.basicPlayerRoles).toEqual(saved.basicPlayerRoles))
+    expect(useTacticStore.getState()).toMatchObject({ boardMode: 'simulation', past: [], future: [] })
+    fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
+    expect(screen.getByRole('button', { name: '蓝方 1，岩' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '红方 2，风' })).toBeInTheDocument()
+  })
+
+  it('preserves the current document and history when importing invalid basic roles', async () => {
+    const document = createDefaultDocument()
+    document.basicPlayerRoles = { 'blue-water': 'electro' }
+    useTacticStore.setState({ document, past: [createDefaultDocument()] })
+    const { container } = render(<App />)
+    const before = useTacticStore.getState()
+    const file = new File(['invalid roles'], 'invalid.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify({ ...document, basicPlayerRoles: { 'missing-player': 'geo' } }) })
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+    await waitFor(() => expect(useTacticStore.getState().notice).toMatch(/导入失败.*基础角色/))
+    expect(useTacticStore.getState().document).toBe(before.document)
+    expect(useTacticStore.getState().past).toBe(before.past)
   })
 
   it('adds source-free hang ice from a chosen player timeline', () => {

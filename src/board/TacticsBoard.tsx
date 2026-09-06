@@ -3,6 +3,7 @@ import { angleToVector, directionAngle, normalizeAngle, pointAlongPath } from '.
 import type { PlayerState, ProjectedFrame, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
 import { compilePath } from '../domain/geometry/compiledPath'
 import { passIsDropped } from '../domain/model/passFlight'
+import { basicRoleDisplay, basicRoleRule, effectiveBasicRole } from '../domain/model/basicRoles'
 import {
   buildPassCorridor,
   classifyPassThreat,
@@ -180,6 +181,11 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
 
   const selectedPlayer = selection?.kind === 'player'
     ? frame.players.find((player) => player.id === selection.id)
+    : undefined
+  const selectedRangeRule = selectedPlayer
+    ? boardMode === 'basic'
+      ? basicRoleRule(effectiveBasicRole(document, selectedPlayer), rules)
+      : rules.roles[selectedPlayer.role]
     : undefined
   const toolActor = resolveToolActor(tool, selectedPlayer, frame, rules)
   const actionActor = toolNeedsActor(tool) ? toolActor : selectedPlayer
@@ -608,20 +614,20 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         <text x="12" y="20" className="field-label">蓝方球门</text>
         <text x={fieldWidth - 12} y="20" textAnchor="end" className="field-label">红方球门</text>
 
-        {(showsSimulationAnalysis || isRangeInspectionTool(tool)) && selectedPlayer && (
+        {(showsSimulationAnalysis || isRangeInspectionTool(tool)) && selectedPlayer && selectedRangeRule && (
           <g className="analysis-ranges" pointerEvents="none">
             {(showsSimulationAnalysis || tool === 'attack') && <>
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
-                r={rules.roles[selectedPlayer.role].attackRadius * SCALE}
+                r={selectedRangeRule.attackRadius * SCALE}
                 className="range-circle attack-range"
               />
-              {rules.roles[selectedPlayer.role].attackInnerRadius !== undefined && (
+              {selectedRangeRule.attackInnerRadius !== undefined && (
                 <circle
                   cx={toSvg(selectedPlayer.position).x}
                   cy={toSvg(selectedPlayer.position).y}
-                  r={(rules.roles[selectedPlayer.role].attackInnerRadius ?? 0) * SCALE}
+                  r={(selectedRangeRule.attackInnerRadius ?? 0) * SCALE}
                   className="range-circle attack-inner-range"
                 />
               )}
@@ -630,17 +636,17 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
-                r={(rules.roles[selectedPlayer.role].q.maxDistance + rules.roles[selectedPlayer.role].attackRadius) * SCALE}
+                r={(selectedRangeRule.q.maxDistance + selectedRangeRule.attackRadius) * SCALE}
                 className="range-circle strike-range"
               >
-                <title>Q 技能 + 攻击最大打击范围：{(rules.roles[selectedPlayer.role].q.maxDistance + rules.roles[selectedPlayer.role].attackRadius).toFixed(1)} 格</title>
+                <title>Q 技能 + 攻击最大打击范围：{(selectedRangeRule.q.maxDistance + selectedRangeRule.attackRadius).toFixed(1)} 格</title>
               </circle>
             )}
             {showsSimulationAnalysis && <>
               <circle
                 cx={toSvg(selectedPlayer.position).x}
                 cy={toSvg(selectedPlayer.position).y}
-                r={rules.roles[selectedPlayer.role].q.maxDistance * SCALE}
+                r={selectedRangeRule.q.maxDistance * SCALE}
                 className="range-circle q-range"
               />
               {selectedPlayer.hasBall && <>
@@ -676,7 +682,10 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         {frame.players.map((player) => {
           const position = playerPosition(player.id, player.position)
           const svgPoint = toSvg(position)
-          const roleRule = rules.roles[player.role]
+          const roleDisplay = boardMode === 'basic'
+            ? basicRoleDisplay(effectiveBasicRole(document, player), rules)
+            : rules.roles[player.role]
+          const rangeAvailable = boardMode !== 'basic' || Boolean(basicRoleRule(effectiveBasicRole(document, player), rules))
           const renderedFacing = drag?.kind === 'facing' && drag.playerId === player.id ? drag.facing : player.facing
           const facing = angleToVector(renderedFacing)
           const selected = selection?.kind === 'player' && selection.id === player.id
@@ -703,7 +712,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
               onPointerDown={(event) => beginEntityDrag(event, player.id, position)}
               tabIndex={0}
               role="button"
-              aria-label={`${player.name}，${roleRule.label}${isRangeInspectionTool(tool) ? `，可查看${toolLabels[tool].label}` : actorCandidate ? '，可选施法者' : targetCandidate ? '，可选目标' : ''}`}
+              aria-label={`${player.name}，${roleDisplay.label}${isRangeInspectionTool(tool) ? rangeAvailable ? `，可查看${toolLabels[tool].label}` : '，范围参数暂未提供' : actorCandidate ? '，可选施法者' : targetCandidate ? '，可选目标' : ''}`}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter') return
                 event.preventDefault()
@@ -732,7 +741,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
                 <path d={`M 0 0 L ${facing.x * 31} ${facing.y * 31}`} className="facing-line" />
                 <path d={`M ${facing.x * 31} ${facing.y * 31} l ${-facing.x * 7 - facing.y * 5} ${-facing.y * 7 + facing.x * 5} l ${facing.y * 10} ${-facing.x * 10} Z`} className="facing-head" />
               </>}
-              <text y="6" textAnchor="middle" className="role-glyph">{roleRule.shortLabel}</text>
+              <text y="6" textAnchor="middle" className="role-glyph">{roleDisplay.shortLabel}</text>
               <text y="39" textAnchor="middle" className="player-name">{player.name}</text>
               {boardMode === 'simulation' && player.hasBall && <circle cx="16" cy="-16" r="6" className="possession-dot" />}
               {(cooldown?.q ?? 0) > 0.05 && <g transform="translate(-27 -27)">
