@@ -1,8 +1,10 @@
-import { distance, pathLength, pointAlongPath } from '../geometry/geometry'
-import type { ProjectedFrame, RuleSetV1, TeamId, Vec2 } from '../model/types'
-import { passArrivalTimeAtDistance } from '../timeline/durations'
+import { distance } from '../geometry/geometry'
+import { compilePath } from '../geometry/compiledPath'
+import type { PassAction, ProjectedFrame, RuleSetV1, TeamId, Vec2 } from '../model/types'
+import { passTimeForDistance } from '../timeline/durations'
 
 const SAMPLE_SPACING = 0.2
+const MAX_UNIFORM_SAMPLES = 512
 const EPSILON = 1e-6
 
 export const PASS_THREAT_ORDER = [
@@ -54,7 +56,6 @@ function frozenDelayAtFrame(frame: ProjectedFrame, playerId: string): number {
 function classifyPoint(
   point: Vec2,
   distanceFromStart: number,
-  path: Vec2[],
   passerTeam: TeamId,
   frame: ProjectedFrame,
   rules: RuleSetV1,
@@ -73,7 +74,7 @@ function classifyPoint(
     return { level: 'direct', opponentIds: direct.map((player) => player.id) }
   }
 
-  const ballArrivalTime = passArrivalTimeAtDistance(path, distanceFromStart, rules)
+  const ballArrivalTime = passTimeForDistance(distanceFromStart, rules)
   const qReachable = opponents.filter((player) => {
     const qRule = rules.roles[player.role].q
     const requiredQDistance = Math.max(0, distance(player.position, point) - width)
@@ -102,8 +103,10 @@ export function classifyPassThreat(
   passerTeam: TeamId,
   frame: ProjectedFrame,
   rules: RuleSetV1,
+  flightOutcome?: PassAction['flightOutcome'],
 ): PassThreatSegment[] {
-  const total = pathLength(path)
+  const compiled = compilePath(path)
+  const total = compiled.length
   if (path.length < 2 || total <= EPSILON) return []
 
   const boundaries = new Set<number>([0, total])
@@ -128,9 +131,9 @@ export function classifyPassThreat(
   if (rules.passing.maxDistance > 0 && rules.passing.maxDistance < total) {
     boundaries.add(rules.passing.maxDistance)
   }
-  const steps = Math.ceil(total / SAMPLE_SPACING)
+  const steps = Math.min(MAX_UNIFORM_SAMPLES, Math.ceil(total / SAMPLE_SPACING))
   for (let index = 1; index < steps; index += 1) {
-    boundaries.add(Math.min(total, index * SAMPLE_SPACING))
+    boundaries.add(total * index / steps)
   }
 
   const distances = [...boundaries].sort((left, right) => left - right)
@@ -141,15 +144,14 @@ export function classifyPassThreat(
     if (startDistance === undefined || endDistance === undefined || endDistance - startDistance <= EPSILON) continue
     const midpoint = (startDistance + endDistance) / 2
     const classification = classifyPoint(
-      pointAlongPath(path, midpoint / total),
+      compiled.pointAtDistance(midpoint),
       midpoint,
-      path,
       passerTeam,
       frame,
       rules,
     )
-    const start = boundaryPoints.get(startDistance) ?? pointAlongPath(path, startDistance / total)
-    const end = boundaryPoints.get(endDistance) ?? pointAlongPath(path, endDistance / total)
+    const start = boundaryPoints.get(startDistance) ?? compiled.pointAtDistance(startDistance)
+    const end = boundaryPoints.get(endDistance) ?? compiled.pointAtDistance(endDistance)
     const previous = segments[segments.length - 1]
     if (previous?.level === classification.level) {
       previous.path.push(end)
@@ -165,7 +167,43 @@ export function classifyPassThreat(
       opponentIds: classification.opponentIds,
     })
   }
+  // A homing flight may use its entire budget without contact. Its endpoint
+  // is a drop, but no imaginary path beyond that endpoint exists.
+  if (flightOutcome === 'dropped' && segments.at(-1)?.level !== 'drop') {
+    const end = compiled.pointAtDistance(total)
+    segments.push({ level: 'drop', path: [end, { ...end }], startDistance: total, endDistance: total, opponentIds: [] })
+  }
   return segments
+}
+
+/** Bounded offset ribbon that follows the actual risk-route bends, not its chord. */
+export function buildPassCorridor(path: Vec2[], rules: RuleSetV1): Vec2[] {
+  const compiled = compilePath(path)
+  const startDistance = rules.passing.safeDistance
+  const endDistance = Math.min(compiled.length, rules.passing.maxDistance)
+  if (endDistance - startDistance <= EPSILON) return []
+  const distances = new Set([startDistance, endDistance])
+  let cumulative = 0
+  for (let index = 1; index < path.length; index += 1) {
+    cumulative += distance(path[index - 1]!, path[index]!)
+    if (cumulative > startDistance && cumulative < endDistance) distances.add(cumulative)
+  }
+  const samples = [...distances].sort((a, b) => a - b).map((at) => ({ at, point: compiled.pointAtDistance(at) }))
+  const left: Vec2[] = []
+  const right: Vec2[] = []
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index]!
+    const previous = samples[Math.max(0, index - 1)]!.point
+    const next = samples[Math.min(samples.length - 1, index + 1)]!.point
+    const dx = next.x - previous.x
+    const dy = next.y - previous.y
+    const span = Math.hypot(dx, dy) || 1
+    const width = corridorWidth(sample.at, rules)
+    const offset = { x: -dy / span * width, y: dx / span * width }
+    left.push({ x: sample.point.x + offset.x, y: sample.point.y + offset.y })
+    right.push({ x: sample.point.x - offset.x, y: sample.point.y - offset.y })
+  }
+  return [...left, ...right.reverse()]
 }
 
 export function highestPassThreat(segments: PassThreatSegment[]): PassThreatLevel {

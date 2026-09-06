@@ -1,6 +1,7 @@
 import { clamp, pathLength, resolvedMovePath, slicePath } from '../geometry/geometry'
 import type { MoveAction, PassAction, QMoveAction, RoleRule, TacticDocumentV1, Vec2 } from '../model/types'
 import { actionEndTime } from './durations'
+import { passIsReceived } from '../model/passFlight'
 
 export interface MoveBoostEffect {
   sourceActionId: string
@@ -41,7 +42,7 @@ export function receiveBoostWindowFor(
       (candidate): candidate is PassAction =>
         candidate.type === 'pass' &&
         candidate.targetPlayerId === playerId &&
-        pathLength(candidate.path) <= document.rulesSnapshot.passing.maxDistance &&
+        passIsReceived(candidate, document.rulesSnapshot) &&
         actionEndTime(candidate) <= time &&
         actionEndTime(candidate) + boost.duration > time,
     )
@@ -51,23 +52,26 @@ export function receiveBoostWindowFor(
     : undefined
 }
 
-export function movementReceiveBoostWindowFor(
+/** Preserve already-earned movement when a new reception refreshes the boost.
+ * Each newer qualifying catch replaces only the remaining active interval. */
+export function movementReceiveBoostWindowsFor(
   document: TacticDocumentV1,
   playerId: string,
   actionStart: number,
   time: number,
-): ReceiveBoostWindow | undefined {
+): ReceiveBoostWindow[] {
   const receiverRole = getActorRole(document, playerId)
   const ownBoost = receiverRole ? document.rulesSnapshot.roles[receiverRole].receiveBoost : undefined
+  const windows: ReceiveBoostWindow[] = []
   for (const source of [...document.actions]
     .filter(
       (candidate): candidate is PassAction =>
         candidate.type === 'pass' &&
         candidate.targetPlayerId === playerId &&
-        pathLength(candidate.path) <= document.rulesSnapshot.passing.maxDistance &&
+        passIsReceived(candidate, document.rulesSnapshot) &&
         actionEndTime(candidate) <= time,
     )
-    .sort((left, right) => actionEndTime(right) - actionEndTime(left))) {
+    .sort((left, right) => actionEndTime(left) - actionEndTime(right))) {
     let boost = ownBoost
     if (!boost) {
       const passerRole = getActorRole(document, source.actorId)
@@ -77,15 +81,20 @@ export function movementReceiveBoostWindowFor(
       }
     }
     if (boost && boost.duration > 0 && actionEndTime(source) + boost.duration > actionStart) {
-      return {
+      const start = actionEndTime(source)
+      // Preserve the existing stable first-source choice at equal catch times.
+      if (windows.at(-1)?.start === start) continue
+      const previous = windows.at(-1)
+      if (previous) previous.end = Math.min(previous.end, start)
+      windows.push({
         sourceActionId: source.id,
-        start: actionEndTime(source),
-        end: actionEndTime(source) + boost.duration,
+        start,
+        end: start + boost.duration,
         boost,
-      }
+      })
     }
   }
-  return undefined
+  return windows.filter((window) => window.end > Math.max(actionStart, window.start))
 }
 
 function buildMoveBoostEffect(
@@ -136,16 +145,29 @@ export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): W
   return buildMoveBoostEffect(move, source.id, boostStart, rule.duration, rule.netSeparationGain)
 }
 
-export function receiveMoveBoost(document: TacticDocumentV1, move: MoveAction): ReceiveMoveBoost | null {
-  const window = movementReceiveBoostWindowFor(document, move.actorId, move.startTime, actionEndTime(move))
-  if (!window) return null
-  return buildMoveBoostEffect(
-    move,
-    window.sourceActionId,
-    window.start,
-    window.boost.duration,
-    window.boost.netSeparationGain,
-  )
+export function receiveMoveBoosts(document: TacticDocumentV1, move: MoveAction): ReceiveMoveBoost[] {
+  if (move.timingConstraint) return []
+  const windows = movementReceiveBoostWindowsFor(document, move.actorId, move.startTime, actionEndTime(move))
+  const route = resolvedMovePath(move)
+  const length = pathLength(route)
+  if (length <= 0) return []
+  let previousGain = 0
+  return windows.flatMap((window) => {
+    const duration = window.end - window.start
+    const effect = buildMoveBoostEffect(
+      move,
+      window.sourceActionId,
+      window.start,
+      duration,
+      window.boost.netSeparationGain * duration / window.boost.duration,
+    )
+    if (!effect) return []
+    effect.startProgress = clamp(effect.startProgress + previousGain / length, 0, 1)
+    effect.endProgress = clamp(effect.endProgress + previousGain / length, effect.startProgress, 1)
+    effect.path = slicePath(route, effect.startProgress, effect.endProgress)
+    previousGain += effect.separationGain
+    return [effect]
+  })
 }
 
 export function waterQGainAtTime(effect: WaterQMoveBoost | null, ruleDuration: number, time: number): number {

@@ -5,7 +5,7 @@ import type { AttackAction, EZoneAction, MoveAction, PassAction, QMoveAction, Sh
 import { movementDuration, passArrivalTimeAtDistance, passDuration, shotDuration } from './durations'
 import { timelineJointTimes } from './keyframes'
 import { analyzeDocumentIceQHits, documentFreezeWindows, documentSlowWindows, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from './projectFrame'
-import { receiveMoveBoost, waterQMoveBoost } from './movementEffects'
+import { receiveMoveBoosts, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
   it('uses 1 grid/s movement and an 8-grid, 1-second decelerating pass', () => {
@@ -408,7 +408,7 @@ describe('projectFrame', () => {
       path: [{ x: 3.5, y: 9.3 }, { x: 9.5, y: 9.3 }],
     }
     document.actions.push(pass, move)
-    const effect = receiveMoveBoost(document, move)
+    const [effect] = receiveMoveBoosts(document, move)
 
     expect(effect?.sourceActionId).toBe(pass.id)
     expect(effect?.overlapStart).toBe(1)

@@ -4,6 +4,23 @@ import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } fr
 import { evaluateMatchup, evaluateWarnings } from './evaluateRules'
 
 describe('rule assistance', () => {
+  it('reports a capped failed homing pass and never treats its target as a recent receiver', () => {
+    const document = createDefaultDocument()
+    const pass: PassAction = {
+      id: 'escaped-pass', type: 'pass', actorId: 'blue-fire', targetPlayerId: 'blue-ice',
+      startTime: 0, duration: 1, flightOutcome: 'dropped',
+      path: [{ x: 0, y: 1 }, { x: 4, y: 1 }, { x: 4, y: 5 }],
+    }
+    document.actions.push(pass)
+    const warning = evaluateWarnings(document).find((candidate) => candidate.actionId === pass.id)
+    expect(warning?.severity).toBe('hard')
+    expect(warning?.title).toBe('传球未追上接球者')
+    expect(warning?.detail).toContain('未产生接球或接球加速')
+    const matchup = evaluateMatchup(document, 2, 'blue-ice', 'red-ice')
+    expect(matchup?.facts.some((fact) => fact.includes('最近传球'))).toBe(false)
+    pass.flightOutcome = 'received'
+    expect(evaluateMatchup(document, 2, 'blue-ice', 'red-ice')?.facts).toContain('最近传球 8.00 格')
+  })
   it('uses the configured directional default matchup matrix', () => {
     expect(createDefaultDocument().rulesSnapshot.matchups).toEqual({
       water: { water: 1, fire: -2, ice: 1 },

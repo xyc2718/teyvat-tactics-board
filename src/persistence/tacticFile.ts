@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
+import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
@@ -92,7 +93,8 @@ const actionSchema = z.discriminatedUnion('type', [
     actorId: z.string(),
     targetPlayerId: z.string().optional(),
     originKeyframe: moveKeyframeReferenceSchema.optional(),
-    path: z.array(vec2Schema).min(2).max(20),
+    flightOutcome: z.enum(['received', 'dropped']).optional(),
+    path: z.array(vec2Schema).min(2).max(MAX_PASS_PATH_POINTS),
   }),
   z.object({ ...actionBase, type: z.literal('receive'), actorId: z.string(), sourceActionId: z.string().optional() }),
   z.object({ ...actionBase, type: z.literal('possession'), carrierId: z.null(), position: vec2Schema }),
@@ -376,6 +378,7 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     if ('actorId' in action && action.actorId && !knownPlayers.has(action.actorId)) return `动作 ${action.id} 的执行者不存在。`
     if ('targetId' in action && action.targetId && !knownPlayers.has(action.targetId)) return `动作 ${action.id} 的目标不存在。`
     if (action.type === 'pass' && action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的接球队员不存在。`
+    if (action.type === 'pass' && action.flightOutcome && !action.targetPlayerId) return `动作 ${action.id} 的追踪传球结果缺少接球目标。`
     if (action.type === 'pass' && action.originKeyframe) {
       const reference = action.originKeyframe
       const source = instantQActionAtKeyframe(document, reference)

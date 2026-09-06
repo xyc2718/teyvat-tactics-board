@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { angleToVector, directionAngle, normalizeAngle, pathLength, pointAlongPath } from '../domain/geometry/geometry'
-import type { PlayerState, ProjectedFrame, RuleSetV1, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { angleToVector, directionAngle, normalizeAngle, pointAlongPath } from '../domain/geometry/geometry'
+import type { PlayerState, ProjectedFrame, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
+import { compilePath } from '../domain/geometry/compiledPath'
+import { passIsDropped } from '../domain/model/passFlight'
 import {
+  buildPassCorridor,
   classifyPassThreat,
   PASS_THREAT_LABELS,
   PASS_THREAT_ORDER,
+  type PassThreatSegment,
 } from '../domain/rules/passThreat'
 import {
   evaluateShotActionPressure,
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
-import { receiveMoveBoost, waterQMoveBoost } from '../domain/timeline/movementEffects'
+import { receiveMoveBoosts, waterQMoveBoost } from '../domain/timeline/movementEffects'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { useTacticStore } from '../editor/useTacticStore'
@@ -104,17 +108,26 @@ function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, 
   const waterBoost = rawWaterBoost && moveAction?.targetPlayerId
     ? { ...rawWaterBoost, path: projectedMovePathSegment(document, moveAction, rawWaterBoost.overlapStart, rawWaterBoost.overlapEnd) }
     : rawWaterBoost
-  const rawReceiveBoost = moveAction ? receiveMoveBoost(document, moveAction) : null
-  const receiveBoost = rawReceiveBoost && moveAction?.targetPlayerId
-    ? { ...rawReceiveBoost, path: projectedMovePathSegment(document, moveAction, rawReceiveBoost.overlapStart, rawReceiveBoost.overlapEnd) }
-    : rawReceiveBoost
+  const receiveBoosts = moveAction ? receiveMoveBoosts(document, moveAction).map((effect) => ({
+    ...effect,
+    path: projectedMovePathSegment(document, moveAction, effect.overlapStart, effect.overlapEnd),
+  })) : []
   const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
   const statusSlowSegments = moveAction ? statusSlowSegmentsForMove(document, moveAction) : []
   const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
+  const passFrame = action.type === 'pass' ? projectFrame(document, action.startTime) : null
+  const passer = action.type === 'pass' ? passFrame?.players.find((player) => player.id === action.actorId) : null
+  const passSegments = action.type === 'pass' && passer && passFrame
+    ? classifyPassThreat(path, passer.team, passFrame, document.rulesSnapshot, action.flightOutcome)
+    : []
+  const passCorridor = action.type === 'pass' ? buildPassCorridor(path, document.rulesSnapshot) : []
+  const passLanding = action.type === 'pass' && passIsDropped({ ...action, path }, document.rulesSnapshot)
+    ? compilePath(path).pointAtDistance(document.rulesSnapshot.passing.maxDistance)
+    : null
   return {
-    path, qEffect, moveAction, renderedPath, waterBoost, receiveBoost,
+    path, qEffect, moveAction, renderedPath, waterBoost, receiveBoosts,
     eZoneSlowSegments, statusSlowSegments, shotPressure,
-    passFrame: action.type === 'pass' ? projectFrame(document, action.startTime) : null,
+    passSegments, passCorridor, passLanding,
   }
 }
 
@@ -370,7 +383,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const geometry = actionGeometry.get(action.id)
     if (!geometry) return null
-    const { path, qEffect, moveAction, renderedPath, waterBoost, receiveBoost, eZoneSlowSegments, statusSlowSegments, shotPressure, passFrame } = geometry
+    const { path, qEffect, moveAction, renderedPath, waterBoost, receiveBoosts, eZoneSlowSegments, statusSlowSegments, shotPressure, passSegments, passCorridor, passLanding } = geometry
     return (
       <g
         key={action.id}
@@ -381,10 +394,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
       >
         {action.type === 'pass'
           ? <PassThreatLines
-              path={path}
-              passerId={action.actorId}
-              frame={passFrame ?? frame}
-              rules={rules}
+              segments={passSegments}
               markerEnd="url(#arrow-pass)"
             />
           : <polyline
@@ -396,10 +406,15 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
               {moveAction?.targetPlayerId && <title>贴身跟随 · 同步至目标动作结束 · 间距 {moveAction.followGap?.toFixed(2)} 格</title>}
             </polyline>}
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
-        {receiveBoost && <ReceiveBoostRoute effect={receiveBoost} />}
+        {receiveBoosts.map((effect) => <ReceiveBoostRoute key={effect.sourceActionId} effect={effect} />)}
         {eZoneSlowSegments.length > 0 && <EZoneSlowRoute segments={eZoneSlowSegments} />}
         {statusSlowSegments.length > 0 && <StatusSlowRoute segments={statusSlowSegments} />}
-        {document.view.analysis && action.type === 'pass' && <PassAnalysis path={path} document={document} />}
+        {document.view.analysis && action.type === 'pass' && <PassAnalysis corridor={passCorridor} />}
+        {passLanding && <g className="pass-landing" transform={`translate(${passLanding.x * SCALE} ${passLanding.y * SCALE})`} pointerEvents="none">
+          <circle r="10" fill="#10231f" stroke="#a9a3b4" strokeWidth="3" strokeDasharray="3 2" />
+          <path d="M -4 -4 L 4 4 M -4 4 L 4 -4" stroke="#eee8d8" strokeWidth="2" />
+          <title>未接到 · 球在此落地</title>
+        </g>}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
         {elevated && action.type !== 'shoot' && !(action.type === 'pass' && action.targetPlayerId) && !(action.type === 'move' && action.targetPlayerId) && path.map((point, index) => (
@@ -901,34 +916,26 @@ function ToolPointerPreview({
   return null
 }
 
-function PassThreatLines({
-  path,
-  passerId,
-  frame,
-  rules,
+const PassThreatLines = memo(function PassThreatLines({
+  segments,
   markerEnd,
 }: {
-  path: Vec2[]
-  passerId: string
-  frame: ProjectedFrame
-  rules: RuleSetV1
+  segments: PassThreatSegment[]
   markerEnd: string
 }) {
-  const passer = frame.players.find((player) => player.id === passerId)
-  if (!passer) return null
-  const segments = classifyPassThreat(path, passer.team, frame, rules)
-  return <>{segments.map((segment, index) => (
+  const drawnSegments = segments.filter((segment) => segment.endDistance > segment.startDistance)
+  return <>{drawnSegments.map((segment, index) => (
     <polyline
       key={`${segment.startDistance}-${segment.endDistance}-${segment.level}`}
       points={pointsAttribute(segment.path)}
       className={`action-path action-pass pass-threat-segment threat-${segment.level}`}
-      markerEnd={index === segments.length - 1 ? markerEnd : undefined}
+      markerEnd={index === drawnSegments.length - 1 ? markerEnd : undefined}
       data-threat={segment.level}
     >
       <title>{PASS_THREAT_LABELS[segment.level]} · {segment.startDistance.toFixed(1)}–{segment.endDistance.toFixed(1)} 格</title>
     </polyline>
   ))}</>
-}
+})
 
 function PassThreatLegend({ onClose }: { onClose: () => void }) {
   return <section className="pass-threat-legend" aria-label="传球威胁图例">
@@ -954,7 +961,7 @@ function WaterBoostRoute({
 function ReceiveBoostRoute({
   effect,
 }: {
-  effect: NonNullable<ReturnType<typeof receiveMoveBoost>>
+  effect: ReturnType<typeof receiveMoveBoosts>[number]
 }) {
   return <g className="receive-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
     <polyline points={pointsAttribute(effect.path)} className="ice-receive-boost-segment">
@@ -996,30 +1003,14 @@ function StatusSlowRoute({
   </g>
 }
 
-function PassAnalysis({ path, document }: { path: Vec2[]; document: TacticDocumentV1 }) {
-  const fullLength = pathLength(path)
-  if (fullLength <= document.rulesSnapshot.passing.safeDistance) return null
-  const start = pointAlongPath(path, document.rulesSnapshot.passing.safeDistance / fullLength)
-  const end = pointAlongPath(path, Math.min(1, document.rulesSnapshot.passing.maxDistance / fullLength))
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  const length = Math.hypot(dx, dy) || 1
-  const nx = -dy / length
-  const ny = dx / length
-  const startWidth = document.rulesSnapshot.passing.interceptStartWidth
-  const endWidth = document.rulesSnapshot.passing.interceptEndWidth
-  const polygon = [
-    { x: start.x + nx * startWidth, y: start.y + ny * startWidth },
-    { x: end.x + nx * endWidth, y: end.y + ny * endWidth },
-    { x: end.x - nx * endWidth, y: end.y - ny * endWidth },
-    { x: start.x - nx * startWidth, y: start.y - ny * startWidth },
-  ]
+const PassAnalysis = memo(function PassAnalysis({ corridor }: { corridor: Vec2[] }) {
+  if (corridor.length === 0) return null
   return <>
-    <polygon points={pointsAttribute(polygon)} className="intercept-cone">
-      <title>传球截断风险区 · 全长 {fullLength.toFixed(1)} 格</title>
+    <polygon points={pointsAttribute(corridor)} className="intercept-cone">
+      <title>传球截断风险区 · 沿实际曲线路径</title>
     </polygon>
   </>
-}
+})
 
 function QAnalysis({ action, document, scale }: { action: Extract<TacticAction, { type: 'qMove' }>; document: TacticDocumentV1; scale: number }) {
   const actor = document.initialScene.players.find((player) => player.id === action.actorId)

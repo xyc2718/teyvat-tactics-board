@@ -4,6 +4,19 @@ import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } fr
 import { buildTacticNarrative } from './buildTacticNarrative'
 
 describe('tactic narrative', () => {
+  it('describes a failed homing flight as grounded, not a catch at its named target', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'escaped-pass', type: 'pass', actorId: 'blue-fire', targetPlayerId: 'blue-ice',
+      startTime: 0, duration: 1, flightOutcome: 'dropped',
+      path: [{ x: 0, y: 1 }, { x: 4, y: 1 }, { x: 4, y: 5 }],
+    })
+    const detail = buildTacticNarrative(document).entries.find((entry) => entry.id === 'action-escaped-pass')?.detail
+    expect(detail).toContain('实际路线累计 8.00 格')
+    expect(detail).toContain('未接到')
+    expect(detail).toContain('(4.0, 5.0) 落为自由球')
+    expect(detail).toContain('不产生接球加速')
+  })
   it('derives chronological ice hits, acceleration, pass threat, zones and hard warnings', () => {
     const document = createDefaultDocument()
     document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 4.5, y: 7.8 }
@@ -26,6 +39,8 @@ describe('tactic narrative', () => {
     expect(iceText).toContain('0° 面向反向后退 0.45 格至')
     expect(moveText).toContain('水 Q 加速段')
     expect(passText).toContain('最高威胁')
+    expect(passText).toContain('实际路线累计 8.00 格')
+    expect(passText).toContain('(5.0, 5.0) 落为自由球')
     expect(zoneText).toContain('随移动跟随')
     expect(zoneText).toContain('0.5×')
     expect(zoneText).toContain('0.7×')

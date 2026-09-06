@@ -8,10 +8,24 @@ export function movementDuration(path: Vec2[], rules: RuleSetV1): number {
 }
 
 export function passDuration(path: Vec2[], rules: RuleSetV1): number {
+  return passTimeForDistance(pathLength(path), rules)
+}
+
+export function passMaxDuration(rules: RuleSetV1): number {
+  return Math.max(rules.passing.maxDistance, EPSILON) / Math.max(rules.passing.ballSpeed, EPSILON)
+}
+
+/** Integrated scalar speed, independent of the direction of a homing pass. */
+export function passTravelDistance(elapsed: number, rules: RuleSetV1): number {
+  const progress = clamp(elapsed / passMaxDuration(rules), 0, 1)
+  return Math.max(rules.passing.maxDistance, EPSILON) * progress * (2 - progress)
+}
+
+/** Inverse of passTravelDistance; distances beyond the budget stop at its end. */
+export function passTimeForDistance(distance: number, rules: RuleSetV1): number {
   const maxDistance = Math.max(rules.passing.maxDistance, EPSILON)
-  const travelFraction = clamp(pathLength(path) / maxDistance, 0, 1)
-  const maxDuration = maxDistance / Math.max(rules.passing.ballSpeed, EPSILON)
-  return (1 - Math.sqrt(1 - travelFraction)) * maxDuration
+  const travelFraction = clamp(distance / maxDistance, 0, 1)
+  return (1 - Math.sqrt(1 - travelFraction)) * passMaxDuration(rules)
 }
 
 /**
@@ -19,8 +33,8 @@ export function passDuration(path: Vec2[], rules: RuleSetV1): number {
  * configured maximum distance and its average speed. A shorter pass ends
  * earlier on that same curve instead of rescaling the curve to stop at zero.
  */
-export function passPathProgress(path: Vec2[], elapsed: number, duration: number, rules: RuleSetV1): number {
-  const length = pathLength(path)
+export function passPathProgress(path: Vec2[], elapsed: number, duration: number, rules: RuleSetV1, knownLength?: number): number {
+  const length = knownLength ?? pathLength(path)
   if (length <= EPSILON) return 0
   const maxDistance = Math.max(rules.passing.maxDistance, EPSILON)
   const travelDistance = Math.min(length, maxDistance)
@@ -36,8 +50,7 @@ export function passArrivalTimeAtDistance(path: Vec2[], distanceFromStart: numbe
   const reachableDistance = Math.min(pathLength(path), maxDistance)
   if (reachableDistance <= EPSILON) return 0
   const distanceProgress = clamp(distanceFromStart / maxDistance, 0, reachableDistance / maxDistance)
-  const maxDuration = maxDistance / Math.max(rules.passing.ballSpeed, EPSILON)
-  return (1 - Math.sqrt(1 - distanceProgress)) * maxDuration
+  return (1 - Math.sqrt(1 - distanceProgress)) * passMaxDuration(rules)
 }
 
 export function qDuration(player: PlayerState, rules: RuleSetV1): number {

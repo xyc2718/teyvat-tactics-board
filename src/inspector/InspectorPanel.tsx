@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { normalizeAngle, pathLength } from '../domain/geometry/geometry'
 import type { MoveAction, MoveKeyframeReference, TacticDocumentV1 } from '../domain/model/types'
+import { passIsDropped, passIsReceived } from '../domain/model/passFlight'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
 import { evaluatePlayerSituation, type BallArrival } from '../domain/rules/playerSituation'
 import {
@@ -170,7 +171,15 @@ export function InspectorPanel() {
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>
             </label>}
             {selectedAction.type === 'shoot' && selectedShotPressure && <ShotPressureCard evaluation={selectedShotPressure} />}
-            {selectedAction.type === 'pass' && <p className="callout">{selectedAction.targetPlayerId ? '接球落点与时刻由接球队员的移动轨迹自动解算；' : ''}≤ {document.rulesSnapshot.passing.safeDistance} 格为安全传球；超过 {document.rulesSnapshot.passing.maxDistance} 格会落为自由球。</p>}
+            {selectedAction.type === 'pass' && <p className="callout">
+              {selectedAction.targetPlayerId ? '球持续朝接球者当前位置转向；' : ''}
+              {passIsDropped(selectedAction, document.rulesSnapshot)
+                ? '未接到：已耗尽飞行距离，球在达到距离上限的位置落地，不产生接球或接球加速。'
+                : passIsReceived(selectedAction, document.rulesSnapshot)
+                  ? `接球时刻 ${(selectedAction.startTime + selectedAction.duration).toFixed(2)}s。`
+                  : '到达指定落点后成为自由球。'}
+              {' '}按实际路线累计距离计算，≤ {document.rulesSnapshot.passing.safeDistance} 格为安全段，最多飞行 {document.rulesSnapshot.passing.maxDistance} 格。
+            </p>}
             {selectedAction.type === 'receive' && selectedAction.sourceActionId && <p className="callout">此接球节点由对应传球自动生成，时间随传球起点和接球队员轨迹更新。</p>}
             <button className="danger-button" onClick={() => { deleteAction(selectedAction.id); select(null) }}>删除动作</button>
           </section>

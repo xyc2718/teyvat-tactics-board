@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
+import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { parseTactic, serializeTactic } from './tacticFile'
 
 describe('tactic file boundary', () => {
+  it('round-trips bounded dense pass paths with explicit outcomes and accepts legacy passes', () => {
+    const source = createDefaultDocument()
+    source.actions.push({
+      id: 'curved-pass', type: 'pass', actorId: 'blue-fire', targetPlayerId: 'blue-ice',
+      flightOutcome: 'dropped', startTime: 0, duration: 1,
+      path: Array.from({ length: MAX_PASS_PATH_POINTS }, (_, index) => ({ x: index / MAX_PASS_PATH_POINTS, y: 4 })),
+    })
+    const result = parseTactic(serializeTactic(source))
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.document.actions).toEqual(source.actions)
+    const pass = source.actions[0]
+    if (pass?.type !== 'pass') throw new Error('Missing pass')
+    pass.path.push({ x: 2, y: 4 })
+    expect(parseTactic(serializeTactic(source)).ok).toBe(false)
+    pass.path = [{ x: 1, y: 4 }, { x: 6, y: 4 }]
+    delete pass.flightOutcome
+    expect(parseTactic(serializeTactic(source)).ok).toBe(true)
+    expect(parseTactic(serializeTactic(source).replace('"type": "pass"', '"type": "pass", "flightOutcome": "unknown"')).ok).toBe(false)
+    pass.flightOutcome = 'received'
+    delete pass.targetPlayerId
+    expect(parseTactic(serializeTactic(source)).ok).toBe(false)
+  })
+
   it('creates a centered 20 by 14 default field', () => {
     const document = createDefaultDocument()
     expect(document.rulesSnapshot).toMatchObject({ version: 'teyvat-mvp-2', field: { width: 20, height: 14 } })

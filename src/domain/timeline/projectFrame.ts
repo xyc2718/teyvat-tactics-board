@@ -25,8 +25,10 @@ import type {
 import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
 import { actionEndTime, passPathProgress } from './durations'
 import { instantQActionAtKeyframe } from './playerKeyframes'
+import { compilePath } from '../geometry/compiledPath'
+import { passIsReceived } from '../model/passFlight'
 import {
-  movementReceiveBoostWindowFor,
+  movementReceiveBoostWindowsFor,
   receiveBoostWindowFor,
   waterQGainAtTime,
   waterQMoveBoost,
@@ -142,8 +144,7 @@ function moveDistanceWithoutEZoneSlow(
       traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
     }
 
-    const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, effectiveTime)
-    if (receiveWindow) {
+    for (const receiveWindow of movementReceiveBoostWindowsFor(document, action.actorId, action.startTime, effectiveTime)) {
       const elapsed = Math.max(
         0,
         Math.min(effectiveTime, receiveWindow.end) - Math.max(action.startTime, receiveWindow.start),
@@ -182,8 +183,7 @@ function followMoveDistanceBudget(
       }
     }
   }
-  const receiveWindow = movementReceiveBoostWindowFor(document, action.actorId, action.startTime, endTime)
-  if (receiveWindow) {
+  for (const receiveWindow of movementReceiveBoostWindowsFor(document, action.actorId, action.startTime, endTime)) {
     const overlapStart = Math.max(startTime, action.startTime, receiveWindow.start)
     const overlapEnd = Math.min(endTime, receiveWindow.end)
     if (overlapEnd > overlapStart) {
@@ -276,6 +276,7 @@ interface ProjectionMemo {
   followTraces: Map<string, FollowMoveTimeline>
   moveTraces: Map<string, EZoneMoveTrace>
   qDistances: Map<string, number>
+  passPaths: Map<string, ReturnType<typeof compilePath>>
 }
 
 // The hit map belongs to one validated document signature. A document edit
@@ -292,6 +293,7 @@ function projectionMemo(hitMap: IceQHitMap): ProjectionMemo {
       followTraces: new Map(),
       moveTraces: new Map(),
       qDistances: new Map(),
+      passPaths: new Map(),
     }
     projectionMemos.set(hitMap, memo)
   }
@@ -880,14 +882,14 @@ function computeSceneCore(
 
     if (action.type === 'pass') {
       if (!actor || action.path.length < 2) continue
-      const length = pathLength(action.path)
-      const progress = passPathProgress(action.path, time - action.startTime, action.duration, rules)
+      const route = memoized(projectionMemo(hitMap).passPaths, action.id, 128, () => compilePath(action.path))
+      const progress = passPathProgress(action.path, time - action.startTime, action.duration, rules, route.length)
       ball.carrierId = null
       ball.isFree = true
-      ball.position = pointAlongPath(action.path, progress)
+      ball.position = route.pointAtDistance(progress * route.length)
       for (const player of players) player.hasBall = false
 
-      if (time >= actionEndTime(action) && length <= rules.passing.maxDistance && action.targetPlayerId) {
+      if (time >= actionEndTime(action) && passIsReceived(action, rules) && action.targetPlayerId) {
         const receiver = players.find((player) => player.id === action.targetPlayerId)
         if (receiver) {
           receiver.hasBall = true
@@ -918,6 +920,10 @@ function computeSceneCore(
     }
 
     if (action.type === 'receive' && actor && time >= action.startTime) {
+      if (action.sourceActionId) {
+        const source = document.actions.find((candidate) => candidate.id === action.sourceActionId)
+        if (!source || source.type !== 'pass' || !passIsReceived(source, rules)) continue
+      }
       for (const player of players) player.hasBall = player.id === actor.id
       ball.carrierId = actor.id
       ball.isFree = false
@@ -1283,9 +1289,18 @@ export function projectFrame(document: TacticDocumentV1, time: number): Projecte
 /** Position queries share the full projection's movement and knockback rules,
  * but do not evaluate unrelated players, possession, or shooting. */
 export function projectPlayerPosition(document: TacticDocumentV1, playerId: string, time: number): PlayerState['position'] | undefined {
+  return createPlayerPositionReader(document, playerId)(time)
+}
+
+/** A synchronous solver session over an unmodified document. Validate/cache the
+ * snapshot once, not once per steering sample. Recreate after any document edit. */
+export function createPlayerPositionReader(document: TacticDocumentV1, playerId: string) {
   const hitMap = buildIceQHitMap(document)
-  const position = projectSceneCore(document, time, false, true, hitMap, true, new Set(), playerId).players[0]?.position
-  return position ? { ...position } : undefined
+  const ignoredActionIds = new Set<string>()
+  return (time: number): PlayerState['position'] | undefined => {
+    const position = projectSceneCore(document, time, false, true, hitMap, true, ignoredActionIds, playerId).players[0]?.position
+    return position ? { ...position } : undefined
+  }
 }
 
 /**

@@ -98,6 +98,8 @@ export interface PassAction extends BaseAction {
   targetPlayerId?: string
   /** Optional same-time action edge that fixes whether the pass starts before or after an instant Q. */
   originKeyframe?: MoveKeyframeReference
+  /** Resolved named-pass result. Missing only on legacy or unaddressed passes. */
+  flightOutcome?: 'received' | 'dropped'
   path: Vec2[]
 }
 

@@ -319,24 +319,30 @@ function recalculateRuleDrivenActions(document: TacticDocumentV1) {
   syncPassEndpoints(document)
 }
 
-function syncPassEndpoints(document: TacticDocumentV1, playerId?: string) {
+function syncPassEndpoints(document: TacticDocumentV1) {
   const passes = document.actions
     .filter(
       (action): action is Extract<TacticAction, { type: 'pass' }> =>
-        action.type === 'pass'
-        && (playerId === undefined || action.actorId === playerId || action.targetPlayerId === playerId),
+        action.type === 'pass',
     )
-    .sort((left, right) => left.startTime - right.startTime)
 
+  // Q edits may move a bound launch across another pass. Resolve every launch
+  // timestamp before ordering receptions that can affect later trajectories.
   for (const action of passes) {
     if (action.originKeyframe) {
       const source = instantQActionAtKeyframe(document, action.originKeyframe)
       if (source && source.actorId === action.actorId) action.startTime = source.startTime
       else delete action.originKeyframe
     }
+  }
+  passes.sort((left, right) => left.startTime - right.startTime)
+
+  for (const action of passes) {
     const resolution = solvePassReception(document, action)
     action.path = resolution.path
     action.duration = resolution.duration
+    if (action.targetPlayerId) action.flightOutcome = resolution.received ? 'received' : 'dropped'
+    else delete action.flightOutcome
 
     const linkedReceives = document.actions.filter(
       (candidate): candidate is Extract<TacticAction, { type: 'receive' }> =>
@@ -537,7 +543,7 @@ function editPlayerJoint(
   }
 
   reflowSimpleLocomotion(document, actorId)
-  syncPassEndpoints(document, actorId)
+  syncPassEndpoints(document)
   syncShotOrigins(document, actorId)
   refreshStepSnapshots(document)
 
@@ -854,7 +860,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           if (stepPlayer) stepPlayer.position = { ...position }
           if (step.snapshot.ball.carrierId === id) step.snapshot.ball.position = { ...position }
         }
-        syncPassEndpoints(draft, id)
+        syncPassEndpoints(draft)
         syncShotOrigins(draft, id)
         return
       }
@@ -915,7 +921,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       recalculateRuleDrivenActions(draft)
       if (!state.showAdvancedTimeline) {
         reflowSimpleLocomotion(draft, id)
-        syncPassEndpoints(draft, id)
+        syncPassEndpoints(draft)
       }
     })
     const selectedActorLostEligibility = state.tool === 'eZone'
@@ -943,6 +949,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     update(draft.initialScene)
     draft.stepMarkers.forEach((step) => update(step.snapshot))
+    syncPassEndpoints(draft)
+    refreshStepSnapshots(draft)
   })),
 
   setPlayerFacing: (id, facing) => set((state) => {
@@ -960,6 +968,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       update(draft.initialScene)
       draft.stepMarkers.forEach((step) => update(step.snapshot))
+      syncPassEndpoints(draft)
+      refreshStepSnapshots(draft)
     })
     return patch
   }),
@@ -1035,6 +1045,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const next = cloneDocument(state.document)
     next.actions.push(action)
     if (!state.showAdvancedTimeline) reflowSimpleLocomotion(next, actorId)
+    syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
     return {
@@ -1116,6 +1127,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     } else {
       next.actions.push(action)
     }
+    syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
     return {
@@ -1149,7 +1161,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     const next = cloneDocument(state.document)
     next.actions.push(action)
+    syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
+    refreshStepSnapshots(next)
     return {
       ...applyDocument(state, next),
       activeStepId,
@@ -1341,8 +1355,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (!action) return {}
       const next = cloneDocument(document)
       next.actions.push(action)
-      if (action.type === 'pass') syncPassEndpoints(next)
-      if (action.type === 'move' || action.type === 'qMove') syncPassEndpoints(next, action.actorId)
+      if (action.type !== 'annotation') syncPassEndpoints(next)
       const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
       refreshStepSnapshots(next)
       return {
@@ -1388,12 +1401,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         if (action.timingConstraint) syncConstrainedMovePath(draft, action)
         else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       }
-      if (action.type === 'pass') syncPassEndpoints(draft)
       if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
         reflowSimpleLocomotion(draft, action.actorId)
       }
       syncFollowMoveTimings(draft)
-      if (action.type === 'move' || action.type === 'qMove') syncPassEndpoints(draft, action.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return {
@@ -1426,7 +1438,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
-      syncPassEndpoints(draft, action.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return { ...patch, currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
@@ -1442,7 +1454,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
-      syncPassEndpoints(draft, action.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return { ...patch, currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
@@ -1464,7 +1476,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
-      syncPassEndpoints(draft, action.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return {
@@ -1500,7 +1512,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       syncConstrainedMovePath(draft, action)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
-      syncPassEndpoints(draft, action.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return {
@@ -1539,7 +1551,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         syncConstrainedMovePath(draft, candidate)
         if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, candidate.actorId)
         syncFollowMoveTimings(draft)
-        syncPassEndpoints(draft, candidate.actorId)
+        syncPassEndpoints(draft)
         refreshStepSnapshots(draft)
       })
       return {
@@ -1554,7 +1566,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         if (!candidate || candidate.type !== 'wait') return
         if (field === 'duration') candidate.duration = safeValue
         reflowSimpleLocomotion(draft, candidate.actorId ?? '')
-        syncPassEndpoints(draft, candidate.actorId)
+        syncPassEndpoints(draft)
         refreshStepSnapshots(draft)
       })
       return { ...patch, currentTime: timeAfterActionEdit(action, patch.document.actions.find((item) => item.id === actionId), patch.document, state.currentTime) }
@@ -1568,7 +1580,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           if (candidate && candidate.type === 'qMove') {
             candidate.startTime = safeValue
             syncFollowMoveTimings(draft)
-            syncPassEndpoints(draft, candidate.actorId)
+            syncPassEndpoints(draft)
             refreshStepSnapshots(draft)
           }
         }),
@@ -1580,8 +1592,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (!candidate) return
       candidate[field] = safeValue
       syncFollowMoveTimings(draft)
-      if (candidate.type === 'pass') syncPassEndpoints(draft)
-      else if ('actorId' in candidate && candidate.actorId) syncPassEndpoints(draft, candidate.actorId)
+      syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
     })
     return { ...patch, notice: null }
@@ -1595,7 +1606,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const player = frame.players.find((candidate) => candidate.id === action.actorId)
     if (player) action.duration = shotDuration(player, charge, draft.rulesSnapshot)
     syncFollowMoveTimings(draft)
-    syncPassEndpoints(draft, action.actorId)
+    syncPassEndpoints(draft)
     refreshStepSnapshots(draft)
   })),
 

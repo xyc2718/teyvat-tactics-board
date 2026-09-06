@@ -1,5 +1,7 @@
 import { clampPoint, getShootZone, normalizeAngle, oppositeFacingOffset, pathLength, resolvedMovePath } from '../geometry/geometry'
+import { compilePath } from '../geometry/compiledPath'
 import type { RuleWarning, TacticAction, TacticDocumentV1, Vec2 } from '../model/types'
+import { passIsDropped, passIsReceived } from '../model/passFlight'
 import { evaluateWarnings } from '../rules/evaluateRules'
 import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from '../rules/passThreat'
 import { evaluateShotActionPressure, shotPressureComparison, shotPressureSummary } from '../rules/shotPressure'
@@ -87,12 +89,18 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
     }
     case 'pass': {
       if (!actor) return `${timing}，记录了一次传球。`
-      const segments = classifyPassThreat(action.path, actor.team, startFrame, document.rulesSnapshot)
+      const segments = classifyPassThreat(action.path, actor.team, startFrame, document.rulesSnapshot, action.flightOutcome)
       const threat = highestPassThreat(segments)
       const receiver = action.targetPlayerId
         ? startFrame.players.find((player) => player.id === action.targetPlayerId)?.name ?? action.targetPlayerId
         : '路径终点'
-      return `${timing}，${name} 向 ${receiver} 传球 ${pathLength(action.path).toFixed(2)} 格；最高威胁为“${PASS_THREAT_LABELS[threat]}”。`
+      const outcome = passIsDropped(action, document.rulesSnapshot)
+        ? `未接到，球在 ${pointText(compilePath(action.path).pointAtDistance(document.rulesSnapshot.passing.maxDistance))} 落为自由球，不产生接球加速`
+        : passIsReceived(action, document.rulesSnapshot)
+          ? `${receiver} 在 ${actionEndTime(action).toFixed(2)}s 接球`
+          : '球到达落点后成为自由球'
+      const traveledDistance = Math.min(pathLength(action.path), document.rulesSnapshot.passing.maxDistance)
+      return `${timing}，${name} 向 ${receiver} 传球，实际路线累计 ${traveledDistance.toFixed(2)} 格；${outcome}；最高威胁为“${PASS_THREAT_LABELS[threat]}”。`
     }
     case 'shoot': {
       const zone = actor ? getShootZone(actor.position, actor.team, document.rulesSnapshot.field.width, document.rulesSnapshot.field.height, document.rulesSnapshot.field.smallPenaltyRadius, document.rulesSnapshot.field.largePenaltyRadius) : 'outside'

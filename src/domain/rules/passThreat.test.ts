@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../model/createDocument'
 import { projectFrame } from '../timeline/projectFrame'
-import { classifyPassThreat } from './passThreat'
+import { buildPassCorridor, classifyPassThreat, highestPassThreat } from './passThreat'
 
 function movePlayer(document: ReturnType<typeof createDefaultDocument>, id: string, x: number, y: number) {
   const player = document.initialScene.players.find((candidate) => candidate.id === id)!
@@ -9,6 +9,33 @@ function movePlayer(document: ReturnType<typeof createDefaultDocument>, id: stri
 }
 
 describe('pass threat classification', () => {
+  it('marks an uncaught capped curve as dropped without extending its route', () => {
+    const document = createDefaultDocument()
+    const path = [{ x: 0, y: 1 }, { x: 4, y: 1 }, { x: 4, y: 5 }]
+    const frame = projectFrame(document, 0)
+    const segments = classifyPassThreat(path, 'blue', frame, document.rulesSnapshot, 'dropped')
+    expect(highestPassThreat(segments)).toBe('drop')
+    expect(segments.at(-1)).toMatchObject({ level: 'drop', startDistance: 8, endDistance: 8 })
+    expect(segments.flatMap((segment) => segment.path)).toContainEqual(path[1])
+    expect(segments.at(-1)?.path).toEqual([path[2], path[2]])
+    expect(highestPassThreat(classifyPassThreat(path, 'blue', frame, document.rulesSnapshot, 'received'))).not.toBe('drop')
+  })
+
+  it('follows corridor bends and uses cumulative distance for its width and endpoint', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.passing.interceptStartWidth = 0.2
+    document.rulesSnapshot.passing.interceptEndWidth = 0.6
+    const polygon = buildPassCorridor([
+      { x: 0, y: 1 }, { x: 5, y: 1 }, { x: 5, y: 4 }, { x: 9, y: 4 },
+    ], document.rulesSnapshot)
+    expect(polygon).toHaveLength(6)
+    expect(polygon[0]).toEqual({ x: 4, y: 1.2 })
+    expect(polygon[2]).toEqual({ x: 4.4, y: 4 })
+    expect(polygon[3]).toEqual({ x: 5.6, y: 4 })
+    // The bend at (5, 1) has its own two boundary points; no straight chord.
+    expect(polygon[1]!.y).toBeLessThan(1.31)
+    expect(polygon.every((point) => point.x <= 5.6)).toBe(true)
+  })
   it('splits exact configured safe and over-max distance boundaries', () => {
     const document = createDefaultDocument()
     const frame = projectFrame(document, 0)

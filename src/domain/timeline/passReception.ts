@@ -1,12 +1,13 @@
-import { pathLength } from '../geometry/geometry'
+import { distance } from '../geometry/geometry'
+import { MAX_PASS_PATH_POINTS } from '../model/passFlight'
 import type { PassAction, TacticDocumentV1, Vec2 } from '../model/types'
-import { passDuration } from './durations'
-import { projectFrameAtKeyframe, projectPlayerPosition } from './projectFrame'
+import { actionEndTime, passDuration, passMaxDuration, passTravelDistance } from './durations'
+import { createPlayerPositionReader, documentFreezeWindows, projectFrameAtKeyframe } from './projectFrame'
 
 const SOLVER_SAMPLES = 256
-const SOLVER_ITERATIONS = 36
-const DISTANCE_EPSILON = 1e-6
-const TIME_EPSILON = 1e-5
+const CONTACT_ITERATIONS = 32
+const DISTANCE_EPSILON = 1e-9
+const EVENT_TIME_EPSILON = 1e-9
 
 export interface PassReceptionResolution {
   path: Vec2[]
@@ -16,139 +17,225 @@ export interface PassReceptionResolution {
   receiverPosition?: Vec2
 }
 
-function withoutPassPair(document: TacticDocumentV1, passId: string): TacticDocumentV1 {
+function withoutFuturePassEffects(document: TacticDocumentV1, pass: PassAction): TacticDocumentV1 {
+  const passIndex = document.actions.findIndex((action) => action.id === pass.id)
+  const excludedIds = new Set(document.actions.flatMap((action, index) => (
+    action.type === 'pass' && (
+      action.id === pass.id
+      || action.startTime > pass.startTime
+      || (action.startTime === pass.startTime && (passIndex < 0 || index > passIndex))
+    ) ? [action.id] : []
+  )))
+  excludedIds.add(pass.id)
   return {
     ...document,
-    actions: document.actions.filter(
-      (action) => action.id !== passId
-        && !(action.type === 'receive' && action.sourceActionId === passId),
-    ),
+    actions: document.actions.filter((action) => !excludedIds.has(action.id)
+      && !(action.type === 'receive' && action.sourceActionId && excludedIds.has(action.sourceActionId))),
   }
 }
 
-/**
- * Solves the earliest meeting between a pass started now and the named
- * receiver's projected future movement. The pass itself and its generated
- * receive event are removed from projection so the receive boost cannot move
- * the target before the catch that creates that boost.
- */
-export function solvePassReception(
-  document: TacticDocumentV1,
-  pass: PassAction,
-): PassReceptionResolution {
-  const projectionDocument = withoutPassPair(document, pass.id)
-  const startFrame = projectFrameAtKeyframe(
-    projectionDocument,
-    pass.startTime,
-    pass.originKeyframe ?? null,
-  )
-  const passer = startFrame.players.find((player) => player.id === pass.actorId)
-  const origin = passer?.position ?? pass.path[0]
-  const authoredEndpoint = pass.path.at(-1) ?? origin
+interface FlightInterval {
+  end: number
+  jumpAtEnd: boolean
+}
 
-  if (!origin) {
-    return {
-      path: pass.path.map((point) => ({ ...point })),
-      duration: passDuration(pass.path, document.rulesSnapshot),
-      arrivalTime: pass.startTime,
-      received: false,
-    }
+/** Keep target jumps exact. Additional smooth-event cuts share a fixed budget
+ * with the regular grid, so even the maximum-size imported tactic stays bounded. */
+function flightIntervals(document: TacticDocumentV1, playerId: string, start: number, duration: number): FlightInterval[] {
+  const jumps = new Set<number>()
+  const smooth = new Set<number>()
+  const add = (set: Set<number>, time: number) => {
+    if (time > start && time <= start + duration) set.add(time - start)
   }
-
-  const targetPlayerId = pass.targetPlayerId
-  if (!targetPlayerId) {
-    const path = [{ ...origin }, ...pass.path.slice(1).map((point) => ({ ...point }))]
-    const duration = passDuration(path, document.rulesSnapshot)
-    return {
-      path,
-      duration,
-      arrivalTime: pass.startTime + duration,
-      received: false,
-    }
+  for (const action of document.actions) {
+    // Authored moves/waits can have detached initial positions too, so their
+    // starts receive the same left/right treatment as instantaneous Q.
+    if ((action.type === 'move' || action.type === 'qMove' || action.type === 'wait') && action.actorId === playerId) {
+      add(jumps, action.startTime)
+    } else add(smooth, action.startTime)
+    add(smooth, actionEndTime(action))
   }
-
-  const receiverAt = (elapsed: number) => projectPlayerPosition(
-    projectionDocument,
-    targetPlayerId,
-    pass.startTime + elapsed,
-  )
-
-  const candidateAt = (elapsed: number) => {
-    const receiverPosition = receiverAt(elapsed)
-    if (!receiverPosition) return null
-    const path = [{ ...origin }, { ...receiverPosition }]
-    const length = pathLength(path)
-    if (length > document.rulesSnapshot.passing.maxDistance + DISTANCE_EPSILON) return null
-    return {
-      path,
-      receiverPosition: { ...receiverPosition },
-      flightTime: passDuration(path, document.rulesSnapshot),
-    }
+  for (const window of documentFreezeWindows(document, playerId)) {
+    add(jumps, window.startsAt)
+    add(smooth, window.endsAt)
   }
+  for (let sample = 1; sample < SOLVER_SAMPLES; sample += 1) smooth.add(duration * sample / SOLVER_SAMPLES)
+  for (const time of jumps) smooth.delete(time)
+  smooth.delete(duration)
 
-  const maxFlightTime = document.rulesSnapshot.passing.maxDistance
-    / Math.max(document.rulesSnapshot.passing.ballSpeed, DISTANCE_EPSILON)
-  let previousTime = 0
-  let previous = candidateAt(previousTime)
+  const remaining = Math.max(0, MAX_PASS_PATH_POINTS - 2 - jumps.size)
+  const candidates = [...smooth].sort((left, right) => left - right)
+  const selected = candidates.length <= remaining
+    ? candidates
+    : Array.from({ length: remaining }, (_, index) => candidates[Math.floor(index * candidates.length / remaining)]!)
+  return [...new Set([...jumps, ...selected, duration])]
+    .sort((left, right) => left - right)
+    .map((end) => ({ end, jumpAtEnd: jumps.has(end) }))
+}
 
-  if (previous && Math.abs(previous.flightTime) <= TIME_EPSILON) {
-    return {
-      path: previous.path,
-      duration: 0,
-      arrivalTime: pass.startTime,
-      received: true,
-      receiverPosition: previous.receiverPosition,
-    }
-  }
-
-  for (let sample = 1; sample <= SOLVER_SAMPLES; sample += 1) {
-    const sampleTime = (maxFlightTime * sample) / SOLVER_SAMPLES
-    const candidate = candidateAt(sampleTime)
-    const previousDelta = previous ? previous.flightTime - previousTime : null
-    const sampleDelta = candidate ? candidate.flightTime - sampleTime : null
-
-    if (
-      previous
-      && candidate
-      && previousDelta !== null
-      && sampleDelta !== null
-      && previousDelta >= -TIME_EPSILON
-      && sampleDelta <= TIME_EPSILON
-    ) {
-      let low = previousTime
-      let high = sampleTime
-      for (let iteration = 0; iteration < SOLVER_ITERATIONS; iteration += 1) {
-        const middle = (low + high) / 2
-        const middleCandidate = candidateAt(middle)
-        if (!middleCandidate || middleCandidate.flightTime - middle > 0) low = middle
-        else high = middle
-      }
-      const solvedTime = (low + high) / 2
-      const solved = candidateAt(solvedTime)
-      if (solved && Math.abs(solved.flightTime - solvedTime) <= 0.002) {
-        return {
-          path: solved.path,
-          duration: solved.flightTime,
-          arrivalTime: pass.startTime + solved.flightTime,
-          received: true,
-          receiverPosition: solved.receiverPosition,
-        }
-      }
-    }
-
-    previousTime = sampleTime
-    previous = candidate
-  }
-
-  const lastReceiver = receiverAt(maxFlightTime)
-  const fallbackEndpoint = lastReceiver ?? authoredEndpoint ?? origin
-  const path = [{ ...origin }, { ...fallbackEndpoint }]
-  const duration = passDuration(path, document.rulesSnapshot)
+function advance(origin: Vec2, target: Vec2, length: number): Vec2 {
+  const range = distance(origin, target)
+  if (range <= DISTANCE_EPSILON) return { ...origin }
   return {
-    path,
-    duration,
-    arrivalTime: pass.startTime + duration,
+    x: origin.x + (target.x - origin.x) * length / range,
+    y: origin.y + (target.y - origin.y) * length / range,
+  }
+}
+
+function interpolate(start: Vec2, end: Vec2, progress: number): Vec2 {
+  return { x: start.x + (end.x - start.x) * progress, y: start.y + (end.y - start.y) * progress }
+}
+
+/** Lossless for straight sections; turns/reversals remain explicit. Reducing
+ * stationary and collinear passes to two vertices also keeps their legacy
+ * serialization compact without applying a visual simplification tolerance. */
+function compactStraightSections(path: Vec2[]): Vec2[] {
+  const result: Vec2[] = []
+  for (const point of path) {
+    const before = result.at(-2)
+    const last = result.at(-1)
+    if (before && last) {
+      const a = { x: last.x - before.x, y: last.y - before.y }
+      const b = { x: point.x - last.x, y: point.y - last.y }
+      const scale = Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y)
+      if (a.x * b.x + a.y * b.y >= 0 && Math.abs(a.x * b.y - a.y * b.x) <= 1e-12 * scale) result.pop()
+    }
+    result.push({ ...point })
+  }
+  return result
+}
+
+/**
+ * Find contact only within the current integration interval. Away from contact
+ * the ball uses midpoint pursuit (current relative heading), never a future
+ * destination. The final subinterval is refined against the real target, not a
+ * gameplay catch radius or a snap to an out-of-range endpoint.
+ */
+function contactInInterval(
+  ball: Vec2,
+  start: number,
+  end: number,
+  targetStart: Vec2,
+  targetEnd: Vec2,
+  targetAt: (elapsed: number) => Vec2,
+  traveledAt: (elapsed: number) => number,
+): { elapsed: number; target: Vec2 } | null {
+  const alreadyTraveled = traveledAt(start)
+  const gap = (elapsed: number, target: Vec2) => distance(ball, target) - (traveledAt(elapsed) - alreadyTraveled)
+  if (distance(ball, targetStart) <= DISTANCE_EPSILON) return { elapsed: start, target: targetStart }
+
+  let high = end
+  if (gap(end, targetEnd) > DISTANCE_EPSILON) {
+    // For a linear target segment, |r+vt| minus the concave distance curve is
+    // convex. Its minimum detects a target crossing and leaving the ball's
+    // local reach within one step, including a late slower-ball encounter.
+    const interval = end - start
+    const middleDistance = traveledAt((start + end) / 2)
+    const endDistance = traveledAt(end)
+    const velocity = { x: (targetEnd.x - targetStart.x) / interval, y: (targetEnd.y - targetStart.y) / interval }
+    const initialSpeed = (-3 * alreadyTraveled + 4 * middleDistance - endDistance) / interval
+    const finalSpeed = (alreadyTraveled - 4 * middleDistance + 3 * endDistance) / interval
+    const derivative = (progress: number) => {
+      const target = interpolate(targetStart, targetEnd, progress)
+      const range = distance(ball, target)
+      const targetRadialSpeed = range <= DISTANCE_EPSILON ? 0
+        : ((target.x - ball.x) * velocity.x + (target.y - ball.y) * velocity.y) / range
+      return targetRadialSpeed - (initialSpeed + (finalSpeed - initialSpeed) * progress)
+    }
+    // The usual case (ball faster than the runner) needs no inner search and
+    // no additional receiver projection; the smallest gap is at the end.
+    if (derivative(1) <= 0 || derivative(0) >= 0) return null
+    let left = 0
+    let right = 1
+    for (let index = 0; index < 20; index += 1) {
+      const middle = (left + right) / 2
+      if (derivative(middle) < 0) left = middle
+      else right = middle
+    }
+    high = start + (end - start) * (left + right) / 2
+    if (gap(high, targetAt(high)) > DISTANCE_EPSILON) return null
+  }
+
+  let low = start
+  for (let iteration = 0; iteration < CONTACT_ITERATIONS; iteration += 1) {
+    const middle = (low + high) / 2
+    if (gap(middle, targetAt(middle)) > 0) low = middle
+    else high = middle
+  }
+  const target = targetAt(high)
+  return Math.abs(gap(high, target)) <= DISTANCE_EPSILON * 4 ? { elapsed: high, target } : null
+}
+
+/**
+ * Deterministic homing integration performed at document normalization only.
+ * Every step consumes its exact scalar distance increment, preserving the
+ * cumulative range limit even when the receiver turns or teleports. Excluding
+ * this and later pass/receive effects prevents a catch boost from changing its
+ * own cause; earlier independent receptions and all authored movement remain.
+ */
+export function solvePassReception(document: TacticDocumentV1, pass: PassAction): PassReceptionResolution {
+  const projectionDocument = withoutFuturePassEffects(document, pass)
+  const startFrame = projectFrameAtKeyframe(projectionDocument, pass.startTime, pass.originKeyframe ?? null)
+  const origin = startFrame.players.find((player) => player.id === pass.actorId)?.position ?? pass.path[0]
+  if (!origin || !pass.targetPlayerId) {
+    const path = origin
+      ? [{ ...origin }, ...pass.path.slice(1).map((point) => ({ ...point }))]
+      : pass.path.map((point) => ({ ...point }))
+    const duration = passDuration(path, document.rulesSnapshot)
+    return { path, duration, arrivalTime: pass.startTime + duration, received: false }
+  }
+
+  const readPosition = createPlayerPositionReader(projectionDocument, pass.targetPlayerId)
+  const maxDuration = passMaxDuration(document.rulesSnapshot)
+  const initialTarget = readPosition(pass.startTime) ?? pass.path.at(-1) ?? origin
+  const targetAt = (elapsed: number) => readPosition(pass.startTime + elapsed) ?? initialTarget
+  const traveledAt = (elapsed: number) => passTravelDistance(elapsed, document.rulesSnapshot)
+  const path: Vec2[] = [{ ...origin }]
+  let ball = { ...origin }
+  let elapsed = 0
+  let currentTarget = initialTarget
+
+  const caught = (contact: { elapsed: number; target: Vec2 }): PassReceptionResolution => ({
+    path: compactStraightSections([...path, contact.target]),
+    duration: contact.elapsed,
+    arrivalTime: pass.startTime + contact.elapsed,
+    received: true,
+    receiverPosition: { ...contact.target },
+  })
+
+  for (const interval of flightIntervals(projectionDocument, pass.targetPlayerId, pass.startTime, maxDuration)) {
+    // Read the left limit to avoid dragging the receiver through a Q jump.
+    // This query offset is numerical only and never stored as gameplay time.
+    const leftLimit = interval.jumpAtEnd
+      ? Math.max(elapsed, interval.end - Math.min(EVENT_TIME_EPSILON, (interval.end - elapsed) / 2))
+      : interval.end
+    const nextTarget = targetAt(leftLimit)
+    const withinInterval = (time: number) => time >= leftLimit ? nextTarget : targetAt(time)
+    const contact = contactInInterval(ball, elapsed, interval.end, currentTarget, nextTarget, withinInterval, traveledAt)
+    if (contact && (!interval.jumpAtEnd || contact.elapsed < leftLimit)) return caught(contact)
+
+    const midpoint = (elapsed + interval.end) / 2
+    const midpointBall = advance(ball, currentTarget, traveledAt(midpoint) - traveledAt(elapsed))
+    const midpointTarget = withinInterval(midpoint)
+    const headingTarget = {
+      x: ball.x + midpointTarget.x - midpointBall.x,
+      y: ball.y + midpointTarget.y - midpointBall.y,
+    }
+    ball = advance(ball, headingTarget, traveledAt(interval.end) - traveledAt(elapsed))
+    path.push({ ...ball })
+    elapsed = interval.end
+    currentTarget = interval.jumpAtEnd ? targetAt(elapsed) : nextTarget
+    if (distance(ball, currentTarget) <= DISTANCE_EPSILON) {
+      // Landing on the ball is a catch; passing through it during a jump is not.
+      return { path: compactStraightSections(path), duration: elapsed, arrivalTime: pass.startTime + elapsed, received: true, receiverPosition: { ...currentTarget } }
+    }
+  }
+
+  return {
+    path: compactStraightSections(path),
+    duration: maxDuration,
+    arrivalTime: pass.startTime + maxDuration,
     received: false,
-    receiverPosition: lastReceiver ? { ...lastReceiver } : undefined,
+    receiverPosition: { ...currentTarget },
   }
 }

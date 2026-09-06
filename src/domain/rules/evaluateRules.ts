@@ -17,6 +17,7 @@ import type {
   TacticDocumentV1,
 } from '../model/types'
 import { actionEndTime } from '../timeline/durations'
+import { passIsDropped, passIsReceived } from '../model/passFlight'
 import { analyzeDocumentIceQHits, doesEZoneSlowMove, evaluateQDistanceEffect, projectFrame } from '../timeline/projectFrame'
 import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from './passThreat'
 import { cooldownRemainingText, qCooldownSequenceConflicts } from './qCooldown'
@@ -30,7 +31,8 @@ function latestPassTo(document: TacticDocumentV1, playerId: string, time: number
   return [...document.actions]
     .filter(
       (action): action is PassAction =>
-        action.type === 'pass' && action.targetPlayerId === playerId && actionEndTime(action) <= time,
+        action.type === 'pass' && action.targetPlayerId === playerId && actionEndTime(action) <= time
+          && passIsReceived(action, document.rulesSnapshot),
     )
     .sort((a, b) => b.startTime - a.startTime)[0]
 }
@@ -140,16 +142,18 @@ function passWarnings(document: TacticDocumentV1, action: PassAction): RuleWarni
   const startFrame = projectFrame(document, action.startTime)
   const actor = startFrame.players.find((player) => player.id === action.actorId)
   const segments = actor
-    ? classifyPassThreat(action.path, actor.team, startFrame, rules)
+    ? classifyPassThreat(action.path, actor.team, startFrame, rules, action.flightOutcome)
     : []
   const highest = highestPassThreat(segments)
-  if (length > rules.passing.maxDistance) {
+  if (passIsDropped(action, rules)) {
     return [
       {
         id: `pass-too-long-${action.id}`,
         severity: 'hard',
-        title: '传球超出有效距离',
-        detail: `${length.toFixed(2)} 格 > ${rules.passing.maxDistance} 格，线路包含“${PASS_THREAT_LABELS[highest]}”，球会在最大距离处落为自由球。`,
+        title: action.flightOutcome === 'dropped' ? '传球未追上接球者' : '传球超出有效距离',
+        detail: action.flightOutcome === 'dropped'
+          ? `球沿实际线路累计飞行 ${length.toFixed(2)} 格，在 ${actionEndTime(action).toFixed(2)}s 落为自由球，未产生接球或接球加速。`
+          : `${length.toFixed(2)} 格 > ${rules.passing.maxDistance} 格，线路包含“${PASS_THREAT_LABELS[highest]}”，球会在最大距离处落为自由球。`,
         actionId: action.id,
         playerIds: [action.actorId],
       },
