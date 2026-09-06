@@ -22,7 +22,7 @@ export const defaultRules: RuleSetV1 = {
   passing: {
     safeDistance: 4,
     maxDistance: 8,
-    ballSpeed: 8,
+    ballSpeed: 4,
     interceptStartWidth: 0.18,
     interceptEndWidth: 0.8,
   },

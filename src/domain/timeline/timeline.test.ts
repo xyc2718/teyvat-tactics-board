@@ -8,15 +8,15 @@ import { analyzeDocumentIceQHits, documentFreezeWindows, documentSlowWindows, ef
 import { receiveMoveBoosts, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
-  it('uses 1 grid/s movement and an 8-grid, 1-second decelerating pass', () => {
+  it('uses 1 grid/s movement and a new 8-grid, 2-second decelerating pass', () => {
     const document = createDefaultDocument()
     const passPath = [{ x: 0, y: 0 }, { x: 8, y: 0 }]
     expect(movementDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBe(4)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBeCloseTo(1 - Math.sqrt(0.5))
-    expect(passDuration(passPath, document.rulesSnapshot)).toBe(1)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 12, y: 0 }], document.rulesSnapshot)).toBe(1)
-    expect(passArrivalTimeAtDistance(passPath, 6, document.rulesSnapshot)).toBeCloseTo(0.5)
-    expect(passArrivalTimeAtDistance(passPath, 8, document.rulesSnapshot)).toBeCloseTo(1)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBeCloseTo(2 * (1 - Math.sqrt(0.5)))
+    expect(passDuration(passPath, document.rulesSnapshot)).toBe(2)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 12, y: 0 }], document.rulesSnapshot)).toBe(2)
+    expect(passArrivalTimeAtDistance(passPath, 6, document.rulesSnapshot)).toBeCloseTo(1)
+    expect(passArrivalTimeAtDistance(passPath, 8, document.rulesSnapshot)).toBeCloseTo(2)
   })
 
   it('uses inner and outer shooting charge times', () => {
@@ -610,6 +610,8 @@ describe('projectFrame', () => {
 
   it('turns overlong passes into a free ball at the configured maximum distance', () => {
     const document = createDefaultDocument()
+    // Existing documents retain the previous one-second calibration.
+    document.rulesSnapshot.passing.ballSpeed = 8
     const action: PassAction = {
       id: 'pass-long', type: 'pass', actorId: 'blue-water', startTime: 0,
       duration: passDuration([{ x: 5.5, y: 5 }, { x: 17.5, y: 5 }], document.rulesSnapshot),

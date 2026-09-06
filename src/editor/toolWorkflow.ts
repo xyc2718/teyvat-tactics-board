@@ -5,6 +5,7 @@ const ACTOR_TOOLS: ReadonlySet<ToolId> = new Set([
   'wait',
   'qMove',
   'pass',
+  'loosePass',
   'shoot',
   'attack',
   'strikeRange',
@@ -13,6 +14,10 @@ const ACTOR_TOOLS: ReadonlySet<ToolId> = new Set([
 
 export function isRangeInspectionTool(tool: ToolId): boolean {
   return tool === 'attack' || tool === 'strikeRange'
+}
+
+export function isBallReleaseTool(tool: ToolId): tool is 'pass' | 'loosePass' {
+  return tool === 'pass' || tool === 'loosePass'
 }
 
 export function toolNeedsActor(tool: ToolId): boolean {
@@ -26,7 +31,7 @@ export function isToolActorEligible(
   rules: RuleSetV1,
 ): boolean {
   if (!toolNeedsActor(tool)) return false
-  if (tool === 'pass') return frame.ball.carrierId === player.id && player.hasBall
+  if (isBallReleaseTool(tool)) return frame.ball.carrierId === player.id
   if (tool === 'eZone') return rules.roles[player.role].e !== undefined
   return true
 }
@@ -38,7 +43,7 @@ export function resolveToolActor(
   rules: RuleSetV1,
 ): PlayerState | undefined {
   if (!toolNeedsActor(tool)) return undefined
-  if (tool === 'pass') {
+  if (isBallReleaseTool(tool)) {
     const carrier = frame.ball.carrierId
       ? frame.players.find((player) => player.id === frame.ball.carrierId)
       : undefined
@@ -62,7 +67,7 @@ export function isToolTargetPlayerEligible(
 }
 
 export function actorPrompt(tool: ToolId): string {
-  if (tool === 'pass') return '当前没有持球者，请先在“选择”模式设置球权'
+  if (isBallReleaseTool(tool)) return '当前没有持球者，请先在“选择”模式设置球权'
   if (tool === 'eZone') return '选择一名霜役立即开启随身冰圈'
   if (tool === 'attack') return '选择任意球员查看其攻击内外范围'
   if (tool === 'strikeRange') return '选择任意球员查看其 Q 技能加攻击的最大打击范围'
@@ -74,13 +79,14 @@ export function actorPrompt(tool: ToolId): string {
 }
 
 export function targetPrompt(tool: ToolId): string {
-  if (tool === 'qMove') return '第 2/2 步：参考距离圈点击落点；可直接改选球员或返回第 1 步'
+  if (tool === 'qMove') return '第 2/2 步：点击落点，或点击自由球用 Q 捡球；可返回第 1 步'
   if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈；点击队友后系统按其移动轨迹解算接球点，也可点击空地'
+  if (tool === 'loosePass') return '第 2/2 步：点击空地指定空传方向；球会沿直线飞行，遇墙反弹'
   if (tool === 'eZone') return '冰圈始终以霜役为圆心并随其移动'
   if (tool === 'attack') return '点击其他球员可连续切换攻击范围查看对象'
   if (tool === 'strikeRange') return '点击其他球员可连续切换打击范围查看对象'
   if (tool === 'shoot') return '选择射门球员；无需指定落点'
   if (tool === 'wait') return '选择球员后立即添加 1 秒等待，并可在右侧修改时长'
-  if (tool === 'move') return '第 2/2 步：点击空地跑到定点，或点击球员贴身跟随；可返回第 1 步重选跑动者'
+  if (tool === 'move') return '第 2/2 步：点击空地跑动、球员跟随或自由球捡球；可返回第 1 步'
   return '点击球场上的目标位置'
 }

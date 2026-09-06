@@ -1,8 +1,10 @@
 import type { TacticDocumentV1 } from '../model/types'
 import { actionEndTime } from './durations'
 import { documentFreezeWindows } from './projectFrame'
+import { loosePassJointTimes } from './loosePass'
 
 const EPSILON = 1e-6
+const jointCache = new WeakMap<TacticDocumentV1, { signature: string; times: number[] }>()
 
 function coalesceTimelineJoints(candidates: number[]): number[] {
   const joints: number[] = []
@@ -29,6 +31,9 @@ function coalesceTimelineJoints(candidates: number[]): number[] {
 
 /** All editable joints. Continuous in-between time is reserved for playback. */
 export function timelineJointTimes(document: TacticDocumentV1): number[] {
+  const signature = JSON.stringify([document.rulesSnapshot, document.initialScene, document.actions, document.stepMarkers.map((step) => step.time)])
+  const cached = jointCache.get(document)
+  if (cached?.signature === signature) return [...cached.times]
   const cooldownReadyTimes = document.actions.flatMap((action) => {
     if (action.type !== 'qMove' && action.type !== 'eZone') return []
     const actor = document.initialScene.players.find((player) => player.id === action.actorId)
@@ -42,13 +47,16 @@ export function timelineJointTimes(document: TacticDocumentV1): number[] {
     0,
     ...document.stepMarkers.map((step) => step.time),
     ...document.actions.flatMap((action) => [action.startTime, actionEndTime(action)]),
+    ...document.actions.flatMap((action) => action.type === 'loosePass' ? loosePassJointTimes(action, document.rulesSnapshot) : []),
     ...cooldownReadyTimes,
     ...documentFreezeWindows(document).flatMap((window) => [window.startsAt, window.endsAt]),
   ]
     .filter((time) => Number.isFinite(time) && time >= 0)
     .sort((left, right) => left - right)
 
-  return coalesceTimelineJoints(candidates)
+  const times = coalesceTimelineJoints(candidates)
+  jointCache.set(document, { signature, times })
+  return [...times]
 }
 
 export function nearestTimelineJoint(document: TacticDocumentV1, rawTime: number): number {

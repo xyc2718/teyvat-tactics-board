@@ -6,6 +6,8 @@ import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
+import { MAX_LOOSE_PATH_POINTS } from '../domain/timeline/loosePass'
+import { MAX_PICKUP_TRACE_POINTS } from '../domain/timeline/looseBall'
 
 export const MAX_TACTIC_FILE_BYTES = 2 * 1024 * 1024
 export const DRAFT_STORAGE_KEY = 'teyvat-tactics-board:draft:v1'
@@ -68,6 +70,8 @@ const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
     reference: moveKeyframeReferenceSchema,
   }),
 ])
+const ballTargetSchema = z.object({ sourceActionId: z.string().min(1).max(120).nullable() })
+const pickupTraceSchema = z.array(z.object({ time: nonNegative, position: vec2Schema })).min(1).max(MAX_PICKUP_TRACE_POINTS)
 
 const actionSchema = z.discriminatedUnion('type', [
   z.object({
@@ -80,6 +84,8 @@ const actionSchema = z.discriminatedUnion('type', [
     syncActionId: z.string().optional(),
     followGap: nonNegative.optional(),
     timingConstraint: moveTimingConstraintSchema.optional(),
+    ballTarget: ballTargetSchema.optional(),
+    pickupTrace: pickupTraceSchema.optional(),
   }),
   z.object({
     ...actionBase,
@@ -87,6 +93,7 @@ const actionSchema = z.discriminatedUnion('type', [
     actorId: z.string(),
     path: z.array(vec2Schema).min(2).max(20),
     targetId: z.string().optional(),
+    ballTarget: ballTargetSchema.optional(),
   }),
   z.object({
     ...actionBase,
@@ -94,10 +101,15 @@ const actionSchema = z.discriminatedUnion('type', [
     actorId: z.string(),
     targetPlayerId: z.string().optional(),
     originKeyframe: moveKeyframeReferenceSchema.optional(),
+    originPickupActionId: z.string().min(1).max(120).optional(),
     flightOutcome: z.enum(['received', 'dropped']).optional(),
     path: z.array(vec2Schema).min(2).max(MAX_PASS_PATH_POINTS),
   }),
-  z.object({ ...actionBase, type: z.literal('receive'), actorId: z.string(), sourceActionId: z.string().optional() }),
+  z.object({ ...actionBase, type: z.literal('loosePass'), actorId: z.string(), aimDirection: vec2Schema,
+    path: z.array(vec2Schema).min(2).max(MAX_LOOSE_PATH_POINTS), flightOutcome: z.enum(['grounded', 'goal', 'pickedUp']),
+    originKeyframe: moveKeyframeReferenceSchema.optional(), originPickupActionId: z.string().min(1).max(120).optional() }),
+  z.object({ ...actionBase, type: z.literal('receive'), actorId: z.string(), sourceActionId: z.string().optional(),
+    pickupActionId: z.string().min(1).max(120).optional(), ballSourceActionId: z.string().min(1).max(120).nullable().optional() }),
   z.object({ ...actionBase, type: z.literal('possession'), carrierId: z.null(), position: vec2Schema }),
   z.object({
     ...actionBase,
@@ -188,6 +200,7 @@ const rulesSchema = z.object({
     interceptStartWidth: nonNegative,
     interceptEndWidth: nonNegative,
   }),
+  loosePassing: z.object({ maxDistance: positive.max(1000), maxDuration: positive.max(120) }).optional(),
   shooting: z.object({
     outerYellow: positive,
     outerRed: positive,
@@ -326,6 +339,7 @@ function migrateLegacyFieldGeometry(document: TacticDocumentV1): TacticDocumentV
   migrated.actions.forEach((action) => {
     if ('path' in action) action.path.forEach(shiftPoint)
     if (action.type === 'move' && action.curveControl) shiftPoint(action.curveControl)
+    if (action.type === 'move' && action.pickupTrace) action.pickupTrace.forEach((sample) => shiftPoint(sample.position))
     if (action.type === 'possession') shiftPoint(action.position)
     if (action.type === 'eZone') shiftPoint(action.center)
   })
@@ -395,7 +409,7 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     if ('targetId' in action && action.targetId && !knownPlayers.has(action.targetId)) return `动作 ${action.id} 的目标不存在。`
     if (action.type === 'pass' && action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的接球队员不存在。`
     if (action.type === 'pass' && action.flightOutcome && !action.targetPlayerId) return `动作 ${action.id} 的追踪传球结果缺少接球目标。`
-    if (action.type === 'pass' && action.originKeyframe) {
+    if ((action.type === 'pass' || action.type === 'loosePass') && action.originKeyframe) {
       const reference = action.originKeyframe
       const source = instantQActionAtKeyframe(document, reference)
       if (!source) return `动作 ${action.id} 的出球关键帧不存在。`
@@ -411,6 +425,14 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       if (action.targetPlayerId === action.actorId) return `动作 ${action.id} 不能跟随自己。`
       if (action.targetPlayerId && action.curveControl) return `动作 ${action.id} 的贴身跟随不能同时使用曲线路径。`
       if (hasFollowField && action.timingConstraint) return `动作 ${action.id} 的贴身跟随不能同时使用固定时间。`
+      if (action.ballTarget && (hasFollowField || action.timingConstraint || action.curveControl)) return `动作 ${action.id} 的捡球不能同时设置跟随、曲线或固定时间。`
+      if (action.pickupTrace && !action.ballTarget) return `动作 ${action.id} 的捡球轨迹缺少球源。`
+      if (action.pickupTrace) {
+        if (action.pickupTrace.some((sample, index) => !pointInField(sample.position)
+          || index > 0 && sample.time <= action.pickupTrace![index - 1]!.time)) return `动作 ${action.id} 的捡球轨迹无效。`
+        if (Math.abs(action.pickupTrace[0]!.time - action.startTime) > 1e-6
+          || Math.abs(action.pickupTrace.at(-1)!.time - action.startTime - action.duration) > 1e-6) return `动作 ${action.id} 的捡球轨迹时间不一致。`
+      }
       if (action.timingConstraint?.kind === 'keyframe') {
         const reference = action.timingConstraint.reference
         if (!knownPlayers.has(reference.playerId)) return `动作 ${action.id} 的时间参照球员不存在。`
@@ -422,6 +444,50 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     // V1 keeps the activation snapshot for compatibility, but the live E-zone center is its actor.
     if (action.type === 'possession' && !pointInField(action.position)) return `动作 ${action.id} 的球权位置超出球场。`
   }
+  const byId = new Map(document.actions.map((action) => [action.id, action]))
+  const pickupReceipts = new Set<string>()
+  const dependencies = new Map<string, string[]>()
+  for (const action of document.actions) {
+    const refs: string[] = []
+    if ((action.type === 'move' || action.type === 'qMove') && action.ballTarget) {
+      const sourceId = action.ballTarget.sourceActionId
+      const source = sourceId === null ? undefined : byId.get(sourceId)
+      if (sourceId === null ? !document.initialScene.ball.isFree : !source || !['loosePass', 'pass', 'possession'].includes(source.type)) return `动作 ${action.id} 的捡球来源无效。`
+      if (source && source.startTime > action.startTime) return `动作 ${action.id} 的捡球早于球源。`
+      if (sourceId) refs.push(sourceId)
+    }
+    if (action.type === 'pass' || action.type === 'loosePass') {
+      if (action.type === 'loosePass' && Math.hypot(action.aimDirection.x, action.aimDirection.y) <= 1e-9) return `动作 ${action.id} 的空传方向无效。`
+      if (action.originPickupActionId) {
+        const source = byId.get(action.originPickupActionId)
+        if (!source || (source.type !== 'move' && source.type !== 'qMove') || !source.ballTarget || source.actorId !== action.actorId) return `动作 ${action.id} 的出球捡球帧无效。`
+        if (action.originKeyframe) return `动作 ${action.id} 不能同时绑定 Q 边界和捡球帧。`
+        refs.push(source.id)
+      }
+    }
+    if (action.type === 'receive' && (action.pickupActionId || action.ballSourceActionId !== undefined)) {
+      const pickup = action.pickupActionId ? byId.get(action.pickupActionId) : undefined
+      if (!pickup || (pickup.type !== 'move' && pickup.type !== 'qMove') || !pickup.ballTarget || pickup.actorId !== action.actorId
+        || action.sourceActionId || action.ballSourceActionId !== pickup.ballTarget.sourceActionId || action.duration !== 0
+        || action.startTime < pickup.startTime || action.startTime > pickup.startTime + pickup.duration + 1e-6) return `动作 ${action.id} 的捡球关联无效。`
+      if (pickupReceipts.has(pickup.id)) return `动作 ${pickup.id} 重复生成接球帧。`
+      pickupReceipts.add(pickup.id)
+      refs.push(pickup.id)
+    }
+    dependencies.set(action.id, refs)
+  }
+  const visited = new Set<string>()
+  const visiting = new Set<string>()
+  const cycles = (id: string): boolean => {
+    if (visiting.has(id)) return true
+    if (visited.has(id)) return false
+    visiting.add(id)
+    if ((dependencies.get(id) ?? []).some(cycles)) return true
+    visiting.delete(id)
+    visited.add(id)
+    return false
+  }
+  if (document.actions.some((action) => cycles(action.id))) return '空传与捡球动作形成了循环依赖。'
   for (const action of document.actions) {
     if (action.type !== 'move' || !action.targetPlayerId || !action.syncActionId) continue
     const syncAction = document.actions.find((candidate) => candidate.id === action.syncActionId)

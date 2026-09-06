@@ -102,6 +102,8 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
       const traveledDistance = Math.min(pathLength(action.path), document.rulesSnapshot.passing.maxDistance)
       return `${timing}，${name} 向 ${receiver} 传球，实际路线累计 ${traveledDistance.toFixed(2)} 格；${outcome}；最高威胁为“${PASS_THREAT_LABELS[threat]}”。`
     }
+    case 'loosePass':
+      return `${timing}，${name} 空传，反弹前后累计 ${pathLength(action.path).toFixed(2)} 格；${action.flightOutcome === 'goal' ? '进入球门后停止' : action.flightOutcome === 'pickedUp' ? '球被捡起并随持球者移动' : '停下后成为可捡起的自由球'}。`
     case 'shoot': {
       const zone = actor ? getShootZone(actor.position, actor.team, document.rulesSnapshot.field.width, document.rulesSnapshot.field.height, document.rulesSnapshot.field.smallPenaltyRadius, document.rulesSnapshot.field.largePenaltyRadius) : 'outside'
       const shot = endFrame.shots.find((candidate) => candidate.actionId === action.id)
@@ -136,7 +138,7 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
 }
 
 const actionTitles: Record<TacticAction['type'], string> = {
-  move: '跑动', qMove: 'Q 位移', pass: '传球', receive: '接球', possession: '球权', shoot: '射门',
+  move: '跑动', qMove: 'Q 位移', pass: '传球', loosePass: '空传', receive: '接球', possession: '球权', shoot: '射门',
   attack: '攻击', eZone: '冰圈', status: '状态', wait: '等待', annotation: '说明',
 }
 

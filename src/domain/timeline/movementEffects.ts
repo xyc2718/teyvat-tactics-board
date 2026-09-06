@@ -1,5 +1,5 @@
 import { clamp, pathLength, resolvedMovePath, slicePath } from '../geometry/geometry'
-import type { MoveAction, PassAction, QMoveAction, RoleRule, TacticDocumentV1, Vec2 } from '../model/types'
+import type { MoveAction, PassAction, QMoveAction, ReceiveAction, RoleRule, TacticDocumentV1, Vec2 } from '../model/types'
 import { actionEndTime } from './durations'
 import { passIsReceived } from '../model/passFlight'
 
@@ -33,6 +33,7 @@ export function receiveBoostWindowFor(
   document: TacticDocumentV1,
   playerId: string,
   time: number,
+  seen: ReadonlySet<string> = new Set(),
 ): ReceiveBoostWindow | undefined {
   const role = getActorRole(document, playerId)
   const boost = role ? document.rulesSnapshot.roles[role].receiveBoost : undefined
@@ -47,9 +48,36 @@ export function receiveBoostWindowFor(
         actionEndTime(candidate) + boost.duration > time,
     )
     .sort((left, right) => actionEndTime(right) - actionEndTime(left))[0]
-  return source
+  const normal = source
     ? { sourceActionId: source.id, start: actionEndTime(source), end: actionEndTime(source) + boost.duration, boost }
     : undefined
+  const pickup = document.actions.filter((action): action is ReceiveAction => action.type === 'receive'
+    && !!action.pickupActionId && action.actorId === playerId && action.startTime <= time
+    && action.startTime + boost.duration > time && !seen.has(action.id))
+    .sort((a, b) => b.startTime - a.startTime)
+    .find((action) => pickupReceiveBoost(document, action, seen))
+  return pickup && (!normal || pickup.startTime > normal.start)
+    ? { sourceActionId: pickup.id, start: pickup.startTime, end: pickup.startTime + boost.duration, boost }
+    : normal
+}
+
+/** Eligibility is recomputed from launch history; ground waiting never expires the mark. */
+export function looseBallBoostSource(document: TacticDocumentV1, sourceActionId: string | null, seen: ReadonlySet<string> = new Set()): string | undefined {
+  const source = document.actions.find((action) => action.id === sourceActionId)
+  if (source?.type !== 'loosePass' || seen.has(source.id)) return undefined
+  const actor = document.initialScene.players.find((player) => player.id === source.actorId)
+  if (actor?.role !== 'ice' || !document.rulesSnapshot.roles.ice.receiveBoost?.transfersOnPass) return undefined
+  return receiveBoostWindowFor(document, actor.id, source.startTime, new Set([...seen, source.id])) ? source.id : undefined
+}
+
+export function pickupReceiveBoost(document: TacticDocumentV1, receive: ReceiveAction, seen: ReadonlySet<string> = new Set()): ReceiveBoostRule | undefined {
+  if (!receive.pickupActionId || receive.ballSourceActionId == null || seen.has(receive.id)) return undefined
+  const source = document.actions.find((action) => action.id === receive.ballSourceActionId)
+  if (source?.type !== 'loosePass') return undefined
+  const passer = document.initialScene.players.find((player) => player.id === source.actorId)
+  const receiver = document.initialScene.players.find((player) => player.id === receive.actorId)
+  if (passer?.team !== receiver?.team) return undefined
+  return looseBallBoostSource(document, source.id, new Set([...seen, receive.id])) ? document.rulesSnapshot.roles.ice.receiveBoost : undefined
 }
 
 /** Preserve already-earned movement when a new reception refreshes the boost.
@@ -94,6 +122,15 @@ export function movementReceiveBoostWindowsFor(
       })
     }
   }
+  for (const receive of document.actions) {
+    if (receive.type !== 'receive' || receive.actorId !== playerId || !receive.pickupActionId || receive.startTime > time) continue
+    const boost = pickupReceiveBoost(document, receive)
+    if (boost && boost.duration > 0 && receive.startTime + boost.duration > actionStart) {
+      windows.push({ sourceActionId: receive.id, start: receive.startTime, end: receive.startTime + boost.duration, boost })
+    }
+  }
+  windows.sort((a, b) => a.start - b.start || a.sourceActionId.localeCompare(b.sourceActionId))
+  for (let index = 0; index < windows.length - 1; index += 1) windows[index]!.end = Math.min(windows[index]!.end, windows[index + 1]!.start)
   return windows.filter((window) => window.end > Math.max(actionStart, window.start))
 }
 

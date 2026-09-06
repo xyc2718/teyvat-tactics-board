@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { angleToVector, directionAngle, normalizeAngle, pointAlongPath } from '../domain/geometry/geometry'
-import type { PlayerState, ProjectedFrame, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
+import type { LoosePassAction, PlayerState, ProjectedFrame, StaticMoveArrow, TacticAction, TacticDocumentV1, ToolId, Vec2 } from '../domain/model/types'
 import { compilePath } from '../domain/geometry/compiledPath'
+import { goalOpening } from '../domain/geometry/field'
 import { passIsDropped } from '../domain/model/passFlight'
 import { basicRoleDisplay, basicRoleRule, effectiveBasicRole } from '../domain/model/basicRoles'
 import {
@@ -15,12 +16,15 @@ import {
   evaluateShotActionPressure,
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
-import { receiveMoveBoosts, waterQMoveBoost } from '../domain/timeline/movementEffects'
+import { looseBallBoostSource, receiveMoveBoosts, waterQMoveBoost } from '../domain/timeline/movementEffects'
 import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
+import { loosePassingRule } from '../domain/timeline/loosePass'
+import { ballEpisodeSourceIdAt } from '../domain/timeline/looseBall'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
   actorPrompt,
+  isBallReleaseTool,
   isRangeInspectionTool,
   isToolActorEligible,
   isToolTargetPlayerEligible,
@@ -154,6 +158,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const moveEntity = useTacticStore((state) => state.moveEntity)
   const setPlayerFacing = useTacticStore((state) => state.setPlayerFacing)
   const createAction = useTacticStore((state) => state.createAction)
+  const createBallPickup = useTacticStore((state) => state.createBallPickup)
   const updateActionPathPoint = useTacticStore((state) => state.updateActionPathPoint)
   const updateMoveCurveControl = useTacticStore((state) => state.updateMoveCurveControl)
   const updateStaticMoveArrowTarget = useTacticStore((state) => state.updateStaticMoveArrowTarget)
@@ -168,10 +173,19 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const actionGeometry = useMemo(() => new Map(boardMode === 'basic' ? [] : document.actions.map((action) => (
     [action.id, deriveActionGeometry(document, action, drag)] as const
   ))), [boardMode, document, drag])
+  const looseBallBoostTags = useMemo(() => new Map(boardMode === 'basic' ? [] : document.actions.flatMap((action) => {
+    if (action.type !== 'loosePass' || !looseBallBoostSource(document, action.id)) return []
+    const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+    const boost = rules.roles.ice.receiveBoost
+    return actor && boost ? [[action.id, `${actor.team === 'blue' ? '蓝方' : '红方'}捡球后获得 ${boost.duration} 秒冰接球加速；落地等待不计时`] as const] : []
+  })), [boardMode, document, rules.roles.ice.receiveBoost])
+  const freeBallSourceId = boardMode === 'simulation' && frame.ball.isFree ? ballEpisodeSourceIdAt(document, frame.time) : undefined
+  const ballBoostTag = freeBallSourceId ? looseBallBoostTags.get(freeBallSourceId) : undefined
   const fieldWidth = rules.field.width * SCALE
   const fieldHeight = rules.field.height * SCALE
   const fieldCenterX = fieldWidth / 2
   const fieldCenterY = fieldHeight / 2
+  const goal = goalOpening(rules.field.height)
   const view = {
     x: -VIEW_PADDING.x,
     y: -VIEW_PADDING.y,
@@ -243,6 +257,10 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     if (event.button !== 0 || isPlaying) return
     event.stopPropagation()
     if (tool !== 'select') {
+      if (id === 'ball') {
+        activateBall()
+        return
+      }
       if (tool === 'shoot') {
         if (id === 'ball') setNotice('射门只需选择一名球员。')
         else chooseActor(id)
@@ -274,6 +292,16 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     select(id === 'ball' ? { kind: 'ball', id: 'ball' } : { kind: 'player', id })
     setDrag({ kind: 'entity', id, point })
     svgRef.current?.setPointerCapture?.(event.pointerId)
+  }
+
+  function activateBall() {
+    if (isPlaying) return
+    if (tool === 'select') select({ kind: 'ball', id: 'ball' })
+    else if (tool === 'shoot') setNotice('射门只需选择一名球员。')
+    else if (isRangeInspectionTool(tool)) setNotice(`${toolLabels[tool].label}模式请点击一名球员。`)
+    else if (toolNeedsActor(tool) && !toolActor) setNotice(actorPrompt(tool))
+    else if ((tool === 'move' || tool === 'qMove') && actionActor) createBallPickup(actionActor.id)
+    else createAction(actionActor?.id ?? null, frame.ball.position)
   }
 
   function beginFacingDrag(event: React.PointerEvent<SVGGElement>, player: PlayerState, center: Vec2) {
@@ -384,7 +412,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     }
     const isCurrent = currentTime >= action.startTime && currentTime <= action.startTime + Math.max(action.duration, 0.1)
     const atJoint = Math.abs(currentTime - action.startTime) <= 1e-5 || Math.abs(currentTime - (action.startTime + action.duration)) <= 1e-5
-    const remainingPlannedPath = (action.type === 'move' || action.type === 'qMove' || action.type === 'shoot')
+    const remainingPlannedPath = (action.type === 'move' || action.type === 'qMove' || action.type === 'shoot' || action.type === 'loosePass')
       && action.startTime + action.duration >= currentTime - 1e-5
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const geometry = actionGeometry.get(action.id)
@@ -405,16 +433,19 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             />
           : <polyline
               points={pointsAttribute(renderedPath)}
-              className={`action-path action-${action.type} ${moveAction?.targetPlayerId ? 'action-move-follow' : ''}`}
-              markerEnd={`url(#arrow-${action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'annotation' ? 'note' : 'move'})`}
+              className={`action-path action-${action.type} ${moveAction?.targetPlayerId ? 'action-move-follow' : ''} ${(action.type === 'move' || action.type === 'qMove') && action.ballTarget ? 'action-ball-pickup' : ''}`}
+              markerEnd={`url(#arrow-${action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'loosePass' ? 'loose-pass' : action.type === 'annotation' ? 'note' : 'move'})`}
             >
               {qEffect && qEffect.reduction > 0.005 && <title>冰圈影响：原路径 {qEffect.authoredDistance.toFixed(2)} 格，实际 Q 位移 {qEffect.effectiveDistance.toFixed(2)} 格</title>}
               {moveAction?.targetPlayerId && <title>贴身跟随 · 同步至目标动作结束 · 间距 {moveAction.followGap?.toFixed(2)} 格</title>}
+              {(action.type === 'move' || action.type === 'qMove') && action.ballTarget && <title>{action.type === 'qMove' ? 'Q 捡球 · 接触后继续完成位移' : '跑动捡球 · 追踪自由球直至接触'}</title>}
+              {action.type === 'loosePass' && <title>空传 · 直线飞行，遇墙反弹 · {action.flightOutcome === 'pickedUp' ? '在捡球点结束飞行' : action.flightOutcome === 'goal' ? '进入球门后停止' : '未被捡起则停在终点'}</title>}
             </polyline>}
         {waterBoost && <WaterBoostRoute effect={waterBoost} />}
         {receiveBoosts.map((effect) => <ReceiveBoostRoute key={effect.sourceActionId} effect={effect} />)}
         {eZoneSlowSegments.length > 0 && <EZoneSlowRoute segments={eZoneSlowSegments} />}
         {statusSlowSegments.length > 0 && <StatusSlowRoute segments={statusSlowSegments} />}
+        {action.type === 'loosePass' && <LoosePassMarkers action={action} />}
         {document.view.analysis && action.type === 'pass' && <PassAnalysis corridor={passCorridor} />}
         {passLanding && <g className="pass-landing" transform={`translate(${passLanding.x * SCALE} ${passLanding.y * SCALE})`} pointerEvents="none">
           <circle r="10" fill="#10231f" stroke="#a9a3b4" strokeWidth="3" strokeDasharray="3 2" />
@@ -423,7 +454,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         </g>}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
         {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
-        {elevated && action.type !== 'shoot' && !(action.type === 'pass' && action.targetPlayerId) && !(action.type === 'move' && action.targetPlayerId) && path.map((point, index) => (
+        {elevated && action.type !== 'shoot' && action.type !== 'loosePass' && !(action.type === 'pass' && action.targetPlayerId) && !(action.type === 'move' && (action.targetPlayerId || action.ballTarget)) && path.map((point, index) => (
           <g
             key={`${action.id}-handle-${index}`}
             className="path-handle-target"
@@ -438,7 +469,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             <circle cx={point.x * SCALE} cy={point.y * SCALE} r="8" className="path-handle" pointerEvents="all" />
           </g>
         ))}
-        {elevated && action.type === 'move' && !action.targetPlayerId && action.curveControl && <g
+        {elevated && action.type === 'move' && !action.targetPlayerId && !action.ballTarget && action.curveControl && <g
           className="path-handle-target"
           role="slider"
           aria-label="调整跑动曲线"
@@ -578,6 +609,9 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           <marker id="arrow-pass" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#f7f4df" />
           </marker>
+          <marker id="arrow-loose-pass" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#ffd09a" />
+          </marker>
           <marker id="arrow-shoot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#ffba4a" />
           </marker>
@@ -609,8 +643,8 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         <line x1={fieldCenterX} x2={fieldCenterX} y1="0" y2={fieldHeight} className="field-mark" />
         <circle cx={fieldCenterX} cy={fieldCenterY} r="65" className="field-mark fill-none" />
         <circle cx={fieldCenterX} cy={fieldCenterY} r="4" className="center-dot" />
-        <path d={`M0 ${fieldCenterY - 45} H-24 V${fieldCenterY + 45} H0`} className="goal-frame goal-blue" />
-        <path d={`M${fieldWidth} ${fieldCenterY - 45} H${fieldWidth + 24} V${fieldCenterY + 45} H${fieldWidth}`} className="goal-frame goal-red" />
+        <path d={`M0 ${goal.top * SCALE} H-24 V${goal.bottom * SCALE} H0`} className="goal-frame goal-blue" />
+        <path d={`M${fieldWidth} ${goal.top * SCALE} H${fieldWidth + 24} V${goal.bottom * SCALE} H${fieldWidth}`} className="goal-frame goal-red" />
         <text x="12" y="20" className="field-label">蓝方球门</text>
         <text x={fieldWidth - 12} y="20" textAnchor="end" className="field-label">红方球门</text>
 
@@ -696,7 +730,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && toolActor
             ? isToolTargetPlayerEligible(tool, toolActor, player)
             : false
-          const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || tool === 'pass' || tool === 'qMove')
+          const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || isBallReleaseTool(tool) || tool === 'qMove')
           const statuses = boardMode === 'basic' ? [] : frame.statuses.filter((status) => status.playerId === player.id)
           const cooldown = boardMode === 'basic' ? undefined : frame.cooldowns[player.id]
           const shot = boardMode === 'basic' ? undefined : frame.shots.find((candidate) => {
@@ -796,29 +830,27 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         })()}
 
         {boardMode === 'simulation' && <g
-          className={`ball-token ${frame.ball.isFree ? 'free' : ''}`}
+          className={`ball-token ${frame.ball.isFree ? 'free' : ''} ${(tool === 'move' || tool === 'qMove') && toolActor && frame.ball.isFree ? 'pickup-target' : ''}`}
           transform={`translate(${ballPosition.x * SCALE} ${ballPosition.y * SCALE})`}
           onPointerDown={(event) => beginEntityDrag(event, 'ball', ballPosition)}
           tabIndex={0}
           role="button"
           aria-label="足球"
           onKeyDown={(event) => {
-            if (event.key !== 'Enter') return
+            if (event.key !== 'Enter' && event.key !== ' ') return
             event.preventDefault()
-            if (tool === 'select') {
-              select({ kind: 'ball', id: 'ball' })
-            } else if (tool === 'shoot') {
-              setNotice('射门只需选择一名球员。')
-            } else if (toolNeedsActor(tool) && !toolActor) {
-              setNotice(actorPrompt(tool))
-            } else {
-              createAction(actionActor?.id ?? null, ballPosition)
-            }
+            event.stopPropagation()
+            activateBall()
           }}
         >
           <circle r="11" className="ball-shadow" />
           <circle r="9" className="ball-body" />
           <path d="M0 -4 L4 -1 L3 4 L-3 4 L-4 -1 Z" className="ball-mark" />
+          {ballBoostTag && <g className="ball-boost-indicator" transform="translate(14 -14)" pointerEvents="none">
+            <circle className="ball-boost-tag" r="8" />
+            <text x="0" y="3.5" textAnchor="middle" fontSize="12" fill="#17432b" fontWeight="700">↑</text>
+            <title>携带冰接球加速 · {ballBoostTag}</title>
+          </g>}
           {touchOptimized && <circle r="26" className="svg-touch-hit-area entity-touch-hit" />}
         </g>}
         </g>
@@ -897,6 +929,20 @@ function ShotPressureLabel({
   </g>
 }
 
+const LoosePassMarkers = memo(function LoosePassMarkers({ action }: { action: LoosePassAction }) {
+  const last = action.path.at(-1)
+  return <g className="loose-pass-markers" pointerEvents="none">
+    {action.path.slice(1, -1).map((point, index) => <rect
+      key={index}
+      x={point.x * SCALE - 4} y={point.y * SCALE - 4} width="8" height="8"
+      className="loose-pass-bounce"
+    ><title>撞墙反弹</title></rect>)}
+    {last && <circle cx={last.x * SCALE} cy={last.y * SCALE} r="8" className={`loose-pass-end ${action.flightOutcome === 'pickedUp' ? 'pickup-end' : ''}`}>
+      <title>{action.flightOutcome === 'pickedUp' ? '捡球点' : action.flightOutcome === 'goal' ? '进入球门后停球' : '停球点'}</title>
+    </circle>}
+  </g>
+})
+
 function ToolPointerPreview({
   tool,
   actor,
@@ -919,6 +965,14 @@ function ToolPointerPreview({
     return <g className="tool-preview-layer" pointerEvents="none">
       <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.safeDistance * SCALE} className="tool-preview-range pass-preview-safe" />
       <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.maxDistance * SCALE} className="tool-preview-range pass-preview-max" />
+    </g>
+  }
+
+  if (tool === 'loosePass') {
+    return <g className="tool-preview-layer" pointerEvents="none">
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={loosePassingRule(rules).maxDistance * SCALE} className="tool-preview-range loose-pass-preview-range">
+        <title>空传累计路程上限；反弹后终点可能在圆内</title>
+      </circle>
     </g>
   }
 

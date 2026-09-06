@@ -24,7 +24,7 @@ function maximumScaleInsideField(origin: Vec2, point: Vec2, width: number, heigh
 
 /** Keeps a timed fixed-point move at the configured base movement speed. */
 export function syncConstrainedMovePath(document: TacticDocumentV1, action: MoveAction): boolean {
-  if (!action.timingConstraint || action.targetPlayerId) return false
+  if (!action.timingConstraint || action.targetPlayerId || action.ballTarget) return false
   const origin = action.path[0]
   const currentLength = pathLength(resolvedMovePath(action))
   if (!origin || currentLength <= EPSILON) return false
@@ -152,7 +152,7 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): void {
   for (let attempt = 0; attempt <= document.actions.length; attempt += 1) {
     let timingChanged = false
     for (const action of document.actions) {
-      if (action.type !== 'move') continue
+      if (action.type !== 'move' || action.ballTarget) continue
       if (action.targetPlayerId && action.syncActionId) {
         const syncAction = document.actions.find(
           (candidate): candidate is FollowSyncAction => (
@@ -210,7 +210,7 @@ export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: st
   const latestActionJoint = document.actions.reduce((latest, action) => (
     isActorSequenceAction(action, actorId)
       ? Math.max(latest, actionEndTime(action))
-      : action.type === 'pass' && action.actorId === actorId
+      : (action.type === 'pass' || action.type === 'loosePass') && action.actorId === actorId
         ? Math.max(latest, action.startTime)
         : action.type === 'receive' && action.actorId === actorId
           ? Math.max(latest, action.startTime)
@@ -389,6 +389,7 @@ export function reflowSimpleLocomotion(
           requestedStart,
           (scheduledActor, plannedStart) => action.timingConstraint?.kind === 'fixed'
             ? authoredDuration
+            : action.ballTarget ? authoredDuration
             : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
               ? Math.max(0, referencedTime - plannedStart)
               : movementDuration(
@@ -428,7 +429,7 @@ export function reflowSimpleLocomotion(
     action.path = path
     action.startTime = plan.startTime
     action.duration = action.type === 'move'
-      ? action.timingConstraint?.kind === 'fixed'
+      ? action.ballTarget || action.timingConstraint?.kind === 'fixed'
         ? authoredDuration
         : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
           ? Math.max(0, referencedTime - plan.startTime)

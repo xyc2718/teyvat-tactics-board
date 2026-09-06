@@ -3,8 +3,56 @@ import { createDefaultDocument } from '../domain/model/createDocument'
 import { BASIC_ROLE_IDS, effectiveBasicRole } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { parseTactic, serializeTactic } from './tacticFile'
+import { createBallPickupAction, normalizeBallActions } from '../domain/timeline/looseBall'
 
 describe('tactic file boundary', () => {
+  it.each([8, 6.5])('preserves legacy/custom ordinary pass calibration %s without adding a loose-pass block', (speed) => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.passing.ballSpeed = speed
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document.rulesSnapshot.passing.ballSpeed).toBe(speed)
+    expect(parsed.document.rulesSnapshot.loosePassing).toBeUndefined()
+  })
+
+  it('round-trips an empty flight, pickup trace and generated receive without recalibrating the old pass rule', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.passing.ballSpeed = 8
+    document.actions.push({ id: 'throw', type: 'loosePass', actorId: 'blue-water', aimDirection: { x: 1, y: 0 },
+      startTime: 0, duration: 3, path: [{ x: 5.5, y: 4.7 }, { x: 11.5, y: 4.7 }], flightOutcome: 'grounded' })
+    normalizeBallActions(document)
+    const pickup = createBallPickupAction(document, 'blue-fire', 3, 'move', 'pickup')
+    if (!pickup.ok) throw Error(pickup.message)
+    document.actions.push(pickup.action)
+    normalizeBallActions(document)
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document.actions).toEqual(document.actions)
+    expect(parsed.document.rulesSnapshot.passing.ballSpeed).toBe(8)
+    expect(parsed.document.rulesSnapshot.loosePassing).toEqual({ maxDistance: 6, maxDuration: 3 })
+  })
+
+  it.each(['unknown-source', 'conflicting-constraint', 'forged-receive', 'cycle', 'nonmonotonic-trace'])('rejects invalid pickup contracts: %s', (variant) => {
+    const document = createDefaultDocument()
+    document.initialScene.ball = { position: { x: 6, y: 4.7 }, carrierId: null, isFree: true }
+    document.initialScene.players.forEach((player) => { player.hasBall = false })
+    document.stepMarkers[0]!.snapshot = structuredClone(document.initialScene)
+    const pickup = createBallPickupAction(document, 'blue-water', 0, 'move', 'pickup')
+    if (!pickup.ok || pickup.action.type !== 'move') throw Error('fixture')
+    document.actions.push(pickup.action)
+    normalizeBallActions(document)
+    if (variant === 'unknown-source') pickup.action.ballTarget = { sourceActionId: 'missing' }
+    if (variant === 'conflicting-constraint') pickup.action.timingConstraint = { kind: 'fixed' }
+    if (variant === 'forged-receive') document.actions.find((action) => action.type === 'receive')!.duration = 1
+    if (variant === 'nonmonotonic-trace') pickup.action.pickupTrace![1]!.time = 0
+    if (variant === 'cycle') {
+      pickup.action.ballTarget = { sourceActionId: 'throw' }
+      document.actions = document.actions.filter((action) => action.type !== 'receive')
+      document.actions.push({ id: 'throw', type: 'loosePass', actorId: 'blue-water', aimDirection: { x: 1, y: 0 }, originPickupActionId: 'pickup',
+        startTime: 0, duration: 3, path: [{ x: 5.5, y: 4.7 }, { x: 11.5, y: 4.7 }], flightOutcome: 'grounded' })
+    }
+    expect(parseTactic(serializeTactic(document)).ok).toBe(false)
+  })
   it('round-trips all six basic identities while accepting old V1 files without overrides', () => {
     const source = createDefaultDocument()
     const legacy = parseTactic(serializeTactic(source))

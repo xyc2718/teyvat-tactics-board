@@ -9,6 +9,7 @@ import { tacticLibrary } from '../persistence/tacticLibrary'
 import type { EZoneAction, MoveAction, PassAction, QMoveAction, ShootAction } from '../domain/model/types'
 import { useTacticStore } from '../editor/useTacticStore'
 import { App } from './App'
+import packageJson from '../../package.json'
 
 describe('App shell', () => {
   afterEach(cleanup)
@@ -28,6 +29,7 @@ describe('App shell', () => {
       showLogic: false,
       showAdvancedTimeline: false,
       notice: null,
+      pickupError: null,
       past: [],
       future: [],
     })
@@ -47,7 +49,8 @@ describe('App shell', () => {
     expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument()
     expect(screen.queryByText('语义动作轨道')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '推演模式' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText('Version 0.1.0, Developer xyc')).toHaveTextContent('v0.1.0 · Developer: xyc')
+    expect(screen.getByLabelText(`Version ${packageJson.version}, Developer xyc`)).toHaveTextContent(`v${packageJson.version} · Developer: xyc`)
+    expect(screen.getByRole('button', { name: '空传' })).toBeInTheDocument()
   })
 
   it('offers six basic identities for both teams outside the field and isolates simulation labels', () => {
@@ -952,7 +955,12 @@ describe('App shell', () => {
     expect(slowRoute?.querySelector('title')).toHaveTextContent('敌方冰圈减速段 · 移速 0.50×')
   })
 
-  it('supports switching the locomotion actor and completing a point target from the keyboard', () => {
+  it('supports switching the locomotion actor and completing a ball pickup from the keyboard', () => {
+    const document = createDefaultDocument()
+    document.initialScene.players.forEach((player) => { player.hasBall = false })
+    document.initialScene.ball = { position: { x: 13.5, y: 4.7 }, carrierId: null, isFree: true }
+    document.stepMarkers[0]!.snapshot = structuredClone(document.initialScene)
+    useTacticStore.setState({ document })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Q 技能' }))
 
@@ -967,6 +975,7 @@ describe('App shell', () => {
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({
       type: 'qMove',
       actorId: 'red-water',
+      ballTarget: { sourceActionId: null },
     })
     expect(useTacticStore.getState().tool).toBe('select')
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'red-water' })

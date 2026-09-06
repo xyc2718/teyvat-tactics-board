@@ -7,9 +7,17 @@ import { passDuration, passPathProgress, passTravelDistance } from './durations'
 import { solvePassReception } from './passReception'
 import { documentFreezeWindows, projectFrame } from './projectFrame'
 
+// These independent reference trajectories describe the v0.1.0 calibration.
+// Keep it explicit so new-document defaults do not silently rewrite old fixtures.
+function legacyPassDocument() {
+  const document = createDefaultDocument()
+  document.rulesSnapshot.passing.ballSpeed = 8
+  return document
+}
+
 describe('pass reception solver', () => {
   it('aims at the moving receiver position at the solved catch time', () => {
-    const document = createDefaultDocument()
+    const document = legacyPassDocument()
     const passer = document.initialScene.players.find((player) => player.id === 'blue-water')!
     const receiver = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     passer.position = { x: 0, y: 7 }
@@ -50,7 +58,7 @@ describe('pass reception solver', () => {
   })
 
   it('keeps a free pass landing point authored while moving only its origin', () => {
-    const document = createDefaultDocument()
+    const document = legacyPassDocument()
     const pass: PassAction = {
       id: 'free-pass',
       type: 'pass',
@@ -68,7 +76,7 @@ describe('pass reception solver', () => {
   })
 
   it('does not create a catch when the named receiver stays beyond maximum range', () => {
-    const document = createDefaultDocument()
+    const document = legacyPassDocument()
     const passer = document.initialScene.players.find((player) => player.id === 'blue-water')!
     const receiver = document.initialScene.players.find((player) => player.id === 'blue-fire')!
     passer.position = { x: 0, y: 7 }
@@ -93,7 +101,7 @@ describe('pass reception solver', () => {
 })
 
 function setupPass(target: Vec2 = { x: 6, y: 7 }, receiverId = 'blue-ice') {
-  const document = createDefaultDocument()
+  const document = legacyPassDocument()
   const passer = document.initialScene.players.find((player) => player.id === 'blue-water')!
   const receiver = document.initialScene.players.find((player) => player.id === receiverId)!
   passer.position = { x: 2, y: 7 }

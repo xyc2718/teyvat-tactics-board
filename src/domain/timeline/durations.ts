@@ -3,6 +3,15 @@ import type { PlayerState, RuleSetV1, TacticAction, Vec2 } from '../model/types'
 
 const EPSILON = 1e-6
 
+export function deceleratingDistance(elapsed: number, distance: number, duration: number): number {
+  const progress = clamp(elapsed / Math.max(duration, EPSILON), 0, 1)
+  return distance * progress * (2 - progress)
+}
+
+export function deceleratingTime(distance: number, maximum: number, duration: number): number {
+  return duration * (1 - Math.sqrt(1 - clamp(distance / Math.max(maximum, EPSILON), 0, 1)))
+}
+
 export function movementDuration(path: Vec2[], rules: RuleSetV1): number {
   return pathLength(path) / rules.field.baseMoveSpeed
 }
@@ -17,15 +26,13 @@ export function passMaxDuration(rules: RuleSetV1): number {
 
 /** Integrated scalar speed, independent of the direction of a homing pass. */
 export function passTravelDistance(elapsed: number, rules: RuleSetV1): number {
-  const progress = clamp(elapsed / passMaxDuration(rules), 0, 1)
-  return Math.max(rules.passing.maxDistance, EPSILON) * progress * (2 - progress)
+  return deceleratingDistance(elapsed, Math.max(rules.passing.maxDistance, EPSILON), passMaxDuration(rules))
 }
 
 /** Inverse of passTravelDistance; distances beyond the budget stop at its end. */
 export function passTimeForDistance(distance: number, rules: RuleSetV1): number {
   const maxDistance = Math.max(rules.passing.maxDistance, EPSILON)
-  const travelFraction = clamp(distance / maxDistance, 0, 1)
-  return (1 - Math.sqrt(1 - travelFraction)) * passMaxDuration(rules)
+  return deceleratingTime(distance, maxDistance, passMaxDuration(rules))
 }
 
 /**

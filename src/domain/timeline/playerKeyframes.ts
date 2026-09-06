@@ -80,6 +80,7 @@ function actionTypeLabel(type: TacticAction['type']): string {
     move: '跑动',
     qMove: 'Q 技能',
     pass: '传球',
+    loosePass: '空传',
     receive: '接球',
     possession: '球权',
     shoot: '射门',

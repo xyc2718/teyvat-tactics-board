@@ -23,13 +23,17 @@ import type {
   TacticDocumentV1,
 } from '../model/types'
 import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
-import { actionEndTime, passPathProgress } from './durations'
+import { actionEndTime, deceleratingDistance, passPathProgress } from './durations'
+import { loosePassingRule } from '../rules/loosePassing'
+import { ballCausalRanks } from './ballCausalOrder'
+import { pickupTracePosition } from './pickupTrace'
 import { instantQActionAtKeyframe } from './playerKeyframes'
 import { compilePath } from '../geometry/compiledPath'
 import { passIsReceived } from '../model/passFlight'
 import {
   movementReceiveBoostWindowsFor,
   receiveBoostWindowFor,
+  pickupReceiveBoost,
   waterQGainAtTime,
   waterQMoveBoost,
 } from './movementEffects'
@@ -272,6 +276,7 @@ interface FollowMoveTimeline extends FollowMoveTrace {
 
 interface ProjectionMemo {
   hitCount: number
+  ballRanks?: Map<string, number>
   frames: Map<string, ProjectedFrame>
   followTraces: Map<string, FollowMoveTimeline>
   moveTraces: Map<string, EZoneMoveTrace>
@@ -811,6 +816,8 @@ function computeSceneCore(
   const cooldowns = Object.fromEntries(players.map((player) => [player.id, { q: 0, e: 0 }]))
   const shots: ProjectedFrame['shots'] = []
 
+  const memo = projectionMemo(hitMap)
+  const ballRanks = memo.ballRanks ??= ballCausalRanks(document.actions)
   const ordered = [...document.actions].sort((a, b) => {
     const timeOrder = a.startTime - b.startTime
     if (timeOrder !== 0) return timeOrder
@@ -819,12 +826,19 @@ function computeSceneCore(
       const role = getActorRole(document, action.actorId)
       return role ? rules.roles[role].q.kind === 'blink' : false
     }
-    return Number(isInstantQ(b)) - Number(isInstantQ(a))
+    const instantOrder = Number(isInstantQ(b)) - Number(isInstantQ(a))
+    if (instantOrder) return instantOrder
+    const causalOrder = (ballRanks.get(a.id) ?? 0) - (ballRanks.get(b.id) ?? 0)
+    if (causalOrder) return causalOrder
+    // An exact catch precedes a newly authored release, independent of array order.
+    return Number(b.type === 'receive') - Number(a.type === 'receive')
   })
 
   for (const action of ordered) {
     if (ignoredActionIds.has(action.id)) continue
     if (action.startTime > time) continue
+    if ((action.type === 'pass' || action.type === 'loosePass') && action.originPickupActionId
+      && !document.actions.some((candidate) => candidate.type === 'receive' && candidate.pickupActionId === action.originPickupActionId)) continue
     if (positionOnlyPlayerId && (
       (action.type !== 'move' && action.type !== 'qMove') || action.actorId !== positionOnlyPlayerId
     )) continue
@@ -834,6 +848,12 @@ function computeSceneCore(
 
     if (action.type === 'move' || action.type === 'qMove') {
       if (!actor || action.path.length < 2) continue
+      if (action.type === 'move' && action.ballTarget && action.pickupTrace?.length) {
+        const freeze = applyControlEffects ? freezeWindowsFor(document, action.actorId, hitMap)
+          .find((window) => window.start >= action.startTime && window.start < actionEndTime(action)) : undefined
+        actor.position = pickupTracePosition(action.pickupTrace, freeze ? Math.min(time, freeze.start) : time)
+        continue
+      }
       if (action.type === 'move' && action.targetPlayerId && action.syncActionId) {
         actor.position = traceFollowMove(
           document,
@@ -880,6 +900,18 @@ function computeSceneCore(
       continue
     }
 
+    if (action.type === 'loosePass') {
+      if (!actor || action.path.length < 2) continue
+      const route = memoized(projectionMemo(hitMap).passPaths, action.id, 128, () => compilePath(action.path))
+      const curve = loosePassingRule(rules)
+      ball.carrierId = null
+      ball.isFree = true
+      ball.position = route.pointAtDistance(deceleratingDistance(Math.min(time - action.startTime, action.duration), curve.maxDistance, curve.maxDuration))
+      const pickup = document.actions.find((candidate) => candidate.type === 'receive' && candidate.ballSourceActionId === action.id && candidate.startTime <= time)
+      if (pickup?.type === 'receive') { ball.carrierId = pickup.actorId; ball.isFree = false }
+      continue
+    }
+
     if (action.type === 'pass') {
       if (!actor || action.path.length < 2) continue
       const route = memoized(projectionMemo(hitMap).passPaths, action.id, 128, () => compilePath(action.path))
@@ -920,6 +952,15 @@ function computeSceneCore(
     }
 
     if (action.type === 'receive' && actor && time >= action.startTime) {
+      if (action.pickupActionId) {
+        const pickup = document.actions.find((candidate) => candidate.id === action.pickupActionId)
+        if (!pickup || (pickup.type !== 'move' && pickup.type !== 'qMove') || !pickup.ballTarget) continue
+        const boost = pickupReceiveBoost(document, action)
+        if (boost && time < action.startTime + boost.duration) addStatus(statuses, {
+          id: `${action.id}-receive-boost`, playerId: actor.id, kind: 'boosted', sourceActionId: action.id,
+          startsAt: action.startTime, endsAt: action.startTime + boost.duration, separationDelta: boost.netSeparationGain,
+        })
+      }
       if (action.sourceActionId) {
         const source = document.actions.find((candidate) => candidate.id === action.sourceActionId)
         if (!source || source.type !== 'pass' || !passIsReceived(source, rules)) continue
@@ -1206,6 +1247,7 @@ export function statusSlowSegmentsForMove(
 
 /** Shared formal route for both fixed-point and player-following moves. */
 export function projectedMovePath(document: TacticDocumentV1, action: MoveAction): PlayerState['position'][] {
+  if (action.ballTarget && action.pickupTrace?.length) return action.pickupTrace.map((sample) => ({ ...sample.position }))
   if (!action.targetPlayerId || !action.syncActionId) return resolvedMovePath(action)
   const hitMap = buildIceQHitMap(document)
   return traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set()).path.map((point) => ({ ...point }))
@@ -1217,6 +1259,11 @@ export function projectedMovePathSegment(
   startTime: number,
   endTime: number,
 ): PlayerState['position'][] {
+  if (action.ballTarget && action.pickupTrace?.length) return [
+    pickupTracePosition(action.pickupTrace, startTime),
+    ...action.pickupTrace.filter((sample) => sample.time > startTime && sample.time < endTime).map((sample) => ({ ...sample.position })),
+    pickupTracePosition(action.pickupTrace, endTime),
+  ]
   if (!action.targetPlayerId || !action.syncActionId) {
     const route = resolvedMovePath(action)
     return slicePath(
@@ -1303,6 +1350,16 @@ export function createPlayerPositionReader(document: TacticDocumentV1, playerId:
   }
 }
 
+/** One memo/exclusion context per solve; the solver does not hash a document per sample. */
+export function createMovementBudgetReader(document: TacticDocumentV1, action: MoveAction) {
+  const hitMap = buildIceQHitMap(document)
+  const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+  const excluded = new Set([action.id])
+  return (position: PlayerState['position'], start: number, end: number) => actor
+    ? followMoveDistanceBudget(document, action, start, end) * eZoneMultiplierAt(document, actor, position, (start + end) / 2, 'move', true, hitMap, excluded)
+    : 0
+}
+
 /**
  * Projects an editor-selected action edge. Instant Q actions have two semantic
  * states at one rules timestamp, so their start edge restores the pre-Q actor
@@ -1313,13 +1370,34 @@ export function projectFrameAtKeyframe(
   time: number,
   reference: MoveKeyframeReference | null,
 ): ProjectedFrame {
-  const frame = projectFrame(document, time)
-  if (!reference || reference.edge !== 'start') return frame
+  if (!reference || reference.edge !== 'start') return projectFrame(document, time)
   const action = instantQActionAtKeyframe(document, reference)
   if (
     !action
     || Math.abs(action.startTime - time) > POSITION_EPSILON
-  ) return frame
+  ) return projectFrame(document, time)
+
+  let projection = document
+  if (action.ballTarget) {
+    // A pickup has not happened at its pre-Q edge. Exclude its complete causal
+    // outcome, while keeping the original free-ball flight and unrelated Qs.
+    const excluded = new Set([action.id])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const candidate of document.actions) {
+        const parent = candidate.type === 'receive' ? candidate.pickupActionId ?? candidate.sourceActionId
+          : candidate.type === 'pass' || candidate.type === 'loosePass' ? candidate.originPickupActionId
+            : candidate.type === 'move' || candidate.type === 'qMove' ? candidate.ballTarget?.sourceActionId : undefined
+        if (parent && excluded.has(parent) && !excluded.has(candidate.id)) {
+          excluded.add(candidate.id)
+          changed = true
+        }
+      }
+    }
+    projection = { ...document, actions: document.actions.filter((candidate) => !excluded.has(candidate.id)) }
+  }
+  const frame = projectFrame(projection, time)
 
   const actor = frame.players.find((player) => player.id === action.actorId)
   const origin = action.path[0]

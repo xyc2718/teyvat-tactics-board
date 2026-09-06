@@ -1,6 +1,6 @@
 import { projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { useTacticStore } from '../editor/useTacticStore'
-import { isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
+import { isBallReleaseTool, isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, resolveToolActor, toolNeedsActor } from '../editor/toolWorkflow'
 
 export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void }) {
   const document = useTacticStore((state) => state.document)
@@ -77,7 +77,7 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
             const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && actor
               ? isToolTargetPlayerEligible(tool, actor, player)
               : false
-            const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || tool === 'pass' || tool === 'qMove')
+            const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || isBallReleaseTool(tool) || tool === 'qMove')
             return (
               <button
                 key={player.id}

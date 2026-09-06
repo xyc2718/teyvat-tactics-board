@@ -16,6 +16,7 @@ import { useDeviceLayout } from './useDeviceLayout'
 import { useTacticLibraryController } from './useTacticLibraryController'
 import { SlowStatusDialog } from './SlowStatusDialog'
 import { BasicRoleControl } from './BasicRoleControl'
+import { PickupErrorDialog } from './PickupErrorDialog'
 
 export function App() {
   const deviceLayout = useDeviceLayout()
@@ -25,6 +26,8 @@ export function App() {
   const boardMode = useTacticStore((state) => state.boardMode)
   const isPlaying = useTacticStore((state) => state.isPlaying)
   const notice = useTacticStore((state) => state.notice)
+  const pickupError = useTacticStore((state) => state.pickupError)
+  const dismissPickupError = useTacticStore((state) => state.dismissPickupError)
   const tool = useTacticStore((state) => state.tool)
   const updateMeta = useTacticStore((state) => state.updateMeta)
   const setNotice = useTacticStore((state) => state.setNotice)
@@ -65,6 +68,7 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const state = useTacticStore.getState()
+      if (state.pickupError) return
       if (state.showLogic || state.showRules) return
       if (event.key === 'Escape') {
         state.cancelTool()
@@ -86,7 +90,7 @@ export function App() {
       }
       const keyTools = state.boardMode === 'basic'
         ? { v: 'select', m: 'move', k: 'attack', r: 'strikeRange' } as const
-        : { v: 'select', m: 'move', w: 'wait', q: 'qMove', p: 'pass', s: 'shoot', a: 'annotation', k: 'attack', r: 'strikeRange', g: 'slow', e: 'eZone' } as const
+        : { v: 'select', m: 'move', w: 'wait', q: 'qMove', p: 'pass', l: 'loosePass', s: 'shoot', a: 'annotation', k: 'attack', r: 'strikeRange', g: 'slow', e: 'eZone' } as const
       const tool = keyTools[event.key.toLowerCase() as keyof typeof keyTools]
       if (tool && !event.repeat) {
         event.preventDefault()
@@ -171,6 +175,7 @@ export function App() {
       {boardMode === 'simulation' && <LogicDrawer />}
       <TacticLibraryDrawer controller={library} />
       {boardMode === 'simulation' && tool === 'slow' && <SlowStatusDialog />}
+      {pickupError && <PickupErrorDialog message={pickupError} onDismiss={dismissPickupError} />}
       <div className="version-badge" aria-label={`Version ${packageJson.version}, Developer ${packageJson.author}`}>
         v{packageJson.version} · Developer: {packageJson.author}
       </div>

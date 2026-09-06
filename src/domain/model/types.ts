@@ -9,6 +9,7 @@ export type ToolId =
   | 'wait'
   | 'qMove'
   | 'pass'
+  | 'loosePass'
   | 'shoot'
   | 'annotation'
   | 'attack'
@@ -68,6 +69,16 @@ export interface MoveKeyframeReference {
   edge: 'start' | 'end'
 }
 
+/** A particular free-ball episode, not a moving nearest-ball query. */
+export interface BallTargetReference {
+  sourceActionId: string | null
+}
+
+export interface PickupTracePoint {
+  time: number
+  position: Vec2
+}
+
 export type MoveTimingConstraint =
   | { kind: 'fixed' }
   | { kind: 'keyframe'; reference: MoveKeyframeReference }
@@ -84,6 +95,9 @@ export interface MoveAction extends BaseAction {
   followGap?: number
   /** Optional fixed-point timing override. Omitted moves keep rule-derived timing. */
   timingConstraint?: MoveTimingConstraint
+  ballTarget?: BallTargetReference
+  /** Resolved absolute-time pursuit samples; do not apply movement effects twice. */
+  pickupTrace?: PickupTracePoint[]
 }
 
 export interface QMoveAction extends BaseAction {
@@ -91,6 +105,7 @@ export interface QMoveAction extends BaseAction {
   actorId: string
   path: Vec2[]
   targetId?: string
+  ballTarget?: BallTargetReference
 }
 
 export interface PassAction extends BaseAction {
@@ -99,15 +114,28 @@ export interface PassAction extends BaseAction {
   targetPlayerId?: string
   /** Optional same-time action edge that fixes whether the pass starts before or after an instant Q. */
   originKeyframe?: MoveKeyframeReference
+  originPickupActionId?: string
   /** Resolved named-pass result. Missing only on legacy or unaddressed passes. */
   flightOutcome?: 'received' | 'dropped'
   path: Vec2[]
+}
+
+export interface LoosePassAction extends BaseAction {
+  type: 'loosePass'
+  actorId: string
+  aimDirection: Vec2
+  path: Vec2[]
+  originKeyframe?: MoveKeyframeReference
+  originPickupActionId?: string
+  flightOutcome: 'grounded' | 'goal' | 'pickedUp'
 }
 
 export interface ReceiveAction extends BaseAction {
   type: 'receive'
   actorId: string
   sourceActionId?: string
+  pickupActionId?: string
+  ballSourceActionId?: string | null
 }
 
 export interface PossessionAction extends BaseAction {
@@ -167,6 +195,7 @@ export type TacticAction =
   | MoveAction
   | QMoveAction
   | PassAction
+  | LoosePassAction
   | ReceiveAction
   | PossessionAction
   | ShootAction
@@ -263,6 +292,8 @@ export interface RuleSetV1 {
     interceptStartWidth: number
     interceptEndWidth: number
   }
+  /** Absent in legacy snapshots; materialized only when authoring an empty pass. */
+  loosePassing?: { maxDistance: number; maxDuration: number }
   shooting: {
     outerYellow: number
     outerRed: number

@@ -65,7 +65,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .mode-switch button:hover { color:#d7e8e1; background:rgba(255,255,255,.035); }
 .mode-switch button.active { color:#1b231a; font-weight:700; background:linear-gradient(135deg,#eed18b,#c8a55e); }
 
-.tool-strip { display: flex; align-items: center; gap: 3px; flex: 1; min-width: 0; }
+.tool-strip { display: flex; align-items: center; gap: 3px; flex: 1; min-width: 0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; }
 .tool-button { height: 50px; min-width: 58px; padding: 5px 8px; border: 1px solid transparent; border-radius: 9px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: #92aaa2; background: transparent; cursor: pointer; transition: .15s ease; }
 .tool-button span:last-child { font-size: 11px; white-space: nowrap; }
 .tool-button:hover { background: rgba(255, 255, 255, 0.045); color: #d7e8e1; }
@@ -202,6 +202,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .action-move-follow { stroke: #f2be69; stroke-dasharray: 9 5; }
 .action-qMove { stroke: #7de2f2; stroke-width: 5; stroke-dasharray: 12 6; }
 .action-pass { stroke: #f7f4df; stroke-width: 3; stroke-dasharray: 3 6; }
+.action-loosePass { stroke:#ffd09a; stroke-width:3; stroke-dasharray:12 4 2 4; }
+.action-move.action-ball-pickup { stroke-dasharray:5 4; }
+.action-qMove.action-ball-pickup { stroke-dasharray:12 4 2 4; }
+.loose-pass-preview-range { stroke:#ffd09a; stroke-dasharray:12 4 2 4; }
+.global-player-ticks .loose-flight-event { top:10px; background:#ffd09a; border-radius:0; }
+.global-player-ticks .pickup-event { background:#d6f0b5; transform:rotate(45deg); }
+.loose-pass-bounce { fill:#0b1b17; stroke:#ffd09a; stroke-width:2; }
+.loose-pass-end { fill:#0b1b17; stroke:#ffd09a; stroke-width:2; stroke-dasharray:3 2; }
+.loose-pass-end.pickup-end { fill:#d6f0b5; stroke:#17432b; stroke-dasharray:none; }
+.ball-token.pickup-target .ball-shadow { stroke:#f5d58b; stroke-width:3; }
+.ball-boost-tag { fill:#daffd2; stroke:#194229; stroke-width:1.5; }
+.pickup-constraint-card { margin:12px 0; padding:12px; border:1px solid #627f68; border-radius:8px; background:rgba(161,228,169,.06); }
+.pickup-constraint-card p { font-size:11px; line-height:1.7; color:#b2c6bb; }
+.type-loosePass { background:#ffd09a; }
+.type-receive.pickup-event { background:#d6f0b5; }
+.pickup-error-backdrop { z-index:170; }
+.pickup-error-dialog { max-height:calc(100dvh - 24px); overflow:auto; }
+.pickup-error-dialog .accent-button { min-width:92px; min-height:44px; }
+.pickup-error-dialog .subtle { margin-top:10px; }
 .pass-threat-segment { stroke: var(--threat-color); stroke-linecap: butt; }
 .pass-threat-segment.threat-safe { --threat-color: #73dda2; stroke-dasharray: none; }
 .pass-threat-segment.threat-baseRisk { --threat-color: #e7c867; stroke-dasharray: 5 6; }

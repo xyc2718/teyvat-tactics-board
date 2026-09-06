@@ -13,6 +13,7 @@ export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = 
   wait: { label: '等待', shortcut: 'W' },
   qMove: { label: 'Q 技能', shortcut: 'Q' },
   pass: { label: '传球', shortcut: 'P' },
+  loosePass: { label: '空传', shortcut: 'L' },
   shoot: { label: '射门', shortcut: 'S' },
   annotation: { label: '说明', shortcut: 'A' },
   attack: { label: '攻击范围', shortcut: 'K' },
@@ -25,6 +26,7 @@ export const actionLabels: Record<TacticAction['type'], string> = {
   move: '跑动',
   qMove: 'Q 位移',
   pass: '传球',
+  loosePass: '空传',
   receive: '接球',
   possession: '放下球权',
   shoot: '射门蓄力',
@@ -36,6 +38,9 @@ export const actionLabels: Record<TacticAction['type'], string> = {
 }
 
 export function actionLabel(action: TacticAction): string {
+  if (action.type === 'receive' && action.pickupActionId) return '捡球'
+  if (action.type === 'move' && action.ballTarget) return '跑动捡球'
+  if (action.type === 'qMove' && action.ballTarget) return 'Q 捡球'
   if (action.type !== 'status') return actionLabels[action.type]
   if (action.status === 'slowed') return '挂冰'
   if (action.status === 'frozen') return '冻结'

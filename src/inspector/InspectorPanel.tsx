@@ -45,6 +45,12 @@ export function InspectorPanel() {
     () => selectedAction?.type === 'shoot' ? evaluateShotActionPressure(document, selectedAction) : null,
     [document, selectedAction],
   )
+  const selectedPathLength = useMemo(() => selectedAction && 'path' in selectedAction
+    ? pathLength(selectedAction.type === 'move' ? projectedMovePath(document, selectedAction) : selectedAction.path)
+    : null, [document, selectedAction])
+  const selectedPickup = selectedAction && (selectedAction.type === 'move' || selectedAction.type === 'qMove') && selectedAction.ballTarget
+    ? document.actions.find((action) => action.type === 'receive' && action.pickupActionId === selectedAction.id)
+    : undefined
   const warnings = useMemo(() => evaluateWarnings(document), [document])
   const setRole = useTacticStore((state) => state.setPlayerRole)
   const setTeam = useTacticStore((state) => state.setPlayerTeam)
@@ -104,7 +110,7 @@ export function InspectorPanel() {
               <Metric label="坐标" value={`${selectedPlayer.position.x.toFixed(1)}, ${selectedPlayer.position.y.toFixed(1)}`} />
             </div>
           </section>
-          {latestPlayerMove && !latestPlayerMove.targetPlayerId && <section className="inspector-section latest-move-editor">
+          {latestPlayerMove && !latestPlayerMove.targetPlayerId && !latestPlayerMove.ballTarget && <section className="inspector-section latest-move-editor">
             <div className="section-title-row">
               <h3>最后一段跑动</h3>
               <span>{latestPlayerMove.startTime.toFixed(2)}–{(latestPlayerMove.startTime + latestPlayerMove.duration).toFixed(2)}s</span>
@@ -145,8 +151,8 @@ export function InspectorPanel() {
             <div className="action-kind"><span className={`action-dot type-${selectedAction.type}`} />{actionLabel(selectedAction)}</div>
             {showAdvancedTimeline
               ? <>
-                  <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
-                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId)) || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId)) || (selectedAction.type === 'move' && (Boolean(selectedAction.targetPlayerId) || selectedAction.timingConstraint?.kind === 'keyframe'))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
+                  <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
+                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)) || selectedAction.type === 'loosePass' || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId)) || (selectedAction.type === 'move' && (Boolean(selectedAction.targetPlayerId || selectedAction.ballTarget) || selectedAction.timingConstraint?.kind === 'keyframe'))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
                 </>
               : <>
                   <div className="inline-info"><span>开始节点</span><strong>{selectedAction.startTime.toFixed(2)}s</strong></div>
@@ -154,19 +160,28 @@ export function InspectorPanel() {
                     ? <label className="field-row"><span>等待时长</span><NumberInput value={selectedAction.duration} step={0.1} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
                     : <div className="inline-info"><span>动作时长</span><strong>{selectedAction.duration.toFixed(2)}s</strong></div>}
                 </>}
-            {'path' in selectedAction && <div className="inline-info"><span>路径长度</span><strong>{pathLength(selectedAction.type === 'move' ? projectedMovePath(document, selectedAction) : selectedAction.path).toFixed(2)} 格</strong></div>}
-            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && <MovePathModeButtons
+            {selectedPathLength !== null && <div className="inline-info"><span>路径长度</span><strong>{selectedPathLength.toFixed(2)} 格</strong></div>}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && !selectedAction.ballTarget && <MovePathModeButtons
               curved={Boolean(selectedAction.curveControl)}
               onChange={(mode) => setMovePathMode(selectedAction.id, mode)}
             />}
-            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && <MoveTimingEditor
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && !selectedAction.ballTarget && <MoveTimingEditor
               key={selectedAction.id}
               action={selectedAction}
               document={document}
             />}
-            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '路径总长会保持与固定时间一致。' : '动作时长会随曲线长度自动更新。'}</p>}
+            {selectedAction.type === 'move' && !selectedAction.targetPlayerId && !selectedAction.ballTarget && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '路径总长会保持与固定时间一致。' : '动作时长会随曲线长度自动更新。'}</p>}
             {selectedAction.type === 'move' && selectedAction.targetPlayerId && <p className="callout">贴身跟随 {document.initialScene.players.find((player) => player.id === selectedAction.targetPlayerId)?.name ?? selectedAction.targetPlayerId}；结束时间同步目标动作，追上后保持约 {selectedAction.followGap?.toFixed(2)} 格攻击间距。</p>}
             {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
+            {(selectedAction.type === 'move' || selectedAction.type === 'qMove') && selectedAction.ballTarget && <div className="pickup-constraint-card">
+              <strong>{selectedAction.type === 'qMove' ? 'Q 穿球约束' : '追踪自由球'}</strong>
+              <p>{selectedPickup
+                ? `捡球时刻 ${selectedPickup.startTime.toFixed(3)}s，球从接触时开始跟随。`
+                : '当前动作未能捡到目标球，请调整动作或上游球路。'}</p>
+              <p>{selectedAction.type === 'qMove'
+                ? 'Q 捡球后继续完成位移。调整冰 Q 长度仍须途中接到球，不满足时保留上一次有效路径。'
+                : '路径与时长由球的飞行轨迹和角色实际移速解算；不能同时设置固定时长或贴身跟随。'}</p>
+            </div>}
             {selectedAction.type === 'shoot' && <label className="field-row"><span>蓄力等级</span>
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>
             </label>}
@@ -181,6 +196,8 @@ export function InspectorPanel() {
               {' '}按实际路线累计距离计算，≤ {document.rulesSnapshot.passing.safeDistance} 格为安全段，最多飞行 {document.rulesSnapshot.passing.maxDistance} 格。
             </p>}
             {selectedAction.type === 'receive' && selectedAction.sourceActionId && <p className="callout">此接球节点由对应传球自动生成，时间随传球起点和接球队员轨迹更新。</p>}
+            {selectedAction.type === 'receive' && selectedAction.pickupActionId && <p className="callout">此捡球节点由跑动或 Q 与球的实际接触自动生成，时间不可直接修改。跳到该节点后可立即传球。</p>}
+            {selectedAction.type === 'loosePass' && <p className="callout">按指定方向飞行，撞墙反弹不重置速度或剩余路程。{selectedAction.flightOutcome === 'pickedUp' ? '球已在途中被捡起，飞行在接触时刻结束；之后随持球者移动。' : selectedAction.flightOutcome === 'goal' ? '球进入球门后停止。' : '飞行结束后停在终点，等待跑动或 Q 捡球。'}空传不使用普通传球的安全区判定。</p>}
             <button className="danger-button" onClick={() => { deleteAction(selectedAction.id); select(null) }}>删除动作</button>
           </section>
         </div>

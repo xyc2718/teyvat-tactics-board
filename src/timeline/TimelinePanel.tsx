@@ -1,4 +1,6 @@
+import { useMemo } from 'react'
 import { actionEndTime } from '../domain/timeline/durations'
+import { loosePassJointTimes } from '../domain/timeline/loosePass'
 import type { MoveKeyframeReference, QMoveAction, TacticDocumentV1 } from '../domain/model/types'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { actionActorId, actionTimelineKeyframes } from '../domain/timeline/playerKeyframes'
@@ -110,9 +112,9 @@ export function TimelinePanel() {
   const reselectToolActor = useTacticStore((state) => state.reselectToolActor)
   const updateActionTiming = useTacticStore((state) => state.updateActionTiming)
   const deleteAction = useTacticStore((state) => state.deleteAction)
-  const duration = timelineDuration(document)
+  const duration = useMemo(() => timelineDuration(document), [document])
   const sliderMax = Math.max(duration, 0.01)
-  const joints = timelineJointTimes(document)
+  const joints = useMemo(() => timelineJointTimes(document), [document])
   const activeStep = document.stepMarkers.find((step) => step.id === activeStepId)
   const editableStep = activeStep && !isOpeningStep(document, activeStep.id) ? activeStep : null
   const activeOwnership = editableStep ? getStepActionOwnership(document, editableStep.id) : null
@@ -123,6 +125,17 @@ export function TimelinePanel() {
     ? selection.id
     : actionActorId(selectedAction)
   const trackPlayer = document.initialScene.players.find((player) => player.id === trackPlayerId)
+  const looseFlightEvents = useMemo(() => document.actions.flatMap((action) => action.type === 'loosePass'
+    ? loosePassJointTimes(action, document.rulesSnapshot).map((time, index, times) => ({
+        actionId: action.id,
+        actorId: action.actorId,
+        time,
+        label: index === times.length - 1 ? (action.flightOutcome === 'pickedUp' ? '捡球' : action.flightOutcome === 'goal' ? '入门停球' : '空传停球') : '反弹',
+      }))
+    : []), [document])
+  const trackFlightEvents = trackPlayerId
+    ? looseFlightEvents.filter((event) => event.actorId === trackPlayerId)
+    : looseFlightEvents
   const sortedActions = [...document.actions].sort((left, right) => (
     left.startTime - right.startTime || actionEndTime(left) - actionEndTime(right)
   ))
@@ -147,6 +160,7 @@ export function TimelinePanel() {
   const ordinaryTrackKeyframeTimes = Array.from(new Set([
     0,
     ...trackActions.flatMap((action) => actionTimelineKeyframes(action).map(({ time }) => time)),
+    ...trackFlightEvents.map((event) => event.time),
     ...trackFreezeWindows.flatMap((window) => [window.startsAt, window.endsAt]),
   ])).filter((time) => !instantTrackTimes.some((instantTime) => sameTime(time, instantTime)))
   const trackKeyframes: Array<{
@@ -165,7 +179,7 @@ export function TimelinePanel() {
     left.time - right.time
     || (left.reference?.edge === 'start' ? -1 : 1)
   ))
-  const scrubberPoints = buildScrubberPoints(document, duration, trackPlayerId ?? null)
+  const scrubberPoints = useMemo(() => buildScrubberPoints(document, duration, trackPlayerId ?? null), [document, duration, trackPlayerId])
   const exactScrubberPoint = currentKeyframe
     ? scrubberPoints.find((point) => (
         point.reference?.actionId === currentKeyframe.actionId
@@ -220,7 +234,7 @@ export function TimelinePanel() {
               return times.map(({ edge, time }) => (
                 <i
                   key={`${action.id}-${edge}`}
-                  className={`team-${player.team} ${action.type === 'status' && action.status === 'slowed' ? 'status-slow' : ''}`}
+                  className={`team-${player.team} ${action.type === 'status' && action.status === 'slowed' ? 'status-slow' : ''} ${action.type === 'receive' && action.pickupActionId ? 'pickup-event' : ''}`}
                   data-timeline-action-id={action.id}
                   data-player-id={player.id}
                   data-timeline-edge={edge}
@@ -228,6 +242,14 @@ export function TimelinePanel() {
                 />
               ))
             })}
+            {duration > 0 && looseFlightEvents.map((event) => <i
+              key={`flight-${event.actionId}-${event.time}`}
+              className="loose-flight-event"
+              data-timeline-action-id={event.actionId}
+              data-player-id={event.actorId}
+              title={`${event.label} ${event.time.toFixed(3)}s`}
+              style={{ left: `${timePercent(event.time, duration)}%` }}
+            />)}
             {duration > 0 && freezeWindows.flatMap((window) => {
               const player = document.initialScene.players.find((candidate) => candidate.id === window.playerId)
               if (!player) return []
@@ -301,7 +323,7 @@ export function TimelinePanel() {
               return (
                 <button
                   key={action.id}
-                  className={`player-track-action type-${action.type} ${instant ? 'instant' : ''} ${actionSelected ? 'selected' : ''}`}
+                  className={`player-track-action type-${action.type} ${action.type === 'receive' && action.pickupActionId ? 'pickup-event' : ''} ${instant ? 'instant' : ''} ${actionSelected ? 'selected' : ''}`}
                   style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${width}%` }}
                   onClick={() => select({ kind: 'action', id: action.id })}
                   aria-label={`选择${actionLabel}动作，不移动播放头`}
@@ -318,15 +340,19 @@ export function TimelinePanel() {
               const isFreezeEnd = trackFreezeWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
               const isSlowStart = trackSlowWindows.some((window) => Math.abs(time - window.startsAt) <= INSTANT_ACTION_EPSILON)
               const isSlowEnd = trackSlowWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
-              const eventLabels = [
+              const isPickup = reference?.edge !== 'start' && trackActions.some((action) => action.type === 'receive' && action.pickupActionId && sameTime(action.startTime, time))
+              const flightLabels = trackFlightEvents.filter((event) => sameTime(event.time, time)).map((event) => event.label)
+              const eventLabels = [...new Set([
                 reference?.edge === 'start' ? 'Q 起点' : '',
                 reference?.edge === 'end' ? 'Q 终点' : '',
                 isFreezeStart ? '冻结' : '',
                 isFreezeEnd ? '解冻' : '',
                 isSlowStart ? '挂冰' : '',
                 isSlowEnd ? '挂冰结束' : '',
+                isPickup ? '捡球' : '',
+                ...new Set(flightLabels),
                 isContinuation ? '续接' : '',
-              ].filter(Boolean)
+              ].filter(Boolean))]
               const eventSuffix = eventLabels.length > 0 ? ` · ${eventLabels.join(' · ')}` : ''
               const selectedEdge = Boolean(
                 reference
@@ -436,8 +462,8 @@ export function TimelinePanel() {
             {trackActions.map((action) => (
               <div className={`action-row ${selection?.kind === 'action' && selection.id === action.id ? 'selected' : ''}`} key={action.id} data-timeline-action-id={action.id}>
                 <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{timelineActionLabel(action)}</button>
-                <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId)} title={action.type === 'receive' && action.sourceActionId ? '由对应传球自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
-                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId)) || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'move' && (Boolean(action.targetPlayerId) || action.timingConstraint?.kind === 'keyframe'))} title={(action.type === 'receive' && action.sourceActionId) || (action.type === 'pass' && action.targetPlayerId) ? '由传球与接球队员轨迹自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
+                <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId || action.pickupActionId)} title={action.type === 'receive' && (action.sourceActionId || action.pickupActionId) ? '由实际接球事件自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
+                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId || action.pickupActionId)) || action.type === 'loosePass' || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'move' && (Boolean(action.targetPlayerId || action.ballTarget) || action.timingConstraint?.kind === 'keyframe'))} title={(action.type === 'receive' && (action.sourceActionId || action.pickupActionId)) || (action.type === 'pass' && action.targetPlayerId) || action.type === 'loosePass' || (action.type === 'move' && action.ballTarget) ? '由球路和实际接触自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
                 <div className="mini-track"><span style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${Math.max(timePercent(action.duration, sliderMax), 1.5)}%` }} /></div>
                 <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${timelineActionLabel(action)}`}>×</button>
               </div>

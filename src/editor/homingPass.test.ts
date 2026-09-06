@@ -12,6 +12,8 @@ import { useTacticStore } from './useTacticStore'
 
 function setup(escape = false) {
   const document = createDefaultDocument()
+  // This suite is the pre-0.1.1 saved-calibration parity fixture.
+  document.rulesSnapshot.passing.ballSpeed = 8
   const fire = document.initialScene.players.find((player) => player.id === 'blue-fire')!
   const ice = document.initialScene.players.find((player) => player.id === 'blue-ice')!
   fire.position = { x: 1, y: 4 }
