@@ -12,6 +12,7 @@ import {
 } from '../domain/rules/shotPressure'
 import { projectedMovePath, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { playerActionKeyframes } from '../domain/timeline/playerKeyframes'
+import { findMoveQCooldownTarget, resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { timelineDuration } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
 import { actionLabel, matchupLabel } from '../ui/labels'
@@ -152,7 +153,7 @@ export function InspectorPanel() {
             {showAdvancedTimeline
               ? <>
                   <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
-                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)) || selectedAction.type === 'loosePass' || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId)) || (selectedAction.type === 'move' && (Boolean(selectedAction.targetPlayerId || selectedAction.ballTarget) || selectedAction.timingConstraint?.kind === 'keyframe'))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
+                  <label className="field-row"><span>持续时间</span><NumberInput value={selectedAction.duration} step={0.1} disabled={(selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)) || selectedAction.type === 'loosePass' || (selectedAction.type === 'pass' && Boolean(selectedAction.targetPlayerId)) || (selectedAction.type === 'move' && (Boolean(selectedAction.targetPlayerId || selectedAction.ballTarget) || selectedAction.timingConstraint?.kind === 'keyframe' || selectedAction.timingConstraint?.kind === 'qCooldown'))} onChange={(value) => updateTiming(selectedAction.id, 'duration', value)} suffix="s" /></label>
                 </>
               : <>
                   <div className="inline-info"><span>开始节点</span><strong>{selectedAction.startTime.toFixed(2)}s</strong></div>
@@ -254,11 +255,19 @@ function MoveTimingEditor({
   const [dialogOpen, setDialogOpen] = useState(false)
   const setMoveTimingFixed = useTacticStore((state) => state.setMoveTimingFixed)
   const setMoveTimingKeyframe = useTacticStore((state) => state.setMoveTimingKeyframe)
+  const setMoveTimingQCooldown = useTacticStore((state) => state.setMoveTimingQCooldown)
   const updateTiming = useTacticStore((state) => state.updateActionTiming)
   const timingFixed = Boolean(action.timingConstraint)
   const keyframe = action.timingConstraint?.kind === 'keyframe'
     ? action.timingConstraint.reference
     : null
+  const qBound = action.timingConstraint?.kind === 'qCooldown'
+  const qTarget = useMemo(() => findMoveQCooldownTarget(document, action), [document, action])
+  const boundQTarget = useMemo(() => resolveMoveQCooldownTarget(document, action), [document, action])
+  const sourceQ = useMemo(() => boundQTarget
+    ? document.actions.find((candidate) => candidate.id === boundQTarget.sourceActionId)
+    : undefined, [boundQTarget, document])
+  const unavailableReason = '这段跑动开始时没有尚未结束的 Q 冷却。'
   const referencePlayer = keyframe
     ? document.initialScene.players.find((player) => player.id === keyframe.playerId)
     : null
@@ -275,7 +284,7 @@ function MoveTimingEditor({
         checked={timingFixed}
         onChange={(event) => setMoveTimingFixed(action.id, event.target.checked)}
       />
-      <span><strong>固定跑动时间</strong><small>按指定时长或其他球员关键帧锁定跑动距离</small></span>
+      <span><strong>固定跑动时间</strong><small>按时长、关键帧或 Q 冷却锁定跑动距离</small></span>
     </label>
     {timingFixed && <div className="move-timing-controls">
       <label className="field-row">
@@ -283,7 +292,7 @@ function MoveTimingEditor({
         <NumberInput
           value={action.duration}
           step={0.1}
-          disabled={Boolean(keyframe)}
+          disabled={Boolean(keyframe) || qBound}
           onChange={(value) => updateTiming(action.id, 'duration', value)}
           suffix="s"
         />
@@ -292,12 +301,26 @@ function MoveTimingEditor({
         <span>对齐关键帧</span>
         <strong>{referencePlayer?.name ?? keyframe.playerId} · {referenceKeyframe?.label ?? '关键帧'} · {referenceKeyframe?.time.toFixed(2) ?? '?'}s</strong>
       </div>}
+      {qBound && boundQTarget && <div className="timing-reference-summary">
+        <span>对齐自身 Q 冷却结束</span>
+        {sourceQ && <span>Q 释放 · {sourceQ.startTime.toFixed(2)}s</span>}
+        <strong>Q 冷却结束 · {boundQTarget.readyTime.toFixed(2)}s</strong>
+      </div>}
       <div className="move-timing-actions">
+        <button
+          type="button"
+          className="quiet-button"
+          aria-pressed={qBound}
+          disabled={!qTarget && !qBound}
+          title={!qTarget && !qBound ? unavailableReason : undefined}
+          onClick={() => setMoveTimingQCooldown(action.id)}
+        >跑到 Q 冷却结束</button>
         <button type="button" className="quiet-button" onClick={() => setDialogOpen(true)}>
           {keyframe ? '更换关键帧' : '选择其他球员关键帧'}
         </button>
-        {keyframe && <button type="button" className="quiet-button" onClick={() => setMoveTimingFixed(action.id, true)}>改为手动时间</button>}
+        {(keyframe || qBound) && <button type="button" className="quiet-button" onClick={() => setMoveTimingFixed(action.id, true)}>改为手动时间</button>}
       </div>
+      {!qTarget && !qBound && <p className="subtle">{unavailableReason}</p>}
       <p className="callout">固定时间会按基础移速重算并锁定路径长度；拖动终点只改变方向，不会把同一段路改成慢跑。</p>
     </div>}
     {dialogOpen && <MoveKeyframeDialog

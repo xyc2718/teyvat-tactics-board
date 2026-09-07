@@ -36,6 +36,30 @@ function deterministicLibrary(backend = new MemoryBackend()) {
 }
 
 describe('tactic library', () => {
+  it('preserves Q cooldown source identities in copies, snapshots and full-library backups', async () => {
+    const { library } = deterministicLibrary()
+    const document = createDefaultDocument()
+    document.rulesSnapshot.roles.water.q.cooldown = 6
+    document.actions = [
+      { id: 'q-source', type: 'qMove', actorId: 'blue-water', startTime: 2, duration: 0,
+        path: [{ x: 5.5, y: 4.7 }, { x: 8, y: 4.7 }] },
+      { id: 'q-run', type: 'move', actorId: 'blue-water', startTime: 4, duration: 4,
+        path: [{ x: 8, y: 4.7 }, { x: 12, y: 4.7 }], timingConstraint: { kind: 'qCooldown', sourceActionId: 'q-source' } },
+    ]
+    const initialized = await library.initialize(document)
+    const originalActions = structuredClone(document.actions)
+    document.meta.notes = 'Edited explanation'
+    await library.save(initialized.activeId, document)
+    const copy = await library.duplicate(initialized.activeId)
+    expect(copy?.id).not.toBe(initialized.activeId)
+    expect((await library.open(copy!.id))?.actions).toEqual(originalActions)
+    const target = deterministicLibrary()
+    await target.library.importBackup(await library.exportBackup())
+    expect((await target.library.open(copy!.id))?.actions).toEqual(originalActions)
+    const snapshots = await target.library.snapshots(initialized.activeId)
+    expect((await target.library.restore(initialized.activeId, snapshots.at(-1)!.id))?.actions).toEqual(originalActions)
+  })
+
   it('deduplicates reordered overrides whose distinct player IDs collate equally', async () => {
     const { library } = deterministicLibrary()
     const composedId = '\u00e9'

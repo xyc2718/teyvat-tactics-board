@@ -2,7 +2,8 @@ import { pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/g
 import type { MoveAction, PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
 import { resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
-import { documentFreezeWindows, projectFrame } from '../domain/timeline/projectFrame'
+import { resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
+import { documentFreezeWindows, projectFrame, projectPlayerPosition } from '../domain/timeline/projectFrame'
 import { earliestLegalQStart } from '../domain/rules/qCooldown'
 
 const EPSILON = 1e-6
@@ -188,6 +189,30 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): void {
         if (syncConstrainedMovePath(document, action)) timingChanged = true
         continue
       }
+      if (action.timingConstraint?.kind === 'qCooldown') {
+        const target = resolveMoveQCooldownTarget(document, action)
+        // Reflow may still move the source and this run. Invalidate only at the
+        // document commit boundary, after the final starts have been resolved.
+        if (!target) continue
+        const position = projectPlayerPosition({
+          ...document,
+          actions: document.actions.filter((candidate) => candidate.id !== action.id),
+        }, action.actorId, action.startTime)
+        const origin = action.path[0]
+        if (position && origin) {
+          const offset = { x: position.x - origin.x, y: position.y - origin.y }
+          if (Math.abs(offset.x) > EPSILON || Math.abs(offset.y) > EPSILON) {
+            action.path = action.path.map((point) => ({ x: point.x + offset.x, y: point.y + offset.y }))
+            if (action.curveControl) action.curveControl = { x: action.curveControl.x + offset.x, y: action.curveControl.y + offset.y }
+            timingChanged = true
+          }
+        }
+        const nextDuration = target.readyTime - action.startTime
+        if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
+        action.duration = nextDuration
+        if (syncConstrainedMovePath(document, action)) timingChanged = true
+        continue
+      }
       if (action.timingConstraint?.kind !== 'keyframe') continue
       const referencedTime = resolveMoveKeyframeTime(document, action.timingConstraint.reference)
       if (referencedTime === null || referencedTime <= action.startTime + EPSILON) {
@@ -318,24 +343,42 @@ export function reflowSimpleLocomotion(
   document: TacticDocumentV1,
   actorId: string,
   reflowedActors: Set<string> = new Set(),
+  anchorActionId?: string,
+  previousActions?: TacticAction[],
 ): void {
   if (!actorId || reflowedActors.has(actorId)) return
   reflowedActors.add(actorId)
+  const previousTimes = new Map(previousActions?.map((action) => [action.id, action.startTime]))
   const entries = document.actions
     .map((action, index) => ({ action, index }))
     .filter(
       (entry): entry is { action: ActorSequenceAction; index: number } =>
         isActorSequenceAction(entry.action, actorId),
     )
-    .sort((left, right) => left.action.startTime - right.action.startTime || left.index - right.index)
+    .sort((left, right) => (previousTimes.get(left.action.id) ?? left.action.startTime)
+      - (previousTimes.get(right.action.id) ?? right.action.startTime)
+      || Number(right.action.type === 'qMove' && right.action.duration <= EPSILON)
+        - Number(left.action.type === 'qMove' && left.action.duration <= EPSILON)
+      || left.index - right.index)
   const nonLocomotion = document.actions.filter(
     (action) => !isActorSequenceAction(action, actorId),
   )
   const scheduled: ActorSequenceAction[] = []
   let chainEnd: number | null = null
+  let reachedAnchor = !anchorActionId
 
   for (const { action } of entries) {
-    const requestedStart = chainEnd ?? action.startTime
+    if (!reachedAnchor && action.id !== anchorActionId) {
+      scheduled.push(action)
+      chainEnd = actionEndTime(action)
+      continue
+    }
+    const requestedStart = action.id === anchorActionId
+      ? action.startTime
+      : action.type === 'move' && action.timingConstraint?.kind === 'qCooldown'
+        ? Math.max(action.startTime, chainEnd ?? action.startTime)
+        : chainEnd ?? action.startTime
+    reachedAnchor = true
     const planningDocument: TacticDocumentV1 = {
       ...document,
       actions: [...nonLocomotion, ...scheduled],
@@ -387,7 +430,9 @@ export function reflowSimpleLocomotion(
           planningDocument,
           actorId,
           requestedStart,
-          (scheduledActor, plannedStart) => action.timingConstraint?.kind === 'fixed'
+          (scheduledActor, plannedStart) => action.timingConstraint?.kind === 'qCooldown'
+            ? (resolveMoveQCooldownTarget(document, { ...action, startTime: plannedStart })?.readyTime ?? (plannedStart + authoredDuration)) - plannedStart
+            : action.timingConstraint?.kind === 'fixed'
             ? authoredDuration
             : action.ballTarget ? authoredDuration
             : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
@@ -429,7 +474,9 @@ export function reflowSimpleLocomotion(
     action.path = path
     action.startTime = plan.startTime
     action.duration = action.type === 'move'
-      ? action.ballTarget || action.timingConstraint?.kind === 'fixed'
+      ? action.timingConstraint?.kind === 'qCooldown'
+        ? (resolveMoveQCooldownTarget(document, action)?.readyTime ?? (plan.startTime + authoredDuration)) - plan.startTime
+        : action.ballTarget || action.timingConstraint?.kind === 'fixed'
         ? authoredDuration
         : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
           ? Math.max(0, referencedTime - plan.startTime)

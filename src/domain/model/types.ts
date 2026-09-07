@@ -88,6 +88,7 @@ export interface PickupTracePoint {
 export type MoveTimingConstraint =
   | { kind: 'fixed' }
   | { kind: 'keyframe'; reference: MoveKeyframeReference }
+  | { kind: 'qCooldown'; sourceActionId: string }
 
 export interface MoveAction extends BaseAction {
   type: 'move'

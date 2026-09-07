@@ -57,7 +57,9 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
         ? '；按手动时长与基础移速锁定路径长度'
         : action.timingConstraint?.kind === 'keyframe'
           ? `；按 ${timingReferencePlayer?.name ?? '其他球员'}的关键帧时长与基础移速锁定路径长度`
-          : ''
+          : action.timingConstraint?.kind === 'qCooldown'
+            ? `；跑到自身 Q 冷却结束（${actionEndTime(action).toFixed(2)}s），按基础移速锁定路径长度`
+            : ''
       return `${timing}，${name} 从 ${pointText(action.path[0])} 沿 ${pathLength(resolvedMovePath(action)).toFixed(2)} 格${action.curveControl ? '曲线' : '直线'}跑到 ${pointText(action.path.at(-1))}${timingText}${boostText}。`
     }
     case 'qMove': {

@@ -12,6 +12,8 @@ function previousSequenceActionId(document: TacticDocumentV1, action: TacticActi
     .filter((entry) => isSequenceAction(entry.candidate) && entry.candidate.actorId === action.actorId)
     .sort((left, right) => (
       left.candidate.startTime - right.candidate.startTime
+      || Number(right.candidate.type === 'qMove' && right.candidate.duration <= 1e-6)
+        - Number(left.candidate.type === 'qMove' && left.candidate.duration <= 1e-6)
       || actionEndTime(left.candidate) - actionEndTime(right.candidate)
       || left.index - right.index
     ))
@@ -26,6 +28,7 @@ function timingDependencyActionIds(document: TacticDocumentV1, action: TacticAct
   if (action.type === 'move') {
     if (action.targetPlayerId && action.syncActionId) dependencies.push(action.syncActionId)
     if (action.timingConstraint?.kind === 'keyframe') dependencies.push(action.timingConstraint.reference.actionId)
+    if (action.timingConstraint?.kind === 'qCooldown') dependencies.push(action.timingConstraint.sourceActionId)
   }
   return dependencies
 }

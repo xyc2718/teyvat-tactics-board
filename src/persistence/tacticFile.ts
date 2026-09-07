@@ -5,6 +5,7 @@ import { BASIC_ROLE_IDS } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
 import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
+import { resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
 import { MAX_LOOSE_PATH_POINTS } from '../domain/timeline/loosePass'
 import { MAX_PICKUP_TRACE_POINTS } from '../domain/timeline/looseBall'
@@ -69,6 +70,7 @@ const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
     kind: z.literal('keyframe'),
     reference: moveKeyframeReferenceSchema,
   }),
+  z.object({ kind: z.literal('qCooldown'), sourceActionId: z.string().min(1).max(120) }),
 ])
 const ballTargetSchema = z.object({ sourceActionId: z.string().min(1).max(120).nullable() })
 const receptionOriginSchema = z.object({ sourceActionId: z.string().min(1).max(120), offset: nonNegative })
@@ -517,6 +519,14 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
     }
   }
   for (const action of document.actions) {
+    if (action.type === 'move' && action.timingConstraint?.kind === 'qCooldown') {
+      const target = resolveMoveQCooldownTarget(document, action)
+      if (!target) return `动作 ${action.id} 的 Q 冷却来源必须是自身已施放且仍在冷却的 Q。`
+      if (action.duration <= 0 || Math.abs(action.startTime + action.duration - target.readyTime) > 1e-6) {
+        return `动作 ${action.id} 的跑动结束时间与 Q 冷却结束不一致。`
+      }
+      if (moveTimingWouldCycle(document, action.id, target.sourceActionId)) return `动作 ${action.id} 形成了循环时间参照。`
+    }
     if (action.type !== 'move' || action.timingConstraint?.kind !== 'keyframe') continue
     const reference = action.timingConstraint.reference
     const source = document.actions.find((candidate) => candidate.id === reference.actionId)
