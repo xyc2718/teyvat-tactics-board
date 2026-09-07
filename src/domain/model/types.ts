@@ -74,6 +74,12 @@ export interface BallTargetReference {
   sourceActionId: string | null
 }
 
+/** Ordinary pass reception plus an explicitly authored carrying delay. */
+export interface ReceptionOriginReference {
+  sourceActionId: string
+  offset: number
+}
+
 export interface PickupTracePoint {
   time: number
   position: Vec2
@@ -115,6 +121,7 @@ export interface PassAction extends BaseAction {
   /** Optional same-time action edge that fixes whether the pass starts before or after an instant Q. */
   originKeyframe?: MoveKeyframeReference
   originPickupActionId?: string
+  originReception?: ReceptionOriginReference
   /** Resolved named-pass result. Missing only on legacy or unaddressed passes. */
   flightOutcome?: 'received' | 'dropped'
   path: Vec2[]
@@ -127,6 +134,7 @@ export interface LoosePassAction extends BaseAction {
   path: Vec2[]
   originKeyframe?: MoveKeyframeReference
   originPickupActionId?: string
+  originReception?: ReceptionOriginReference
   flightOutcome: 'grounded' | 'goal' | 'pickedUp'
 }
 

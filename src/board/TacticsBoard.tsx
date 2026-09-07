@@ -276,7 +276,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         else createAction(actionActor?.id ?? null, point, id)
         return
       }
-      if (tool === 'qMove' && id !== 'ball') {
+      if ((tool === 'qMove' || tool === 'loosePass') && id !== 'ball') {
         chooseActor(id)
         return
       }
@@ -724,6 +724,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           const facing = angleToVector(renderedFacing)
           const selected = selection?.kind === 'player' && selection.id === player.id
           const actorCandidate = isRangeInspectionTool(tool)
+            || tool === 'loosePass'
             || (tool !== 'select'
               && (!toolActor || tool === 'qMove')
               && isToolActorEligible(tool, player, frame, rules))
@@ -757,7 +758,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
                 } else if (tool === 'move') {
                   if (!toolActor || toolActor.id === player.id) chooseActor(player.id)
                   else createAction(actionActor?.id ?? null, position, player.id)
-                } else if (tool === 'qMove') {
+                } else if (tool === 'qMove' || tool === 'loosePass') {
                   chooseActor(player.id)
                 } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {
                   chooseActor(player.id)

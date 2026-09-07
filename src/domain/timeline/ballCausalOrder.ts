@@ -18,12 +18,16 @@ export function ballCausalRanks(actions: TacticAction[]): Map<string, number> {
     let value = 0
     if (action?.type === 'pass' || action?.type === 'loosePass') {
       const pickup = byId.get(action.originPickupActionId ?? '')
-      value = pickup && (pickup.type === 'move' || pickup.type === 'qMove') && pickup.ballTarget
-        ? rank(pickup.ballTarget.sourceActionId) + 2 : 1
+      value = action.originReception ? rank(action.originReception.sourceActionId) + 2
+        : pickup && (pickup.type === 'move' || pickup.type === 'qMove') && pickup.ballTarget
+          ? rank(pickup.ballTarget.sourceActionId) + 2 : 1
     } else if (action?.type === 'receive') {
       value = action.pickupActionId ? rank(action.ballSourceActionId) + 1
         : action.sourceActionId ? rank(action.sourceActionId) + 1 : 0
     } else if (action?.type === 'possession') value = 1
+    // A completed shot ends the old episode before an independently authored
+    // same-time fresh catch. Its timestamp is the end in both event consumers.
+    else if (action?.type === 'shoot') value = -1
     visiting.delete(id)
     ranks.set(id, value)
     return value

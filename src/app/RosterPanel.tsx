@@ -43,7 +43,7 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
       onPlayerChosen?.()
       return
     }
-    if (tool === 'qMove') {
+    if (tool === 'qMove' || tool === 'loosePass') {
       chooseActor(player.id)
       onPlayerChosen?.()
       return
@@ -71,6 +71,7 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
             const selected = selection?.kind === 'player' && selection.id === player.id
             const statuses = frame.statuses.filter((status) => status.playerId === player.id)
             const actorCandidate = isRangeInspectionTool(tool)
+              || tool === 'loosePass'
               || (tool !== 'select'
                 && (!actor || tool === 'qMove')
                 && isToolActorEligible(tool, player, frame, document.rulesSnapshot))

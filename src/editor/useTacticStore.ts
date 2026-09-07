@@ -20,7 +20,7 @@ import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldo
 import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
-import { ballRelatedActionIds, createBallPickupAction, normalizeBallActions } from '../domain/timeline/looseBall'
+import { ballRelatedActionIds, createBallPickupAction, normalizeBallActions, receptionOriginAt } from '../domain/timeline/looseBall'
 import { loosePassingRule } from '../domain/timeline/loosePass'
 import { instantQActionAtKeyframe, resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
 import { projectFrame, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
@@ -29,6 +29,7 @@ import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers }
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
 import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion, syncConstrainedMovePath, syncFollowMoveTimings } from './locomotionScheduling'
 import { isBallReleaseTool, isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
+import { LOOSE_PASS_POSSESSION_NOTICE, planLoosePassActor } from './loosePassPlanning'
 
 type Selection =
   | { kind: 'player'; id: string }
@@ -605,6 +606,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (tool === 'select') return { tool, notice: null, isPlaying: false }
       const frame = projectFrameAtKeyframe(state.document, state.currentTime, state.currentKeyframe)
 
+      if (tool === 'loosePass') {
+        const plan = planLoosePassActor(state.document, state.currentTime, state.currentKeyframe,
+          state.selection?.kind === 'player' ? state.selection.id : undefined)
+        return plan
+          ? { tool, currentTime: plan.currentTime, currentKeyframe: plan.currentKeyframe,
+              selection: { kind: 'player' as const, id: plan.actorId }, notice: null, isPlaying: false }
+          : { tool, notice: LOOSE_PASS_POSSESSION_NOTICE, isPlaying: false }
+      }
       if (isBallReleaseTool(tool)) {
         const carrier = frame.ball.carrierId
           ? frame.players.find((player) => player.id === frame.ball.carrierId)
@@ -646,6 +655,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   })),
   chooseActorForTool: (playerId) => {
     const immediateTool = get().tool
+    if (immediateTool === 'loosePass') {
+      const state = get()
+      const plan = planLoosePassActor(state.document, state.currentTime, state.currentKeyframe, playerId)
+      set(plan
+        ? { currentTime: plan.currentTime, currentKeyframe: plan.currentKeyframe,
+            selection: { kind: 'player', id: playerId }, isPlaying: false, notice: null }
+        : { selection: { kind: 'player', id: playerId }, notice: LOOSE_PASS_POSSESSION_NOTICE })
+      return
+    }
     if (immediateTool === 'wait' || immediateTool === 'shoot' || immediateTool === 'eZone') {
       const state = get()
       const currentTime = latestActorSequenceJoint(state.document, playerId)
@@ -713,6 +731,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const currentTime = nearestTimelineJoint(state.document, rawTime)
     if (!isBallReleaseTool(state.tool)) return { currentTime, currentKeyframe: null, isPlaying: false, notice: null }
     const frame = projectFrame(state.document, currentTime)
+    if (state.tool === 'loosePass' && state.selection?.kind === 'player') {
+      return { currentTime, currentKeyframe: null, isPlaying: false,
+        notice: frame.ball.carrierId === state.selection.id ? null : LOOSE_PASS_POSSESSION_NOTICE }
+    }
     const carrier = frame.ball.carrierId
       ? frame.players.find((player) => player.id === frame.ball.carrierId)
       : undefined
@@ -740,6 +762,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const frame = projectFrameAtKeyframe(state.document, currentTime, currentKeyframe)
     if (!isBallReleaseTool(state.tool)) {
       return { currentTime, currentKeyframe, isPlaying: false, notice: null }
+    }
+    if (state.tool === 'loosePass' && state.selection?.kind === 'player') {
+      return { currentTime, currentKeyframe, isPlaying: false,
+        notice: frame.ball.carrierId === state.selection.id ? null : LOOSE_PASS_POSSESSION_NOTICE }
     }
     const carrier = frame.ball.carrierId
       ? frame.players.find((player) => player.id === frame.ball.carrierId)
@@ -1186,12 +1212,17 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         }
       }
       const frame = projectFrameAtKeyframe(document, state.currentTime, state.currentKeyframe)
-      const effectiveActorId = isBallReleaseTool(state.tool) ? frame.ball.carrierId : actorId
+      const effectiveActorId = state.tool === 'loosePass'
+        ? actorId ?? (state.selection?.kind === 'player' ? state.selection.id : frame.ball.carrierId)
+        : state.tool === 'pass' ? frame.ball.carrierId : actorId
       const actor = effectiveActorId
         ? frame.players.find((player) => player.id === effectiveActorId)
         : undefined
       if (isBallReleaseTool(state.tool) && !actor) {
         return { notice: missingPassCarrierNotice(document, state.currentTime) }
+      }
+      if (state.tool === 'loosePass' && actor?.id !== frame.ball.carrierId) {
+        return { notice: LOOSE_PASS_POSSESSION_NOTICE }
       }
       let action: TacticAction | null = null
 
@@ -1323,6 +1354,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
             ? { ...state.currentKeyframe }
             : undefined,
           originPickupActionId,
+          originReception: !originPickupActionId && !(originQ?.actorId === actor.id && state.currentKeyframe)
+            ? receptionOriginAt(document, actor.id, state.currentTime) : undefined,
           path,
           startTime: state.currentTime,
           duration: passDuration(path, document.rulesSnapshot),
@@ -1343,6 +1376,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
           originKeyframe: !originPickupActionId && originQ?.actorId === actor.id && state.currentKeyframe
             ? { ...state.currentKeyframe } : undefined,
           originPickupActionId,
+          originReception: !originPickupActionId && !(originQ?.actorId === actor.id && state.currentKeyframe)
+            ? receptionOriginAt(document, actor.id, state.currentTime) : undefined,
           startTime: state.currentTime,
           duration: loosePassingRule(document.rulesSnapshot).maxDuration,
           flightOutcome: 'grounded',
@@ -1603,6 +1638,25 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     if (field === 'duration' && (action?.type === 'loosePass' || (action?.type === 'move' && action.ballTarget))) {
       return { notice: '这段动作的时间由球的飞行与接触位置自动解算。' }
+    }
+    if (field === 'startTime' && (action?.type === 'loosePass' || action?.type === 'pass' && action.originReception)) {
+      if (!Number.isFinite(value)) return { notice: '请输入有效的出球时间。' }
+      const draft = cloneDocument(state.document)
+      const candidate = draft.actions.find((item) => item.id === actionId)
+      if (!candidate || (candidate.type !== 'loosePass' && candidate.type !== 'pass')) return {}
+      const beforeRelease = { ...draft, actions: draft.actions.filter((item) => item.id !== actionId
+        && !(item.type === 'receive' && item.sourceActionId === actionId)) }
+      if (projectFrame(beforeRelease, safeValue).ball.carrierId !== candidate.actorId) {
+        return { notice: LOOSE_PASS_POSSESSION_NOTICE }
+      }
+      candidate.startTime = safeValue
+      delete candidate.originKeyframe
+      delete candidate.originPickupActionId
+      candidate.originReception = receptionOriginAt(beforeRelease, candidate.actorId, safeValue)
+      const invalid = syncPassEndpoints(draft).invalidPickups.find((item) => item.actionId === actionId)
+      if (invalid) return { notice: invalid.message }
+      refreshStepSnapshots(draft)
+      return { ...applyDocument(state, draft), notice: null }
     }
     if (action?.type === 'move' && action.targetPlayerId && field === 'duration') {
       return { notice: '贴身跟随的持续时间与目标动作结束点同步，不能单独修改。' }

@@ -1,5 +1,7 @@
 import { compilePath } from '../geometry/compiledPath'
 import { ballCausalRanks } from './ballCausalOrder'
+import { ballActionIsEffective, ballPossessionHistory } from './ballPossession'
+export { receptionOriginAt } from './ballPossession'
 import { closestPointOnPath, distance, resolveQPath, resolvedMovePath, truncatePath } from '../geometry/geometry'
 import { passIsReceived } from '../model/passFlight'
 import type { BallTargetReference, LoosePassAction, MoveAction, PassAction, QMoveAction, ReceiveAction, TacticAction, TacticDocumentV1, Vec2 } from '../model/types'
@@ -31,6 +33,9 @@ function projectionWithoutPickupEffects(document: TacticDocumentV1, actionId?: s
 function episodeForSource(document: TacticDocumentV1, sourceId: string | null): BallEpisode | undefined {
   const source = document.actions.find((action) => action.id === sourceId)
   if (sourceId !== null && !source) return undefined
+  const history = ballPossessionHistory(document)
+  const invalid = history.invalidActionIds
+  if (source && invalid.has(source.id)) return undefined
   let startTime = 0
   let endTime = 0
   let positionAt: BallEpisode['positionAt'] = () => ({ ...document.initialScene.ball.position })
@@ -54,8 +59,10 @@ function episodeForSource(document: TacticDocumentV1, sourceId: string | null): 
     startTime = endTime = source.startTime
     positionAt = () => ({ ...source.position })
   } else return undefined
+  for (const shotEnd of history.shotReleaseTimes) if (shotEnd > startTime) availableUntil = Math.min(availableUntil, shotEnd)
   for (const next of document.actions) {
     if (next.id === sourceId || next.startTime < startTime) continue
+    if (invalid.has(next.id)) continue
     if ((next.type === 'pass' || next.type === 'loosePass') && next.originPickupActionId) {
       const pickup = document.actions.find((candidate) => candidate.id === next.originPickupActionId)
       if (pickup && isPickup(pickup) && pickup.ballTarget!.sourceActionId === sourceId) continue
@@ -84,14 +91,16 @@ export function ballEpisodeAt(document: TacticDocumentV1, time: number): BallEpi
 /** Lightweight source metadata only; caller can use its existing projected frame. */
 export function ballEpisodeSourceIdAt(document: TacticDocumentV1, time: number): string | null | undefined {
   const ranks = ballCausalRanks(document.actions)
+  const history = ballPossessionHistory(document)
+  const invalid = history.invalidActionIds
   let latest: TacticAction | undefined
   for (const action of document.actions) {
-    if ((action.type === 'pass' || action.type === 'loosePass') && action.originPickupActionId
-      && !document.actions.some((candidate) => candidate.type === 'receive' && candidate.pickupActionId === action.originPickupActionId)) continue
+    if (invalid.has(action.id)) continue
     if ((action.type === 'loosePass' || action.type === 'pass' || action.type === 'possession')
       && action.startTime <= time && (!latest || action.startTime > latest.startTime
         || action.startTime === latest.startTime && (ranks.get(action.id) ?? 0) >= (ranks.get(latest.id) ?? 0))) latest = action
   }
+  if (history.shotReleaseTimes.some((end) => end <= time && (!latest || end > latest.startTime))) return undefined
   if (!latest) return document.initialScene.ball.isFree ? null : undefined
   if (latest.type === 'loosePass' && latest.flightOutcome === 'goal' && actionEndTime(latest) <= time) return undefined
   if (latest.type === 'pass' && (passIsReceived(latest, document.rulesSnapshot) || latest.targetPlayerId && actionEndTime(latest) > time)) return undefined
@@ -254,8 +263,39 @@ function receiptId(document: TacticDocumentV1, base: string): string {
   return id
 }
 
+/** Exact old catch joints carry intent. Recover the historical loose-pass
+ * integration drift only when removing its numerical cut reproduces the saved
+ * launch, with a unique source and matching launch position. */
+function bindExistingReceptionOrigins(document: TacticDocumentV1): void {
+  for (const action of document.actions) {
+    if ((action.type !== 'pass' && action.type !== 'loosePass') || action.originReception
+      || action.originPickupActionId || action.originKeyframe) continue
+    const sources = document.actions.filter((source): source is PassAction => source.type === 'pass'
+      && source.id !== action.id && source.targetPlayerId === action.actorId
+      && passIsReceived(source, document.rulesSnapshot) && source.startTime <= action.startTime)
+    const exact = sources.filter((source) => actionEndTime(source) === action.startTime)
+    if (exact.length === 1) {
+      action.originReception = { sourceActionId: exact[0]!.id, offset: 0 }
+      continue
+    }
+    if (action.type !== 'loosePass' || !/^loose-pass-[\da-f-]{36}$/i.test(action.id)) continue
+    const near = sources.filter((source) => actionEndTime(source) > action.startTime
+      && actionEndTime(source) - action.startTime < 0.001
+      && document.actions.some((receipt) => receipt.type === 'receive' && receipt.sourceActionId === source.id
+        && receipt.startTime === actionEndTime(source)))
+    if (near.length !== 1) continue
+    const source = near[0]!
+    const resolution = solvePassReception(document, source)
+    if (resolution.received && Math.abs(resolution.arrivalTime - action.startTime) < 1e-6
+      && distance(resolution.path.at(-1)!, action.path[0]!) < 0.001) {
+      action.originReception = { sourceActionId: source.id, offset: 0 }
+    }
+  }
+}
+
 export function normalizeBallActions(document: TacticDocumentV1): { invalidPickups: PickupDiagnostic[] } {
   const invalidPickups: PickupDiagnostic[] = []
+  bindExistingReceptionOrigins(document)
   const oldPickups = new Map(document.actions.filter((action): action is ReceiveAction => action.type === 'receive' && !!action.pickupActionId)
     .map((action) => [action.pickupActionId!, action]))
   document.actions = document.actions.filter((action) => action.type !== 'receive' || !action.pickupActionId)
@@ -308,17 +348,32 @@ export function normalizeBallActions(document: TacticDocumentV1): { invalidPicku
   resolvePickups(null)
   for (const possession of document.actions.filter((action) => action.type === 'possession')) resolvePickups(possession.id)
   const pending = new Set(launches)
+  const blocked = new Set<string>()
   while (pending.size) {
-    const ready = [...pending].filter((action) => !action.originPickupActionId
-      || document.actions.some((receive) => receive.type === 'receive' && receive.pickupActionId === action.originPickupActionId))
+    const ready = [...pending].filter((action) => action.originReception
+      ? ![...pending].some((source) => source.id === action.originReception!.sourceActionId)
+        && !blocked.has(action.originReception.sourceActionId)
+        && document.actions.some((receive) => receive.type === 'receive' && receive.sourceActionId === action.originReception!.sourceActionId)
+      : !action.originPickupActionId
+        || document.actions.some((receive) => receive.type === 'receive' && receive.pickupActionId === action.originPickupActionId))
     if (!ready.length) break
-    for (const action of ready) if (action.originPickupActionId) {
-      const receive = document.actions.find((candidate) => candidate.type === 'receive' && candidate.pickupActionId === action.originPickupActionId)
-      if (receive) action.startTime = receive.startTime
+    for (const action of ready) {
+      const receive = document.actions.find((candidate) => candidate.type === 'receive' && (
+        action.originReception ? candidate.sourceActionId === action.originReception.sourceActionId
+          : action.originPickupActionId && candidate.pickupActionId === action.originPickupActionId))
+      if (receive) action.startTime = receive.startTime + (action.originReception?.offset ?? 0)
     }
-    ready.sort((a, b) => a.startTime - b.startTime)
+    const ranks = ballCausalRanks(document.actions)
+    ready.sort((a, b) => a.startTime - b.startTime || (ranks.get(a.id) ?? 0) - (ranks.get(b.id) ?? 0) || a.id.localeCompare(b.id))
     const action = ready[0]!
     pending.delete(action)
+    if (!ballActionIsEffective(document, action.id)) {
+      blocked.add(action.id)
+      if (action.type === 'pass' && action.targetPlayerId) action.flightOutcome = 'dropped'
+      document.actions = document.actions.filter((candidate) => candidate.type !== 'receive' || candidate.sourceActionId !== action.id)
+      invalidPickups.push({ actionId: action.id, message: '出球时球员未持球，或来源接球后的球权已经结束。' })
+      continue
+    }
     if (action.type === 'loosePass') {
       document.rulesSnapshot.loosePassing ??= { ...loosePassingRule(document.rulesSnapshot) }
       try { Object.assign(action, resolveLoosePass(document, action)) }
@@ -337,10 +392,10 @@ export function normalizeBallActions(document: TacticDocumentV1): { invalidPicku
     resolvePickups(action.id)
   }
   for (const action of pending) {
+    blocked.add(action.id)
     if (action.type === 'pass' && action.targetPlayerId) action.flightOutcome = 'dropped'
-    invalidPickups.push({ actionId: action.id, message: '出球依赖的捡球帧无效或形成循环。' })
+    invalidPickups.push({ actionId: action.id, message: '出球依赖的接球帧无效或形成循环。' })
   }
-  const blocked = new Set([...pending].map((action) => action.id))
   document.actions = document.actions.filter((action) => action.type !== 'receive' || !action.sourceActionId || !blocked.has(action.sourceActionId))
   for (const pickup of pickups) if (!resolvedEpisodes.has(pickup.ballTarget!.sourceActionId)) {
     invalidPickups.push({ actionId: pickup.id, message: '捡球对应的自由球已不存在。' })
@@ -395,6 +450,7 @@ export function ballRelatedActionIds(document: TacticDocumentV1, ids: Iterable<s
       }
       if (isPickup(action) && action.ballTarget!.sourceActionId && result.has(action.ballTarget!.sourceActionId)) add(action.id)
       if ((action.type === 'pass' || action.type === 'loosePass') && action.originPickupActionId && result.has(action.originPickupActionId)) add(action.id)
+      if ((action.type === 'pass' || action.type === 'loosePass') && action.originReception && result.has(action.originReception.sourceActionId)) add(action.id)
     }
   }
   return result

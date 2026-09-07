@@ -71,6 +71,7 @@ const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
   }),
 ])
 const ballTargetSchema = z.object({ sourceActionId: z.string().min(1).max(120).nullable() })
+const receptionOriginSchema = z.object({ sourceActionId: z.string().min(1).max(120), offset: nonNegative })
 const pickupTraceSchema = z.array(z.object({ time: nonNegative, position: vec2Schema })).min(1).max(MAX_PICKUP_TRACE_POINTS)
 
 const actionSchema = z.discriminatedUnion('type', [
@@ -102,12 +103,14 @@ const actionSchema = z.discriminatedUnion('type', [
     targetPlayerId: z.string().optional(),
     originKeyframe: moveKeyframeReferenceSchema.optional(),
     originPickupActionId: z.string().min(1).max(120).optional(),
+    originReception: receptionOriginSchema.optional(),
     flightOutcome: z.enum(['received', 'dropped']).optional(),
     path: z.array(vec2Schema).min(2).max(MAX_PASS_PATH_POINTS),
   }),
   z.object({ ...actionBase, type: z.literal('loosePass'), actorId: z.string(), aimDirection: vec2Schema,
     path: z.array(vec2Schema).min(2).max(MAX_LOOSE_PATH_POINTS), flightOutcome: z.enum(['grounded', 'goal', 'pickedUp']),
-    originKeyframe: moveKeyframeReferenceSchema.optional(), originPickupActionId: z.string().min(1).max(120).optional() }),
+    originKeyframe: moveKeyframeReferenceSchema.optional(), originPickupActionId: z.string().min(1).max(120).optional(),
+    originReception: receptionOriginSchema.optional() }),
   z.object({ ...actionBase, type: z.literal('receive'), actorId: z.string(), sourceActionId: z.string().optional(),
     pickupActionId: z.string().min(1).max(120).optional(), ballSourceActionId: z.string().min(1).max(120).nullable().optional() }),
   z.object({ ...actionBase, type: z.literal('possession'), carrierId: z.null(), position: vec2Schema }),
@@ -457,6 +460,12 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       if (sourceId) refs.push(sourceId)
     }
     if (action.type === 'pass' || action.type === 'loosePass') {
+      if ([action.originKeyframe, action.originPickupActionId, action.originReception].filter(Boolean).length > 1) return `动作 ${action.id} 只能绑定一种出球来源。`
+      if (action.originReception) {
+        const source = byId.get(action.originReception.sourceActionId)
+        if (!source || source.type !== 'pass' || source.targetPlayerId !== action.actorId || source.id === action.id) return `动作 ${action.id} 的出球接球来源无效。`
+        refs.push(source.id)
+      }
       if (action.type === 'loosePass' && Math.hypot(action.aimDirection.x, action.aimDirection.y) <= 1e-9) return `动作 ${action.id} 的空传方向无效。`
       if (action.originPickupActionId) {
         const source = byId.get(action.originPickupActionId)

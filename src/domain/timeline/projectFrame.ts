@@ -2,7 +2,6 @@ import {
   clamp,
   clampPoint,
   distance,
-  getShootZone,
   oppositeFacingOffset,
   pathLength,
   pointAlongPath,
@@ -18,7 +17,6 @@ import type {
   PlayerStatus,
   ProjectedFrame,
   QMoveAction,
-  ShootAction,
   TacticAction,
   TacticDocumentV1,
 } from '../model/types'
@@ -26,6 +24,8 @@ import { analyzeIceQHits, type IceQHit } from '../rules/iceQHits'
 import { actionEndTime, deceleratingDistance, passPathProgress } from './durations'
 import { loosePassingRule } from '../rules/loosePassing'
 import { ballCausalRanks } from './ballCausalOrder'
+import { ballPossessionHistory, createBallPossessionScope } from './ballPossession'
+import { shotOutcome } from './shotOutcome'
 import { pickupTracePosition } from './pickupTrace'
 import { instantQActionAtKeyframe } from './playerKeyframes'
 import { compilePath } from '../geometry/compiledPath'
@@ -277,6 +277,7 @@ interface FollowMoveTimeline extends FollowMoveTrace {
 interface ProjectionMemo {
   hitCount: number
   ballRanks?: Map<string, number>
+  invalidBallActions?: Set<string>
   frames: Map<string, ProjectedFrame>
   followTraces: Map<string, FollowMoveTimeline>
   moveTraces: Map<string, EZoneMoveTrace>
@@ -757,25 +758,6 @@ function addStatus(statuses: PlayerStatus[], status: PlayerStatus) {
   if (!statuses.some((candidate) => candidate.id === status.id)) statuses.push(status)
 }
 
-function isShotInterrupted(
-  document: TacticDocumentV1,
-  shot: ShootAction,
-  hitMap: IceQHitMap,
-): boolean {
-  if (!document.rulesSnapshot.shooting.interruptedByAttack) return false
-  return document.actions.some((action) => {
-    if (action.type !== 'attack' || action.targetId !== shot.actorId) return false
-    if (action.startTime < shot.startTime || action.startTime >= actionEndTime(shot)) return false
-    const frame = projectSceneCore(document, action.startTime, false, true, hitMap)
-    const attacker = frame.players.find((player) => player.id === action.actorId)
-    const target = frame.players.find((player) => player.id === action.targetId)
-    if (!attacker || !target) return false
-    const rule = document.rulesSnapshot.roles[attacker.role]
-    const gap = distance(attacker.position, target.position)
-    return gap >= (rule.attackInnerRadius ?? 0) && gap <= rule.attackRadius
-  })
-}
-
 function projectSceneCore(
   document: TacticDocumentV1,
   rawTime: number,
@@ -818,8 +800,12 @@ function computeSceneCore(
 
   const memo = projectionMemo(hitMap)
   const ballRanks = memo.ballRanks ??= ballCausalRanks(document.actions)
+  const invalidBallActions = memo.invalidBallActions ??= ballPossessionHistory(document).invalidActionIds
   const ordered = [...document.actions].sort((a, b) => {
-    const timeOrder = a.startTime - b.startTime
+    // Charging is visible from start, but the shot changes possession only on
+    // completion, after any earlier catch and before a later release.
+    const timeOrder = (a.type === 'shoot' ? actionEndTime(a) : a.startTime)
+      - (b.type === 'shoot' ? actionEndTime(b) : b.startTime)
     if (timeOrder !== 0) return timeOrder
     const isInstantQ = (action: TacticAction) => {
       if (action.type !== 'qMove') return false
@@ -837,8 +823,7 @@ function computeSceneCore(
   for (const action of ordered) {
     if (ignoredActionIds.has(action.id)) continue
     if (action.startTime > time) continue
-    if ((action.type === 'pass' || action.type === 'loosePass') && action.originPickupActionId
-      && !document.actions.some((candidate) => candidate.type === 'receive' && candidate.pickupActionId === action.originPickupActionId)) continue
+    if (invalidBallActions.has(action.id)) continue
     if (positionOnlyPlayerId && (
       (action.type !== 'move' && action.type !== 'qMove') || action.actorId !== positionOnlyPlayerId
     )) continue
@@ -1001,17 +986,11 @@ function computeSceneCore(
     }
 
     if (action.type === 'shoot' && actor && includeShots) {
-      const interrupted = isShotInterrupted(document, action, hitMap)
+      const outcome = shotOutcome(document, action, (playerId, at) =>
+        projectSceneCore(document, at, false, true, hitMap).players.find((player) => player.id === playerId)?.position)
+      const interrupted = outcome.interrupted
       const progress = clamp((time - action.startTime) / Math.max(action.duration, 0.001), 0, 1)
-      const zone = getShootZone(
-        projectSceneCore(document, action.startTime, false, true, hitMap).players.find((player) => player.id === actor.id)?.position ?? actor.position,
-        actor.team,
-        rules.field.width,
-        rules.field.height,
-        rules.field.smallPenaltyRadius,
-        rules.field.largePenaltyRadius,
-      )
-      const completed = time >= actionEndTime(action) && !interrupted && zone !== 'outside'
+      const completed = time >= actionEndTime(action) && outcome.canComplete
       shots.push({ actionId: action.id, actorId: actor.id, progress, interrupted, completed })
       if (completed && action.path.length >= 2) {
         ball.carrierId = null
@@ -1319,8 +1298,8 @@ export function doesIceQHit(document: TacticDocumentV1, action: QMoveAction): bo
 }
 
 export function projectFrame(document: TacticDocumentV1, time: number): ProjectedFrame {
-  const hitMap = buildIceQHitMap(document)
-  const frame = projectSceneCore(document, time, true, true, hitMap)
+  const withPossession = createBallPossessionScope(document)
+  const frame = withPossession(() => projectSceneCore(document, time, true, true, buildIceQHitMap(document)))
   // Callers own their frame (drag previews and instant-Q edges edit it).
   // Never expose mutable references into the internal projection cache.
   return {
@@ -1342,10 +1321,11 @@ export function projectPlayerPosition(document: TacticDocumentV1, playerId: stri
 /** A synchronous solver session over an unmodified document. Validate/cache the
  * snapshot once, not once per steering sample. Recreate after any document edit. */
 export function createPlayerPositionReader(document: TacticDocumentV1, playerId: string) {
-  const hitMap = buildIceQHitMap(document)
+  const withPossession = createBallPossessionScope(document)
+  const hitMap = withPossession(() => buildIceQHitMap(document))
   const ignoredActionIds = new Set<string>()
   return (time: number): PlayerState['position'] | undefined => {
-    const position = projectSceneCore(document, time, false, true, hitMap, true, ignoredActionIds, playerId).players[0]?.position
+    const position = withPossession(() => projectSceneCore(document, time, false, true, hitMap, true, ignoredActionIds, playerId).players[0]?.position)
     return position ? { ...position } : undefined
   }
 }
@@ -1387,7 +1367,7 @@ export function projectFrameAtKeyframe(
       changed = false
       for (const candidate of document.actions) {
         const parent = candidate.type === 'receive' ? candidate.pickupActionId ?? candidate.sourceActionId
-          : candidate.type === 'pass' || candidate.type === 'loosePass' ? candidate.originPickupActionId
+          : candidate.type === 'pass' || candidate.type === 'loosePass' ? candidate.originReception?.sourceActionId ?? candidate.originPickupActionId
             : candidate.type === 'move' || candidate.type === 'qMove' ? candidate.ballTarget?.sourceActionId : undefined
         if (parent && excluded.has(parent) && !excluded.has(candidate.id)) {
           excluded.add(candidate.id)

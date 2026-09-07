@@ -20,6 +20,12 @@ function freeDocument() {
   return document
 }
 
+function setCarrier(document: ReturnType<typeof freeDocument>, actorId = 'blue-fire') {
+  const actor = document.initialScene.players.find((player) => player.id === actorId)!
+  document.initialScene.players.forEach((player) => { player.hasBall = player.id === actorId })
+  document.initialScene.ball = { carrierId: actorId, isFree: false, position: { ...actor.position } }
+}
+
 describe('loose flight calibration and reflections', () => {
   it('uses six grids in three seconds and changes only newly created regular-pass defaults', () => {
     const rules = createDefaultDocument().rulesSnapshot
@@ -95,6 +101,7 @@ describe('explicit ball pickup causality', () => {
     const document = freeDocument()
     const fire = document.initialScene.players.find((player) => player.id === 'blue-fire')!
     fire.position = { x: 19, y: 3 }
+    setCarrier(document)
     const flight: LoosePassAction = { id: 'throw', type: 'loosePass', actorId: fire.id, startTime: 0, duration: 3,
       aimDirection: { x: 1, y: 0 }, path: [fire.position, { x: 20, y: 3 }], flightOutcome: 'grounded' }
     document.actions.push(flight)
@@ -114,6 +121,7 @@ describe('explicit ball pickup causality', () => {
     const document = freeDocument()
     document.initialScene.players.find((player) => player.id === 'blue-fire')!.position = { x: 6, y: 3 }
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 9, y: 3 }
+    setCarrier(document)
     const flight: LoosePassAction = { id: 'throw', type: 'loosePass', actorId: 'blue-fire', startTime: 0, duration: 3,
       path: [{ x: 6, y: 3 }, { x: 12, y: 3 }], aimDirection: { x: 1, y: 0 }, flightOutcome: 'grounded' }
     document.actions.push(flight)
@@ -217,6 +225,7 @@ describe('explicit ball pickup causality', () => {
     document.actions = []
     const fire = document.initialScene.players.find((player) => player.id === 'blue-fire')!
     fire.position = { x: 8, y: 3 }
+    setCarrier(document)
     const flight: LoosePassAction = { id: 'away', type: 'loosePass', actorId: fire.id, startTime: 0, duration: 3,
       path: [{ x: 8, y: 3 }, { x: 14, y: 3 }], aimDirection: { x: 1, y: 0 }, flightOutcome: 'grounded' }
     const q: QMoveAction = { id: 'miss', type: 'qMove', actorId: 'blue-ice', startTime: 0, duration: 1,
@@ -230,6 +239,7 @@ describe('explicit ball pickup causality', () => {
     const document = freeDocument()
     document.initialScene.players.find((player) => player.id === 'blue-fire')!.position = { x: 19, y: 3 }
     document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 18.5, y: 3 }
+    setCarrier(document)
     const flight: LoosePassAction = { id: 'throw', type: 'loosePass', actorId: 'blue-fire', startTime: 0, duration: 3,
       path: [{ x: 19, y: 3 }, { x: 15, y: 3 }], aimDirection: { x: 1, y: 0 }, flightOutcome: 'grounded' }
     document.actions.push(flight)
@@ -262,6 +272,7 @@ describe('marked ice empty passes', () => {
     const document = freeDocument()
     const ice = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     ice.position = { x: 5, y: 3 }
+    if (!eligible) setCarrier(document, ice.id)
     if (eligible) document.actions.push({ id: 'prior', type: 'pass', actorId: 'blue-water', targetPlayerId: ice.id,
       startTime: 0, duration: 0, path: [{ x: 5, y: 3 }, { x: 5, y: 3 }], flightOutcome: 'received' })
     document.initialScene.players.find((player) => player.id === 'blue-water')!.position = { x: 5, y: 3 }

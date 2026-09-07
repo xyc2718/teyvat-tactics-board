@@ -3,6 +3,7 @@ import { MAX_PASS_PATH_POINTS } from '../model/passFlight'
 import type { PassAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { actionEndTime, passDuration, passMaxDuration, passTravelDistance } from './durations'
 import { createPlayerPositionReader, documentFreezeWindows, projectFrameAtKeyframe } from './projectFrame'
+import { ballCausalRanks } from './ballCausalOrder'
 
 const SOLVER_SAMPLES = 256
 const CONTACT_ITERATIONS = 32
@@ -18,15 +19,31 @@ export interface PassReceptionResolution {
 }
 
 function withoutFuturePassEffects(document: TacticDocumentV1, pass: PassAction): TacticDocumentV1 {
+  const ranks = ballCausalRanks(document.actions)
   const passIndex = document.actions.findIndex((action) => action.id === pass.id)
   const excludedIds = new Set(document.actions.flatMap((action, index) => (
     action.type === 'pass' && (
       action.id === pass.id
       || action.startTime > pass.startTime
-      || (action.startTime === pass.startTime && (passIndex < 0 || index > passIndex))
+      || (action.startTime === pass.startTime && ((ranks.get(action.id) ?? 0) > (ranks.get(pass.id) ?? 0)
+        || (ranks.get(action.id) ?? 0) === (ranks.get(pass.id) ?? 0) && (passIndex < 0 || index > passIndex)))
     ) ? [action.id] : []
   )))
   excludedIds.add(pass.id)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const action of document.actions) {
+      const parent = action.type === 'pass' || action.type === 'loosePass'
+        ? action.originReception?.sourceActionId ?? action.originPickupActionId
+        : action.type === 'receive' ? action.sourceActionId ?? action.pickupActionId
+          : action.type === 'move' || action.type === 'qMove' ? action.ballTarget?.sourceActionId : undefined
+      if (parent && excludedIds.has(parent) && !excludedIds.has(action.id)) {
+        excludedIds.add(action.id)
+        changed = true
+      }
+    }
+  }
   return {
     ...document,
     actions: document.actions.filter((action) => !excludedIds.has(action.id)
@@ -48,6 +65,9 @@ function flightIntervals(document: TacticDocumentV1, playerId: string, start: nu
     if (time > start && time <= start + duration) set.add(time - start)
   }
   for (const action of document.actions) {
+    // A loose flight never moves a player. Its receipt/pickup has its own
+    // boundary; an unrelated outgoing timestamp must not change this solve.
+    if (action.type === 'loosePass') continue
     // Authored moves/waits can have detached initial positions too, so their
     // starts receive the same left/right treatment as instantaneous Q.
     if ((action.type === 'move' || action.type === 'qMove' || action.type === 'wait') && action.actorId === playerId) {

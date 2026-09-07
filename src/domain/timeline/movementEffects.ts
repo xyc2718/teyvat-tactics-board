@@ -2,6 +2,7 @@ import { clamp, pathLength, resolvedMovePath, slicePath } from '../geometry/geom
 import type { MoveAction, PassAction, QMoveAction, ReceiveAction, RoleRule, TacticDocumentV1, Vec2 } from '../model/types'
 import { actionEndTime } from './durations'
 import { passIsReceived } from '../model/passFlight'
+import { ballActionIsEffective, ballPossessionHistory } from './ballPossession'
 
 export interface MoveBoostEffect {
   sourceActionId: string
@@ -38,10 +39,12 @@ export function receiveBoostWindowFor(
   const role = getActorRole(document, playerId)
   const boost = role ? document.rulesSnapshot.roles[role].receiveBoost : undefined
   if (!boost || boost.duration <= 0) return undefined
+  const invalid = ballPossessionHistory(document).invalidActionIds
   const source = [...document.actions]
     .filter(
       (candidate): candidate is PassAction =>
         candidate.type === 'pass' &&
+        !invalid.has(candidate.id) &&
         candidate.targetPlayerId === playerId &&
         passIsReceived(candidate, document.rulesSnapshot) &&
         actionEndTime(candidate) <= time &&
@@ -64,14 +67,15 @@ export function receiveBoostWindowFor(
 /** Eligibility is recomputed from launch history; ground waiting never expires the mark. */
 export function looseBallBoostSource(document: TacticDocumentV1, sourceActionId: string | null, seen: ReadonlySet<string> = new Set()): string | undefined {
   const source = document.actions.find((action) => action.id === sourceActionId)
-  if (source?.type !== 'loosePass' || seen.has(source.id)) return undefined
+  if (source?.type !== 'loosePass' || seen.has(source.id) || !ballActionIsEffective(document, source.id)) return undefined
   const actor = document.initialScene.players.find((player) => player.id === source.actorId)
   if (actor?.role !== 'ice' || !document.rulesSnapshot.roles.ice.receiveBoost?.transfersOnPass) return undefined
   return receiveBoostWindowFor(document, actor.id, source.startTime, new Set([...seen, source.id])) ? source.id : undefined
 }
 
 export function pickupReceiveBoost(document: TacticDocumentV1, receive: ReceiveAction, seen: ReadonlySet<string> = new Set()): ReceiveBoostRule | undefined {
-  if (!receive.pickupActionId || receive.ballSourceActionId == null || seen.has(receive.id)) return undefined
+  if (!receive.pickupActionId || receive.ballSourceActionId == null || seen.has(receive.id)
+    || !ballActionIsEffective(document, receive.id)) return undefined
   const source = document.actions.find((action) => action.id === receive.ballSourceActionId)
   if (source?.type !== 'loosePass') return undefined
   const passer = document.initialScene.players.find((player) => player.id === source.actorId)
@@ -91,10 +95,12 @@ export function movementReceiveBoostWindowsFor(
   const receiverRole = getActorRole(document, playerId)
   const ownBoost = receiverRole ? document.rulesSnapshot.roles[receiverRole].receiveBoost : undefined
   const windows: ReceiveBoostWindow[] = []
+  const invalid = ballPossessionHistory(document).invalidActionIds
   for (const source of [...document.actions]
     .filter(
       (candidate): candidate is PassAction =>
         candidate.type === 'pass' &&
+        !invalid.has(candidate.id) &&
         candidate.targetPlayerId === playerId &&
         passIsReceived(candidate, document.rulesSnapshot) &&
         actionEndTime(candidate) <= time,

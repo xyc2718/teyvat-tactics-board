@@ -7,12 +7,15 @@ import * as passThreat from '../domain/rules/passThreat'
 import * as looseFlight from '../domain/timeline/loosePass'
 import * as projection from '../domain/timeline/projectFrame'
 import * as movementEffects from '../domain/timeline/movementEffects'
+import { normalizeBallActions } from '../domain/timeline/looseBall'
+import { actionEndTime } from '../domain/timeline/durations'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { useTacticStore } from '../editor/useTacticStore'
 import { InspectorPanel } from '../inspector/InspectorPanel'
 import { TimelinePanel } from '../timeline/TimelinePanel'
 import { TopToolbar } from '../app/TopToolbar'
 import { PickupErrorDialog } from '../app/PickupErrorDialog'
+import { RosterPanel } from '../app/RosterPanel'
 import { TacticsBoard } from './TacticsBoard'
 
 function ErrorHost() {
@@ -241,6 +244,9 @@ describe('explicit loose-ball board workflow', () => {
     if (boosted) {
       fireEvent.click(screen.getByRole('button', { name: '传球' }))
       fireEvent.keyDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { key: 'Enter' })
+      // The completed pass keeps its author selected. Explicitly choose its
+      // receiver; loose-pass activation must not silently replace that actor.
+      fireEvent.keyDown(screen.getByRole('button', { name: /蓝方 3，霜役/ }), { key: 'Enter' })
     } else {
       act(() => useTacticStore.getState().givePossession('blue-ice'))
     }
@@ -269,5 +275,36 @@ describe('explicit loose-ball board workflow', () => {
     expect(flight).not.toHaveBeenCalled()
     expect(joints).not.toHaveBeenCalled()
     expect(routes).not.toHaveBeenCalled()
+  })
+
+  it.each(['pointer', 'keyboard', 'roster'] as const)('chooses a future receiver for loose passing via %s without an early launch', (input) => {
+    const document = createDefaultDocument()
+    document.actions = [{ id: 'incoming', type: 'pass', actorId: 'blue-water', targetPlayerId: 'blue-ice',
+      startTime: 1, duration: 1, path: [{ x: 5.5, y: 4.7 }, { x: 5.5, y: 9.3 }] }]
+    normalizeBallActions(document)
+    useTacticStore.setState({ document, activeStepId: 'action-step' })
+    const { board } = mountEditor()
+    const roster = input === 'roster' ? render(<RosterPanel />).container : null
+    fireEvent.click(screen.getByRole('button', { name: '空传' }))
+    expect(useTacticStore.getState().selection?.id).toBe('blue-water')
+    if (input === 'roster') {
+      fireEvent.click(within(roster!).getByText('蓝方 3').closest('button')!)
+    } else {
+      const receiver = screen.getByRole('button', { name: /蓝方 3，霜役/ })
+      if (input === 'pointer') fireEvent.pointerDown(receiver, { button: 0 })
+      else fireEvent.keyDown(receiver, { key: 'Enter' })
+    }
+    let state = useTacticStore.getState()
+    const catchTime = actionEndTime(document.actions.find((action) => action.id === 'incoming')!)
+    expect(state.currentTime).toBe(catchTime)
+    expect(state.selection?.id).toBe('blue-ice')
+    expect(state.document).toBe(document)
+    expect(state.past).toHaveLength(0)
+    fireEvent.pointerDown(board, { button: 0, clientX: 12 * 50 + 36, clientY: 9.3 * 50 + 22 })
+    state = useTacticStore.getState()
+    expect(state.document.actions.find((action) => action.type === 'loosePass')).toMatchObject({
+      actorId: 'blue-ice', startTime: catchTime, originReception: { sourceActionId: 'incoming', offset: 0 },
+    })
+    expect(projection.projectFrame(state.document, catchTime + 0.1).ball.carrierId).toBeNull()
   })
 })

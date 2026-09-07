@@ -43,6 +43,9 @@ export function resolveToolActor(
   rules: RuleSetV1,
 ): PlayerState | undefined {
   if (!toolNeedsActor(tool)) return undefined
+  if (tool === 'loosePass' && selectedPlayer) {
+    return isToolActorEligible(tool, selectedPlayer, frame, rules) ? selectedPlayer : undefined
+  }
   if (isBallReleaseTool(tool)) {
     const carrier = frame.ball.carrierId
       ? frame.players.find((player) => player.id === frame.ball.carrierId)
@@ -67,6 +70,7 @@ export function isToolTargetPlayerEligible(
 }
 
 export function actorPrompt(tool: ToolId): string {
+  if (tool === 'loosePass') return '选择持球者或待接球球员；空传需在接球后发起'
   if (isBallReleaseTool(tool)) return '当前没有持球者，请先在“选择”模式设置球权'
   if (tool === 'eZone') return '选择一名霜役立即开启随身冰圈'
   if (tool === 'attack') return '选择任意球员查看其攻击内外范围'
