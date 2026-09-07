@@ -11,6 +11,9 @@ import { syncFollowMoveTimings } from './locomotionScheduling'
 
 function setup(advanced = false) {
   const document = createDefaultDocument()
+  // These fixtures isolate cooldown/reflow behavior; actual boost geometry has
+  // dedicated timingKeyframes and timed-movement integration regressions.
+  delete document.rulesSnapshot.roles.water.afterQBoost
   document.rulesSnapshot.roles.water.q.cooldown = 6
   document.actions = [
     { id: 'q', type: 'qMove', actorId: 'blue-water', startTime: 2, duration: 0,
@@ -162,7 +165,9 @@ describe('run until Q cooldown store edits', () => {
     expect(pathLength(run().path)).toBeCloseTo(1)
     useTacticStore.getState().deleteAction('q')
     expect(run()).toMatchObject({ duration: 4, timingConstraint: { kind: 'fixed' } })
-    expect(pathLength(run().path)).toBeCloseTo(1)
+    // Removing Q restores the true pre-Q origin, while preserving four seconds.
+    expect(run().path[0]).toEqual({ x: 16.5, y: 4.7 })
+    expect(pathLength(run().path)).toBeCloseTo(3.5)
   })
 
   it('reattaches the bound run origin after an advanced source Q path or role edit', () => {

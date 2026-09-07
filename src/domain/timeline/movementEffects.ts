@@ -26,6 +26,22 @@ export interface ReceiveBoostWindow {
   boost: ReceiveBoostRule
 }
 
+/** Chronological, refreshed Q boost windows for physical timed movement and
+ * event identity. An overlapping later Q replaces only the remaining window. */
+export function movementQBoostWindowsFor(
+  document: TacticDocumentV1, playerId: string, start: number, end: number,
+): Array<Omit<ReceiveBoostWindow, 'boost'> & { boost: NonNullable<RoleRule['afterQBoost']> }> {
+  const role = getActorRole(document, playerId)
+  const boost = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
+  if (!boost || boost.duration <= 0) return []
+  const sources = document.actions.filter((action): action is QMoveAction => action.type === 'qMove'
+    && action.actorId === playerId && actionEndTime(action) < end && actionEndTime(action) + boost.duration > start)
+    .sort((a, b) => actionEndTime(a) - actionEndTime(b))
+  return sources.map((source, index) => ({ sourceActionId: source.id, start: actionEndTime(source),
+    end: Math.min(actionEndTime(source) + boost.duration, sources[index + 1] ? actionEndTime(sources[index + 1]!) : Number.POSITIVE_INFINITY), boost }))
+    .filter((window) => window.end > Math.max(start, window.start))
+}
+
 function getActorRole(document: TacticDocumentV1, actorId: string) {
   return document.initialScene.players.find((player) => player.id === actorId)?.role
 }
@@ -189,7 +205,6 @@ export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): W
 }
 
 export function receiveMoveBoosts(document: TacticDocumentV1, move: MoveAction): ReceiveMoveBoost[] {
-  if (move.timingConstraint) return []
   const windows = movementReceiveBoostWindowsFor(document, move.actorId, move.startTime, actionEndTime(move))
   const route = resolvedMovePath(move)
   const length = pathLength(route)

@@ -550,10 +550,10 @@ describe('App shell', () => {
       timingConstraint: { kind: 'fixed' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '选择其他球员关键帧' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择关键帧' }))
     const dialog = screen.getByRole('dialog', { name: '选择到达关键帧' })
     expect(dialog).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: '红方 2' }))
+    fireEvent.click(screen.getByRole('tab', { name: '红方 2 · 火·蛮牛' }))
     fireEvent.click(screen.getByRole('button', { name: '跑动结束4.00s' }))
 
     expect(screen.queryByRole('dialog', { name: '选择到达关键帧' })).not.toBeInTheDocument()
@@ -565,7 +565,7 @@ describe('App shell', () => {
         reference: { playerId: 'red-fire', actionId: 'reference-red-run', edge: 'end' },
       },
     })
-    expect(screen.getByText(/红方 2 · 跑动结束 · 4.00s/)).toBeInTheDocument()
+    expect(screen.getByText(/红方 2 · 火·蛮牛 · 跑动结束 · 4.00s/)).toBeInTheDocument()
   })
 
   it('guides a tool-first Q workflow without a virtual arrow and resets after creation', () => {

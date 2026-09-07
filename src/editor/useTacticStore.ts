@@ -7,6 +7,7 @@ import type {
   BoardMode,
   MatchupRating,
   MoveKeyframeReference,
+  TimingTargetReference,
   RoleId,
   RuleSetV1,
   SceneState,
@@ -23,7 +24,8 @@ import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { findMoveQCooldownTarget, resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { ballRelatedActionIds, createBallPickupAction, normalizeBallActions, receptionOriginAt } from '../domain/timeline/looseBall'
 import { loosePassingRule } from '../domain/timeline/loosePass'
-import { instantQActionAtKeyframe, resolveMoveKeyframeTime } from '../domain/timeline/playerKeyframes'
+import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
+import { createTimingValidationContext, resolveTimingKeyframe, timingTargetUnavailableReason } from '../domain/timeline/timingKeyframes'
 import { projectFrame, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
@@ -92,7 +94,9 @@ interface TacticStore extends HistoryState {
   setMovePathMode: (actionId: string, mode: 'straight' | 'curve') => void
   updateMoveCurveControl: (actionId: string, point: Vec2) => void
   setMoveTimingFixed: (actionId: string, fixed: boolean) => void
-  setMoveTimingKeyframe: (actionId: string, reference: MoveKeyframeReference) => void
+  setMoveTimingKeyframe: (actionId: string, reference: TimingTargetReference) => void
+  setWaitTimingKeyframe: (actionId: string, reference: TimingTargetReference) => void
+  setWaitTimingManual: (actionId: string) => void
   setMoveTimingQCooldown: (actionId: string) => void
   updateActionTiming: (actionId: string, field: 'startTime' | 'duration', value: number) => void
   setShotCharge: (actionId: string, charge: 'yellow' | 'red') => void
@@ -269,8 +273,16 @@ function prepareTimelineEditingStep(state: TacticStore, preferredTime?: number) 
   }
 }
 
-function applyDocument(state: TacticStore, next: TacticDocumentV1, trackHistory = true) {
-  if (state.boardMode !== 'basic') finalizeMoveQCooldownBindings(state, next)
+function applyDocument(
+  state: TacticStore,
+  next: TacticDocumentV1,
+  trackHistory = true,
+  timingContext?: Pick<TacticStore, 'document' | 'showAdvancedTimeline'>,
+) {
+  if ((timingContext || state.boardMode !== 'basic') && !finalizeTimingBindings(timingContext ?? state, next, Boolean(timingContext))) {
+    return { document: state.document, past: state.past, future: state.future, pickupError: null,
+      notice: '时间与移动依赖未能稳定解算，已保留修改前的战术。请检查相互关联的关键帧。' }
+  }
   next.meta.updatedAt = new Date().toISOString()
   saveDraft(next)
   const notice = [ballNormalizationNotices.get(next), qCooldownNormalizationNotices.get(next)].filter(Boolean).join('；')
@@ -337,51 +349,63 @@ function recalculateRuleDrivenActions(document: TacticDocumentV1) {
 const ballNormalizationNotices = new WeakMap<TacticDocumentV1, string>()
 const qCooldownNormalizationNotices = new WeakMap<TacticDocumentV1, string>()
 
-/** A draft may pass through temporarily invalid starts while its chain reflows. */
-function finalizeMoveQCooldownBindings(state: TacticStore, document: TacticDocumentV1) {
+/** A complete edit transaction settles timings, movement and catch-derived events.
+ * Playback never enters this bounded normalization path. */
+function finalizeTimingBindings(state: Pick<TacticStore, 'document' | 'showAdvancedTimeline'>, document: TacticDocumentV1, force = false): boolean {
+  const isTimed = (action: TacticAction) => (action.type === 'move' || action.type === 'wait') && action.timingConstraint
+  if (!document.actions.some(isTimed) && !state.document.actions.some(isTimed)) return true
+  if (!force && JSON.stringify([document.rulesSnapshot, document.initialScene, document.actions])
+    === JSON.stringify([state.document.rulesSnapshot, state.document.initialScene, state.document.actions])) return true
   const notices: string[] = []
-  // Each pass removes at least one binding. Reflow can invalidate a downstream
-  // binding that was still valid when the previous pass inspected it.
-  for (let attempt = 0; attempt < document.actions.length; attempt += 1) {
+  const previousById = new Map(state.document.actions.map((action) => [action.id, action]))
+  const signature = () => JSON.stringify(document.actions, (_key, value: unknown) => (
+    typeof value === 'number' ? Math.round(value * 1e8) / 1e8 : value
+  ))
+  let comparison = previousById
+  let converged = false
+  for (let attempt = 0; attempt < Math.min(32, document.actions.length * 2 + 4); attempt += 1) {
+    const beforeSignature = signature()
+    const beforeActions = structuredClone(document.actions)
+    if (!syncFollowMoveTimings(document)) return false
+    const validation = createTimingValidationContext(document)
     const affectedActors = new Map<string, string>()
     for (const action of document.actions) {
-      if (action.type !== 'move' || action.timingConstraint?.kind !== 'qCooldown') continue
-      const target = resolveMoveQCooldownTarget(document, action)
-      if (target && !moveTimingWouldCycle(document, action.id, target.sourceActionId)) continue
-      const previous = state.document.actions.find((candidate) => candidate.id === action.id)
-      action.timingConstraint = { kind: 'fixed' }
-      // Never derive fallback time from a clipped path or an intermediate reflow.
-      action.duration = previous?.type === 'move' && previous.duration > 0
-        ? previous.duration
-        : Math.max(MIN_FIXED_MOVE_DURATION, action.duration)
-      syncConstrainedMovePath(document, action)
-      const earlierId = affectedActors.get(action.actorId)
-      const earlier = document.actions.find((candidate) => candidate.id === earlierId)
-      if (!earlier || action.startTime < earlier.startTime) affectedActors.set(action.actorId, action.id)
-      notices.push(`跑动“${action.label ?? action.id}”的 Q 冷却来源已失效，已改为手动固定时间并保留 ${action.duration.toFixed(2)} 秒。`)
+      if ((action.type !== 'move' && action.type !== 'wait') || !action.actorId || !action.timingConstraint) continue
+      let invalid: string | null = null
+      if (action.timingConstraint.kind === 'keyframe') {
+        invalid = validation.unavailableReason(action, action.timingConstraint.reference)
+      } else if (action.type === 'move' && action.timingConstraint.kind === 'qCooldown') {
+        const target = resolveMoveQCooldownTarget(document, action)
+        if (!target || moveTimingWouldCycle(document, action.id, target.sourceActionId)) invalid = 'Q 冷却来源已失效'
+      }
+      if (invalid) {
+        const previous = previousById.get(action.id)
+        action.duration = previous && previous.duration > 0 ? previous.duration : Math.max(MIN_FIXED_MOVE_DURATION, action.duration)
+        if (action.type === 'move') action.timingConstraint = { kind: 'fixed' }
+        else delete action.timingConstraint
+        notices.push(`${action.type === 'wait' ? '等待' : '跑动'}“${action.label ?? action.id}”的${invalid}，已改为手动时间并保留 ${action.duration.toFixed(2)} 秒。`)
+      }
+      const previous = comparison.get(action.id)
+      const actorId = action.actorId
+      if (invalid || !previous || Math.abs(previous.startTime - action.startTime) > JOINT_EPSILON
+        || Math.abs(previous.duration - action.duration) > JOINT_EPSILON) {
+        const earlier = document.actions.find((candidate) => candidate.id === affectedActors.get(actorId))
+        if (!earlier || action.startTime < earlier.startTime) affectedActors.set(actorId, action.id)
+      }
     }
-    if (!affectedActors.size) break
     if (!state.showAdvancedTimeline) {
       for (const [actorId, actionId] of affectedActors) reflowSimpleLocomotion(document, actorId, new Set(), actionId)
     }
-    syncFollowMoveTimings(document)
+    if (!syncFollowMoveTimings(document)) return false
+    if (signature() !== beforeSignature || attempt === 0) syncPassEndpoints(document)
+    if (signature() === beforeSignature) { converged = true; break }
+    comparison = new Map(beforeActions.map((action) => [action.id, action]))
   }
-  const previousCooldownRuns = new Map(state.document.actions.flatMap((action) => (
-    action.type === 'move' && action.timingConstraint?.kind === 'qCooldown' ? [[action.id, action] as const] : []
-  )))
-  const changedCooldownRun = document.actions.some((action) => {
-    if (action.type !== 'move') return false
-    const previous = previousCooldownRuns.get(action.id)
-    if (action.timingConstraint?.kind !== 'qCooldown' && !previous) return false
-    return !previous || action.startTime !== previous.startTime || action.duration !== previous.duration
-      || JSON.stringify(action.path) !== JSON.stringify(previous.path)
-      || JSON.stringify(action.curveControl) !== JSON.stringify(previous.curveControl)
-  })
-  if (!notices.length && !changedCooldownRun) return
-  if (notices.length) syncPassEndpoints(document)
+  if (!converged) return false
   syncShotOrigins(document)
   refreshStepSnapshots(document)
-  if (notices.length) qCooldownNormalizationNotices.set(document, notices.join('；'))
+  if (notices.length) qCooldownNormalizationNotices.set(document, [...new Set(notices)].join('；'))
+  return true
 }
 
 function syncPassEndpoints(document: TacticDocumentV1) {
@@ -452,15 +476,7 @@ function passPairActionIds(document: TacticDocumentV1, actionIds: Iterable<strin
         expanded.add(action.id)
         addedDependent = true
       }
-      if (
-        action.type === 'move'
-        && action.timingConstraint?.kind === 'keyframe'
-        && expanded.has(action.timingConstraint.reference.actionId)
-        && !expanded.has(action.id)
-      ) {
-        expanded.add(action.id)
-        addedDependent = true
-      }
+      // Timing-bound actions survive source deletion as manual timing at the commit boundary.
     }
   }
   return expanded
@@ -579,9 +595,11 @@ function editPlayerJoint(
 
 function initialDocument(): TacticDocumentV1 {
   const document = typeof window === 'undefined' ? createDefaultDocument() : loadDraft() ?? createDefaultDocument()
+  const previous = cloneDocument(document)
   const repairedDegeneratePass = removeDegenerateAutomaticPasses(document)
   syncFollowMoveTimings(document)
   syncPassEndpoints(document)
+  if (!finalizeTimingBindings({ document: previous, showAdvancedTimeline: true }, document, true)) return previous
   if (repairedDegeneratePass) refreshStepSnapshots(document)
   ensureOpeningActionBoundary(document)
   normalizeLegacyDefaultStepNames(document)
@@ -1114,15 +1132,17 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       activeStepId,
       tool: 'select' as const,
       selection: { kind: 'action' as const, id: action.id },
       currentTime: actionEndTime(action),
       currentKeyframe: null,
       isPlaying: false,
-      notice: '已添加 1 秒等待；可在右侧修改时长。',
+      notice: patch.notice ?? '已添加 1 秒等待；可在右侧修改时长。',
     }
   }),
 
@@ -1148,14 +1168,16 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const next = cloneDocument(state.document)
     next.actions.push(action)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: shooter.id },
       currentTime: shotTime,
       currentKeyframe: null,
-      notice: null,
+      notice: patch.notice ?? null,
       isPlaying: false,
     }
   }),
@@ -1196,17 +1218,19 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: targetId },
       currentTime: startTime,
       currentKeyframe: null,
       isPlaying: false,
-      notice: activeStatus
+      notice: patch.notice ?? (activeStatus
         ? `已刷新${target.name}的挂冰结束时间。`
-        : `已为${target.name}添加 ${slow.duration.toFixed(1)} 秒挂冰。`,
+        : `已为${target.name}添加 ${slow.duration.toFixed(1)} 秒挂冰。`),
     }
   }),
 
@@ -1230,13 +1254,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     syncPassEndpoints(next)
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
     refreshStepSnapshots(next)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       activeStepId,
       tool: 'select' as const,
       selection: { kind: 'player' as const, id: actor.id },
       currentKeyframe: null,
-      notice: null,
+      notice: patch.notice ?? null,
       isPlaying: false,
     }
   }),
@@ -1461,8 +1487,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       const activeStepId = ensureCommittedActionStep(next, state.activeStepId, action.id)
       refreshStepSnapshots(next)
+      const patch = applyDocument(state, next)
+      if (patch.document === state.document) return patch
       return {
-        ...applyDocument(state, next),
+        ...patch,
         activeStepId,
         tool: 'select' as const,
         selection: actor ? { kind: 'player' as const, id: actor.id } : null,
@@ -1472,7 +1500,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         currentKeyframe: action.type === 'qMove' && action.duration <= JOINT_EPSILON
           ? { playerId: action.actorId, actionId: action.id, edge: 'end' as const }
           : null,
-        notice: null,
+        notice: patch.notice ?? null,
       }
     }),
 
@@ -1505,8 +1533,10 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (!action) return {}
     const activeStepId = ensureCommittedActionStep(next, state.activeStepId, id)
     refreshStepSnapshots(next)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       activeStepId,
       selection: { kind: 'player' as const, id: actorId },
       tool: 'select' as const,
@@ -1514,7 +1544,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       currentTime: actionEndTime(action),
       currentKeyframe: action.type === 'qMove' && action.duration <= JOINT_EPSILON
         ? { playerId: actorId, actionId: id, edge: 'end' as const } : null,
-      notice: null,
+      notice: patch.notice ?? null,
     }
   }),
 
@@ -1628,6 +1658,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         syncConstrainedMovePath(draft, action)
       } else {
         delete action.timingConstraint
+        delete action.timingRouteBasis
         action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
       }
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
@@ -1643,22 +1674,16 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         patch.document,
         state.currentTime,
       ),
-      notice: patch.notice ?? (fixed ? '已按基础移速锁定这段跑动的时间和路径长度。' : '已恢复按路径与规则自动计算跑动时间。'),
+      notice: patch.notice ?? (fixed ? '已固定跑动时间，路径长度按实际移速计算。' : '已恢复按路径与规则自动计算跑动时间。'),
     }
   }),
 
   setMoveTimingKeyframe: (actionId, reference) => set((state) => {
     const before = state.document.actions.find((action) => action.id === actionId)
     if (!before || before.type !== 'move' || before.targetPlayerId || before.ballTarget) return {}
-    if (reference.playerId === before.actorId) return { notice: '请选择其他球员的关键帧。' }
-    const referenceTime = resolveMoveKeyframeTime(state.document, reference)
-    if (referenceTime === null) return { notice: '所选关键帧已经不存在，请重新选择。' }
-    if (referenceTime <= before.startTime + JOINT_EPSILON) {
-      return { notice: '到达关键帧必须晚于这段跑动的开始时间。' }
-    }
-    if (moveTimingWouldCycle(state.document, actionId, reference.actionId)) {
-      return { notice: '该选择会形成循环时间依赖，请选择其他关键帧。' }
-    }
+    const reason = timingTargetUnavailableReason(state.document, before, reference)
+    if (reason) return { notice: reason }
+    const referenceTime = resolveTimingKeyframe(state.document, reference)!.time
 
     const patch = mutateDocument(state, (draft) => {
       const action = draft.actions.find((candidate) => candidate.id === actionId)
@@ -1666,7 +1691,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       action.timingConstraint = { kind: 'keyframe', reference: { ...reference } }
       action.duration = referenceTime - action.startTime
       syncConstrainedMovePath(draft, action)
-      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
+      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId, new Set(), action.id)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft)
       refreshStepSnapshots(draft)
@@ -1681,6 +1706,36 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       ),
       notice: patch.notice ?? `跑动结束已对齐到 ${referenceTime.toFixed(2)}s 关键帧。`,
     }
+  }),
+
+  setWaitTimingKeyframe: (actionId, reference) => set((state) => {
+    const before = state.document.actions.find((action) => action.id === actionId)
+    if (before?.type !== 'wait' || !before.actorId) return {}
+    const reason = timingTargetUnavailableReason(state.document, before, reference)
+    if (reason) return { notice: reason }
+    const referenceTime = resolveTimingKeyframe(state.document, reference)!.time
+    const patch = mutateDocument(state, (draft) => {
+      const action = draft.actions.find((candidate) => candidate.id === actionId)
+      if (action?.type !== 'wait' || !action.actorId) return
+      action.timingConstraint = { kind: 'keyframe', reference: { ...reference } }
+      action.duration = referenceTime - action.startTime
+      if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId, new Set(), action.id)
+      syncFollowMoveTimings(draft)
+      syncPassEndpoints(draft)
+      refreshStepSnapshots(draft)
+    })
+    return { ...patch, notice: patch.notice ?? `等待结束已对齐到 ${referenceTime.toFixed(2)}s 关键帧。`,
+      currentTime: timeAfterActionEdit(before, patch.document.actions.find((action) => action.id === actionId), patch.document, state.currentTime) }
+  }),
+
+  setWaitTimingManual: (actionId) => set((state) => {
+    const before = state.document.actions.find((action) => action.id === actionId)
+    if (before?.type !== 'wait' || !before.timingConstraint) return {}
+    const patch = mutateDocument(state, (draft) => {
+      const action = draft.actions.find((candidate) => candidate.id === actionId)
+      if (action?.type === 'wait') delete action.timingConstraint
+    })
+    return { ...patch, notice: patch.notice ?? '已改为手动等待时间，并保留当前持续时间。' }
   }),
 
   setMoveTimingQCooldown: (actionId) => set((state) => {
@@ -1740,13 +1795,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const invalid = syncPassEndpoints(draft).invalidPickups.find((item) => item.actionId === actionId)
       if (invalid) return { notice: invalid.message }
       refreshStepSnapshots(draft)
-      return { ...applyDocument(state, draft), notice: null }
+      const patch = applyDocument(state, draft)
+      return { ...patch, notice: patch.notice ?? null }
     }
     if (action?.type === 'move' && action.targetPlayerId && field === 'duration') {
       return { notice: '贴身跟随的持续时间与目标动作结束点同步，不能单独修改。' }
     }
-    if (action?.type === 'move' && action.timingConstraint?.kind === 'keyframe' && field === 'duration') {
-      return { notice: '该跑动已对齐关键帧；请改选关键帧，或取消固定时间后重新设置。' }
+    if ((action?.type === 'move' || action?.type === 'wait') && action.timingConstraint?.kind === 'keyframe' && field === 'duration') {
+      return { notice: '该动作已对齐关键帧；请改选关键帧，或先改为手动时间。' }
     }
     if (action?.type === 'move' && action.timingConstraint?.kind === 'qCooldown' && field === 'duration') {
       return { notice: '该跑动已对齐自身 Q 冷却结束；请先改为手动时间。' }
@@ -1773,8 +1829,9 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       const patch = mutateDocument(state, (draft) => {
         const candidate = draft.actions.find((item) => item.id === actionId)
         if (!candidate || candidate.type !== 'wait') return
-        if (field === 'duration') candidate.duration = safeValue
-        reflowSimpleLocomotion(draft, candidate.actorId ?? '')
+        candidate[field] = safeValue
+        reflowSimpleLocomotion(draft, candidate.actorId ?? '', new Set(), candidate.id, state.document.actions)
+        syncFollowMoveTimings(draft)
         syncPassEndpoints(draft)
         refreshStepSnapshots(draft)
       })
@@ -1802,7 +1859,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       candidate[field] = safeValue
       syncFollowMoveTimings(draft)
       if (!state.showAdvancedTimeline && (candidate.type === 'qMove' || candidate.type === 'move')
-        && draft.actions.some((item) => item.type === 'move' && item.actorId === candidate.actorId && item.timingConstraint?.kind === 'qCooldown')) {
+        && draft.actions.some((item) => (item.type === 'move' || item.type === 'wait') && item.actorId === candidate.actorId && item.timingConstraint)) {
         // An explicit start edit remains the anchor; reflow only its later chain.
         reflowSimpleLocomotion(draft, candidate.actorId, new Set(), candidate.id, state.document.actions)
         syncFollowMoveTimings(draft)
@@ -1970,13 +2027,15 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const selection = state.selection?.kind === 'action' && !next.actions.some((action) => action.id === state.selection?.id)
       ? null
       : state.selection
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
     return {
-      ...applyDocument(state, next),
+      ...patch,
       selection,
       tool: 'select' as const,
       isPlaying: false,
       currentTime: Math.min(state.currentTime, nextDuration),
-      notice: [`已清空“${step?.name ?? '当前帧'}”的 ${ownership.count} 个动作（${formatStepActionRange(ownership)}）；步骤本身保留，可撤销恢复。`, qCooldownNormalizationNotices.get(next)].filter(Boolean).join('；'),
+      notice: [`已清空“${step?.name ?? '当前帧'}”的 ${ownership.count} 个动作（${formatStepActionRange(ownership)}）；步骤本身保留，可撤销恢复。`, patch.notice].filter(Boolean).join('；'),
     }
   }),
 
@@ -2101,7 +2160,11 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)
     normalizeLegacyDefaultStepNames(next)
-    const patch = applyDocument(state, next)
+    // Imports always enter simulation, independent of the outgoing board mode.
+    // Use imported starts/fallback durations rather than another tactic's
+    // same-ID actions; retain the existing normal/advanced repair policy.
+    const patch = applyDocument(state, next, true, { document, showAdvancedTimeline: state.showAdvancedTimeline })
+    if (patch.document === state.document) return patch
     return {
       ...patch,
       selection: null,
@@ -2116,11 +2179,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
   }),
 
-  openDocument: (document, notice = '已打开战术。') => set(() => {
+  openDocument: (document, notice = '已打开战术。') => set((state) => {
     const next = cloneDocument(document)
     const repairedDegeneratePass = removeDegenerateAutomaticPasses(next)
     syncFollowMoveTimings(next)
     syncPassEndpoints(next)
+    if (!finalizeTimingBindings({ document, showAdvancedTimeline: true }, next, true)) {
+      return { document: state.document, notice: '该战术的时间依赖未能稳定解算，已保留当前战术。' }
+    }
     if (repairedDegeneratePass) refreshStepSnapshots(next)
     ensureOpeningActionBoundary(next)
     normalizeLegacyDefaultStepNames(next)
@@ -2136,7 +2202,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       currentTime: 0,
       currentKeyframe: null,
       isPlaying: false,
-      notice,
+      notice: qCooldownNormalizationNotices.get(next) ?? notice,
       pickupError: null,
     }
   }),

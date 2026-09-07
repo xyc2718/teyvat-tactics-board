@@ -7,6 +7,7 @@ import { defaultRules } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
+import { resolveTimingKeyframe, timingTargetUnavailableReason } from '../domain/timeline/timingKeyframes'
 import { MAX_LOOSE_PATH_POINTS } from '../domain/timeline/loosePass'
 import { MAX_PICKUP_TRACE_POINTS } from '../domain/timeline/looseBall'
 
@@ -62,14 +63,25 @@ const moveKeyframeReferenceSchema = z.object({
   playerId: z.string().min(1).max(100),
   actionId: z.string().min(1).max(120),
   edge: z.enum(['start', 'end']),
-})
+}).strict()
+
+const timingTargetReferenceSchema = z.union([
+  z.object({
+    playerId: z.string().min(1).max(100), actionId: z.string().min(1).max(120),
+    event: z.enum(['qReady', 'qBoost', 'receiveBoost', 'freeze']), edge: z.enum(['start', 'end']),
+  }).strict(),
+  z.object({
+    playerId: z.string().min(1).max(100), statusId: z.string().min(1).max(120),
+    event: z.literal('initialStatus'), edge: z.enum(['start', 'end']),
+  }).strict(),
+  moveKeyframeReferenceSchema,
+])
+const keyframeTimingSchema = z.object({ kind: z.literal('keyframe'), reference: timingTargetReferenceSchema })
+const routeOffsetSchema = z.object({ x: finiteNumber.min(-1).max(1), y: finiteNumber.min(-1).max(1) })
 
 const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fixed') }),
-  z.object({
-    kind: z.literal('keyframe'),
-    reference: moveKeyframeReferenceSchema,
-  }),
+  keyframeTimingSchema,
   z.object({ kind: z.literal('qCooldown'), sourceActionId: z.string().min(1).max(120) }),
 ])
 const ballTargetSchema = z.object({ sourceActionId: z.string().min(1).max(120).nullable() })
@@ -87,6 +99,7 @@ const actionSchema = z.discriminatedUnion('type', [
     syncActionId: z.string().optional(),
     followGap: nonNegative.optional(),
     timingConstraint: moveTimingConstraintSchema.optional(),
+    timingRouteBasis: z.object({ endOffset: routeOffsetSchema, controlOffset: routeOffsetSchema.optional(), pathOffsets: z.array(routeOffsetSchema).max(19).optional() }).optional(),
     ballTarget: ballTargetSchema.optional(),
     pickupTrace: pickupTraceSchema.optional(),
   }),
@@ -133,7 +146,7 @@ const actionSchema = z.discriminatedUnion('type', [
     status: z.enum(['frozen', 'slowed', 'boosted']),
     separationDelta: finiteNumber.optional(),
   }),
-  z.object({ ...actionBase, type: z.literal('wait'), actorId: z.string().optional() }),
+  z.object({ ...actionBase, type: z.literal('wait'), actorId: z.string().optional(), timingConstraint: keyframeTimingSchema.optional() }),
   z.object({
     ...actionBase,
     type: z.literal('annotation'),
@@ -430,6 +443,7 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       if (action.targetPlayerId === action.actorId) return `动作 ${action.id} 不能跟随自己。`
       if (action.targetPlayerId && action.curveControl) return `动作 ${action.id} 的贴身跟随不能同时使用曲线路径。`
       if (hasFollowField && action.timingConstraint) return `动作 ${action.id} 的贴身跟随不能同时使用固定时间。`
+      if (action.timingRouteBasis && (!action.timingConstraint || hasFollowField || action.ballTarget)) return `动作 ${action.id} 的时间路径方向缺少固定时间约束。`
       if (action.ballTarget && (hasFollowField || action.timingConstraint || action.curveControl)) return `动作 ${action.id} 的捡球不能同时设置跟随、曲线或固定时间。`
       if (action.pickupTrace && !action.ballTarget) return `动作 ${action.id} 的捡球轨迹缺少球源。`
       if (action.pickupTrace) {
@@ -441,7 +455,6 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       if (action.timingConstraint?.kind === 'keyframe') {
         const reference = action.timingConstraint.reference
         if (!knownPlayers.has(reference.playerId)) return `动作 ${action.id} 的时间参照球员不存在。`
-        if (reference.playerId === action.actorId) return `动作 ${action.id} 不能对齐自己的关键帧。`
       }
     }
     if ('path' in action && action.path.some((point) => !pointInField(point))) return `动作 ${action.id} 包含球场范围外的坐标。`
@@ -527,16 +540,14 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       }
       if (moveTimingWouldCycle(document, action.id, target.sourceActionId)) return `动作 ${action.id} 形成了循环时间参照。`
     }
-    if (action.type !== 'move' || action.timingConstraint?.kind !== 'keyframe') continue
+    if ((action.type !== 'move' && action.type !== 'wait') || action.timingConstraint?.kind !== 'keyframe') continue
     const reference = action.timingConstraint.reference
-    const source = document.actions.find((candidate) => candidate.id === reference.actionId)
-    if (!source || !('actorId' in source) || source.actorId !== reference.playerId) {
-      return `动作 ${action.id} 的时间参照关键帧不存在。`
+    const reason = timingTargetUnavailableReason(document, action, reference)
+    if (reason) return `动作 ${action.id}：${reason}`
+    const source = resolveTimingKeyframe(document, reference)
+    if (!source || action.duration <= 0 || Math.abs(action.startTime + action.duration - source.time) > 1e-6) {
+      return `动作 ${action.id} 的结束时间与参照关键帧不一致。`
     }
-    const sourceTime = reference.edge === 'start' ? source.startTime : source.startTime + source.duration
-    if (sourceTime <= action.startTime) return `动作 ${action.id} 的时间参照必须晚于跑动开始。`
-
-    if (moveTimingWouldCycle(document, action.id, reference.actionId)) return `动作 ${action.id} 形成了循环时间参照。`
   }
   const staticArrowIds = new Set<string>()
   const staticArrowPlayers = new Set<string>()

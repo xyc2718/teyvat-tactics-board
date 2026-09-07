@@ -17,7 +17,7 @@ import {
   shotPressureSummary,
 } from '../domain/rules/shotPressure'
 import { looseBallBoostSource, receiveMoveBoosts, waterQMoveBoost } from '../domain/timeline/movementEffects'
-import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove } from '../domain/timeline/projectFrame'
+import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZoneSlowSegmentsForMove, projectedMovePath, projectedMovePathSegment, projectFrame, projectFrameAtKeyframe, statusSlowSegmentsForMove, timedMoveBoosts } from '../domain/timeline/projectFrame'
 import { isOpeningStep } from '../domain/timeline/steps'
 import { loosePassingRule } from '../domain/timeline/loosePass'
 import { ballEpisodeSourceIdAt } from '../domain/timeline/looseBall'
@@ -109,11 +109,13 @@ function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, 
     ? { ...action, path, curveControl: drag?.kind === 'curve' && drag.actionId === action.id ? drag.point : action.curveControl }
     : null
   const renderedPath = qAction ? effectiveQPath(document, qAction) : moveAction ? projectedMovePath(document, moveAction) : path
-  const rawWaterBoost = moveAction ? waterQMoveBoost(document, moveAction) : null
+  const timedBoosts = moveAction?.timingConstraint ? timedMoveBoosts(document, moveAction) : null
+  const rawWaterBoost = moveAction && !timedBoosts ? waterQMoveBoost(document, moveAction) : null
   const waterBoost = rawWaterBoost && moveAction?.targetPlayerId
     ? { ...rawWaterBoost, path: projectedMovePathSegment(document, moveAction, rawWaterBoost.overlapStart, rawWaterBoost.overlapEnd) }
     : rawWaterBoost
-  const receiveBoosts = moveAction ? receiveMoveBoosts(document, moveAction).map((effect) => ({
+  const waterBoosts = timedBoosts ? timedBoosts.filter((effect) => effect.kind === 'q') : waterBoost ? [waterBoost] : []
+  const receiveBoosts = timedBoosts ? timedBoosts.filter((effect) => effect.kind === 'receive') : moveAction ? receiveMoveBoosts(document, moveAction).map((effect) => ({
     ...effect,
     path: projectedMovePathSegment(document, moveAction, effect.overlapStart, effect.overlapEnd),
   })) : []
@@ -130,7 +132,7 @@ function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, 
     ? compilePath(path).pointAtDistance(document.rulesSnapshot.passing.maxDistance)
     : null
   return {
-    path, qEffect, moveAction, renderedPath, waterBoost, receiveBoosts,
+    path, qEffect, moveAction, renderedPath, waterBoosts, receiveBoosts,
     eZoneSlowSegments, statusSlowSegments, shotPressure,
     passSegments, passCorridor, passLanding,
   }
@@ -417,7 +419,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const geometry = actionGeometry.get(action.id)
     if (!geometry) return null
-    const { path, qEffect, moveAction, renderedPath, waterBoost, receiveBoosts, eZoneSlowSegments, statusSlowSegments, shotPressure, passSegments, passCorridor, passLanding } = geometry
+    const { path, qEffect, moveAction, renderedPath, waterBoosts, receiveBoosts, eZoneSlowSegments, statusSlowSegments, shotPressure, passSegments, passCorridor, passLanding } = geometry
     return (
       <g
         key={action.id}
@@ -441,7 +443,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
               {(action.type === 'move' || action.type === 'qMove') && action.ballTarget && <title>{action.type === 'qMove' ? 'Q 捡球 · 接触后继续完成位移' : '跑动捡球 · 追踪自由球直至接触'}</title>}
               {action.type === 'loosePass' && <title>空传 · 直线飞行，遇墙反弹 · {action.flightOutcome === 'pickedUp' ? '在捡球点结束飞行' : action.flightOutcome === 'goal' ? '进入球门后停止' : '未被捡起则停在终点'}</title>}
             </polyline>}
-        {waterBoost && <WaterBoostRoute effect={waterBoost} />}
+        {waterBoosts.map((effect) => <WaterBoostRoute key={effect.sourceActionId} effect={effect} />)}
         {receiveBoosts.map((effect) => <ReceiveBoostRoute key={effect.sourceActionId} effect={effect} />)}
         {eZoneSlowSegments.length > 0 && <EZoneSlowRoute segments={eZoneSlowSegments} />}
         {statusSlowSegments.length > 0 && <StatusSlowRoute segments={statusSlowSegments} />}
@@ -1013,7 +1015,7 @@ function PassThreatLegend({ onClose }: { onClose: () => void }) {
 function WaterBoostRoute({
   effect,
 }: {
-  effect: NonNullable<ReturnType<typeof waterQMoveBoost>>
+  effect: Pick<NonNullable<ReturnType<typeof waterQMoveBoost>>, 'path' | 'sourceActionId' | 'separationGain'>
 }) {
   return <g className="water-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
     <polyline points={pointsAttribute(effect.path)} className="water-q-boost-segment">
@@ -1025,7 +1027,7 @@ function WaterBoostRoute({
 function ReceiveBoostRoute({
   effect,
 }: {
-  effect: ReturnType<typeof receiveMoveBoosts>[number]
+  effect: Pick<ReturnType<typeof receiveMoveBoosts>[number], 'path' | 'sourceActionId' | 'separationGain'>
 }) {
   return <g className="receive-boost-route" pointerEvents="none" data-source-action-id={effect.sourceActionId}>
     <polyline points={pointsAttribute(effect.path)} className="ice-receive-boost-segment">

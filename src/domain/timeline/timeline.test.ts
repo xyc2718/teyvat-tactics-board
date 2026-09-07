@@ -81,7 +81,7 @@ describe('projectFrame', () => {
       .toBeCloseTo(qPlayer.position.x + 2)
   })
 
-  it('treats an explicit move duration as an exact arrival contract', () => {
+  it('retains an explicit end time while applying actual enemy-zone running speed', () => {
     const document = createDefaultDocument()
     document.actions.push(
       {
@@ -94,9 +94,10 @@ describe('projectFrame', () => {
       },
     )
 
-    expect(projectFrame(document, 2).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(5.5)
-    expect(projectFrame(document, 4).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(7.5)
-    expect(eZoneSlowSegmentsForMove(document, document.actions[0] as MoveAction)).toEqual([])
+    expect(projectFrame(document, 2).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(4.5)
+    expect(projectFrame(document, 4).players.find((player) => player.id === 'blue-fire')?.position.x).toBeCloseTo(5.5)
+    expect(document.actions[0]!.duration).toBe(4)
+    expect(eZoneSlowSegmentsForMove(document, document.actions[0] as MoveAction)).not.toEqual([])
   })
 
   it('projects a pass with linearly decreasing speed', () => {
@@ -269,6 +270,7 @@ describe('projectFrame', () => {
 
   it('does not freeze an opponent who stays ahead while moving along the same Q path', () => {
     const document = createDefaultDocument()
+    document.rulesSnapshot.field.baseMoveSpeed = 3
     const actor = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     const target = document.initialScene.players.find((player) => player.id === 'red-ice')!
     actor.position = { x: 3.5, y: 7.3 }
@@ -292,6 +294,7 @@ describe('projectFrame', () => {
 
   it('uses the opponent position at the same instant when a moving target crosses an ice Q', () => {
     const document = createDefaultDocument()
+    document.rulesSnapshot.field.baseMoveSpeed = 2
     const actor = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     const target = document.initialScene.players.find((player) => player.id === 'red-ice')!
     actor.position = { x: 3.5, y: 7.3 }

@@ -69,6 +69,11 @@ export interface MoveKeyframeReference {
   edge: 'start' | 'end'
 }
 
+/** Timing targets are intentionally separate from instantaneous-Q release origins. */
+export type TimingTargetReference = MoveKeyframeReference
+  | { playerId: string; actionId: string; event: 'qReady' | 'qBoost' | 'receiveBoost' | 'freeze'; edge: 'start' | 'end' }
+  | { playerId: string; statusId: string; event: 'initialStatus'; edge: 'start' | 'end' }
+
 /** A particular free-ball episode, not a moving nearest-ball query. */
 export interface BallTargetReference {
   sourceActionId: string | null
@@ -87,7 +92,7 @@ export interface PickupTracePoint {
 
 export type MoveTimingConstraint =
   | { kind: 'fixed' }
-  | { kind: 'keyframe'; reference: MoveKeyframeReference }
+  | { kind: 'keyframe'; reference: TimingTargetReference }
   | { kind: 'qCooldown'; sourceActionId: string }
 
 export interface MoveAction extends BaseAction {
@@ -102,6 +107,8 @@ export interface MoveAction extends BaseAction {
   followGap?: number
   /** Optional fixed-point timing override. Omitted moves keep rule-derived timing. */
   timingConstraint?: MoveTimingConstraint
+  /** Unit-scale direction/shape retained only when physical travel collapses. */
+  timingRouteBasis?: { endOffset: Vec2; controlOffset?: Vec2; pathOffsets?: Vec2[] }
   ballTarget?: BallTargetReference
   /** Resolved absolute-time pursuit samples; do not apply movement effects twice. */
   pickupTrace?: PickupTracePoint[]
@@ -186,6 +193,7 @@ export interface StatusAction extends BaseAction {
 export interface WaitAction extends BaseAction {
   type: 'wait'
   actorId?: string
+  timingConstraint?: { kind: 'keyframe'; reference: TimingTargetReference }
 }
 
 export interface AnnotationAction extends BaseAction {

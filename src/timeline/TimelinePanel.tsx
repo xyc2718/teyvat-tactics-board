@@ -4,6 +4,7 @@ import { loosePassJointTimes } from '../domain/timeline/loosePass'
 import type { MoveKeyframeReference, QMoveAction, TacticDocumentV1 } from '../domain/model/types'
 import { timelineDuration, timelineJointTimes } from '../domain/timeline/keyframes'
 import { actionActorId, actionTimelineKeyframes } from '../domain/timeline/playerKeyframes'
+import { documentTimingKeyframes } from '../domain/timeline/timingKeyframes'
 import { documentFreezeWindows, documentSlowWindows } from '../domain/timeline/projectFrame'
 import { formatStepActionRange, getStepActionOwnership, stepDuration } from '../domain/timeline/stepActionOwnership'
 import { isOpeningStep, sortedStepMarkers } from '../domain/timeline/steps'
@@ -136,6 +137,15 @@ export function TimelinePanel() {
   const trackFlightEvents = trackPlayerId
     ? looseFlightEvents.filter((event) => event.actorId === trackPlayerId)
     : looseFlightEvents
+  const derivedEvents = useMemo(() => documentTimingKeyframes(document).filter(({ reference }) => {
+    if (!('event' in reference) || reference.event === 'freeze') return false
+    // Existing freeze/slow bands already own these labels and boundary marks.
+    if (reference.event === 'initialStatus') return document.initialScene.statuses.some((status) => status.id === reference.statusId && status.kind === 'boosted')
+    return true
+  }), [document])
+  const trackDerivedEvents = trackPlayerId
+    ? derivedEvents.filter((keyframe) => keyframe.reference.playerId === trackPlayerId)
+    : derivedEvents
   const sortedActions = [...document.actions].sort((left, right) => (
     left.startTime - right.startTime || actionEndTime(left) - actionEndTime(right)
   ))
@@ -162,6 +172,7 @@ export function TimelinePanel() {
     ...trackActions.flatMap((action) => actionTimelineKeyframes(action).map(({ time }) => time)),
     ...trackFlightEvents.map((event) => event.time),
     ...trackFreezeWindows.flatMap((window) => [window.startsAt, window.endsAt]),
+    ...trackDerivedEvents.map((keyframe) => keyframe.time),
   ])).filter((time) => !instantTrackTimes.some((instantTime) => sameTime(time, instantTime)))
   const trackKeyframes: Array<{
     key: string
@@ -249,6 +260,14 @@ export function TimelinePanel() {
               data-player-id={event.actorId}
               title={`${event.label} ${event.time.toFixed(3)}s`}
               style={{ left: `${timePercent(event.time, duration)}%` }}
+            />)}
+            {duration > 0 && derivedEvents.map((keyframe) => <i
+              key={`event-${keyframe.id}`}
+              className="timing-state-event"
+              data-timing-event-id={keyframe.id}
+              data-player-id={keyframe.reference.playerId}
+              title={`${keyframe.label} ${keyframe.time.toFixed(2)}s`}
+              style={{ left: `${timePercent(keyframe.time, duration)}%` }}
             />)}
             {duration > 0 && freezeWindows.flatMap((window) => {
               const player = document.initialScene.players.find((candidate) => candidate.id === window.playerId)
@@ -342,6 +361,7 @@ export function TimelinePanel() {
               const isSlowEnd = trackSlowWindows.some((window) => Math.abs(time - window.endsAt) <= INSTANT_ACTION_EPSILON)
               const isPickup = reference?.edge !== 'start' && trackActions.some((action) => action.type === 'receive' && action.pickupActionId && sameTime(action.startTime, time))
               const flightLabels = trackFlightEvents.filter((event) => sameTime(event.time, time)).map((event) => event.label)
+              const derivedLabels = trackDerivedEvents.filter((event) => sameTime(event.time, time)).map((event) => event.label)
               const eventLabels = [...new Set([
                 reference?.edge === 'start' ? 'Q 起点' : '',
                 reference?.edge === 'end' ? 'Q 终点' : '',
@@ -351,6 +371,7 @@ export function TimelinePanel() {
                 isSlowEnd ? '挂冰结束' : '',
                 isPickup ? '捡球' : '',
                 ...new Set(flightLabels),
+                ...derivedLabels,
                 isContinuation ? '续接' : '',
               ].filter(Boolean))]
               const eventSuffix = eventLabels.length > 0 ? ` · ${eventLabels.join(' · ')}` : ''
@@ -463,7 +484,7 @@ export function TimelinePanel() {
               <div className={`action-row ${selection?.kind === 'action' && selection.id === action.id ? 'selected' : ''}`} key={action.id} data-timeline-action-id={action.id}>
                 <button className="action-name" onClick={() => select({ kind: 'action', id: action.id })}><span className={`action-dot type-${action.type}`} />{timelineActionLabel(action)}</button>
                 <label>开始 <input type="number" min="0" step="0.1" value={Number(action.startTime.toFixed(2))} disabled={action.type === 'receive' && Boolean(action.sourceActionId || action.pickupActionId)} title={action.type === 'receive' && (action.sourceActionId || action.pickupActionId) ? '由实际接球事件自动解算' : undefined} onChange={(event) => updateActionTiming(action.id, 'startTime', Number(event.target.value))} /></label>
-                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId || action.pickupActionId)) || action.type === 'loosePass' || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'move' && (Boolean(action.targetPlayerId || action.ballTarget) || action.timingConstraint?.kind === 'keyframe' || action.timingConstraint?.kind === 'qCooldown'))} title={(action.type === 'receive' && (action.sourceActionId || action.pickupActionId)) || (action.type === 'pass' && action.targetPlayerId) || action.type === 'loosePass' || (action.type === 'move' && action.ballTarget) ? '由球路和实际接触自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'qCooldown' ? '由自身 Q 冷却结束时刻自动计算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
+                <label>持续 <input type="number" min="0" step="0.1" value={Number(action.duration.toFixed(2))} disabled={(action.type === 'receive' && Boolean(action.sourceActionId || action.pickupActionId)) || action.type === 'loosePass' || (action.type === 'pass' && Boolean(action.targetPlayerId)) || (action.type === 'wait' && Boolean(action.timingConstraint)) || (action.type === 'move' && (Boolean(action.targetPlayerId || action.ballTarget) || action.timingConstraint?.kind === 'keyframe' || action.timingConstraint?.kind === 'qCooldown'))} title={(action.type === 'receive' && (action.sourceActionId || action.pickupActionId)) || (action.type === 'pass' && action.targetPlayerId) || action.type === 'loosePass' || (action.type === 'move' && action.ballTarget) ? '由球路和实际接触自动解算' : action.type === 'move' && action.targetPlayerId ? '由贴身跟随目标自动解算' : (action.type === 'move' || action.type === 'wait') && action.timingConstraint?.kind === 'keyframe' ? '由所选关键帧自动解算' : action.type === 'move' && action.timingConstraint?.kind === 'qCooldown' ? '由自身 Q 冷却结束时刻自动计算' : undefined} onChange={(event) => updateActionTiming(action.id, 'duration', Number(event.target.value))} /></label>
                 <div className="mini-track"><span style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${Math.max(timePercent(action.duration, sliderMax), 1.5)}%` }} /></div>
                 <button className="remove-action" onClick={() => deleteAction(action.id)} aria-label={`删除${timelineActionLabel(action)}`}>×</button>
               </div>

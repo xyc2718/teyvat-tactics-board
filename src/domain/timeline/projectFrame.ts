@@ -32,11 +32,16 @@ import { compilePath } from '../geometry/compiledPath'
 import { passIsReceived } from '../model/passFlight'
 import {
   movementReceiveBoostWindowsFor,
+  movementQBoostWindowsFor,
   receiveBoostWindowFor,
   pickupReceiveBoost,
   waterQGainAtTime,
   waterQMoveBoost,
 } from './movementEffects'
+import {
+  integrateTimedMove, solveTimedMoveGeometry, timedMoveDistanceAt,
+  type TimedMoveContext, type TimedMoveGeometry, type TimedMoveTrace,
+} from './timedMove'
 
 type IceQHitMap = Map<string, IceQHit[]>
 
@@ -138,23 +143,20 @@ function moveDistanceWithoutEZoneSlow(
   const effectiveTime = Math.min(Math.max(time, action.startTime), actionEndTime(action))
   let traveled = clamp((effectiveTime - action.startTime) / Math.max(action.duration, 0.0001), 0, 1) * routeLength
 
-  // An explicit timing constraint is an authored arrival contract. It omits
-  // optional acceleration, while gameplay control effects can still reduce
-  // how much of that authored route is completed.
-  if (!action.timingConstraint) {
-    const role = getActorRole(document, action.actorId)
-    const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
-    if (boostRule) {
-      traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
-    }
+  // Ordinary destination-based movement keeps its existing route timing.
+  // Fixed-time movement takes the separate cached physical trace path.
+  const role = getActorRole(document, action.actorId)
+  const boostRule = role ? document.rulesSnapshot.roles[role].afterQBoost : undefined
+  if (boostRule) {
+    traveled += waterQGainAtTime(waterQMoveBoost(document, action), boostRule.duration, effectiveTime)
+  }
 
-    for (const receiveWindow of movementReceiveBoostWindowsFor(document, action.actorId, action.startTime, effectiveTime)) {
-      const elapsed = Math.max(
-        0,
-        Math.min(effectiveTime, receiveWindow.end) - Math.max(action.startTime, receiveWindow.start),
-      )
-      traveled += (elapsed / receiveWindow.boost.duration) * receiveWindow.boost.netSeparationGain
-    }
+  for (const receiveWindow of movementReceiveBoostWindowsFor(document, action.actorId, action.startTime, effectiveTime)) {
+    const elapsed = Math.max(
+      0,
+      Math.min(effectiveTime, receiveWindow.end) - Math.max(action.startTime, receiveWindow.start),
+    )
+    traveled += (elapsed / receiveWindow.boost.duration) * receiveWindow.boost.netSeparationGain
   }
   return Math.max(0, traveled - authoredSlowLoss(document, action.actorId, action.startTime, effectiveTime))
 }
@@ -281,6 +283,7 @@ interface ProjectionMemo {
   frames: Map<string, ProjectedFrame>
   followTraces: Map<string, FollowMoveTimeline>
   moveTraces: Map<string, EZoneMoveTrace>
+  timedTraces: Map<string, TimedMoveTrace>
   qDistances: Map<string, number>
   passPaths: Map<string, ReturnType<typeof compilePath>>
 }
@@ -298,6 +301,7 @@ function projectionMemo(hitMap: IceQHitMap): ProjectionMemo {
       frames: new Map(),
       followTraces: new Map(),
       moveTraces: new Map(),
+      timedTraces: new Map(),
       qDistances: new Map(),
       passPaths: new Map(),
     }
@@ -320,6 +324,123 @@ function memoized<T>(cache: Map<string, T>, key: string, limit: number, calculat
   }
   cache.set(key, result)
   return result
+}
+
+function timedMoveContext(
+  document: TacticDocumentV1, action: MoveAction, applyControlEffects: boolean,
+  hitMap: IceQHitMap, applyEZoneEffects: boolean, ignoredActionIds: ReadonlySet<string>,
+): TimedMoveContext {
+  const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+  const end = actionEndTime(action)
+  const freezes = applyControlEffects ? [
+    ...freezeWindowsFor(document, action.actorId, hitMap),
+    ...document.initialScene.statuses.filter((status) => status.playerId === action.actorId && status.kind === 'frozen')
+      .map((status) => ({ start: status.startsAt, end: status.endsAt })),
+    ...document.actions.flatMap((candidate) => candidate.type === 'status' && candidate.status === 'frozen' && candidate.targetId === action.actorId
+      ? [{ start: candidate.startTime, end: actionEndTime(candidate) }] : []),
+  ].filter((window) => window.start < end && window.end > action.startTime) : []
+  const stoppedEnd = Math.max(action.startTime, Math.min(end, ...freezes.map((window) => window.start)))
+  const windows: TimedMoveContext['windows'] = [
+    ...movementQBoostWindowsFor(document, action.actorId, action.startTime, stoppedEnd).map((window) => ({
+      start: window.start, end: window.end, sourceActionId: window.sourceActionId, kind: 'q' as const,
+      rate: window.boost.netSeparationGain / window.boost.duration,
+    })),
+    ...movementReceiveBoostWindowsFor(document, action.actorId, action.startTime, stoppedEnd).map((window) => ({
+      start: window.start, end: window.end, sourceActionId: window.sourceActionId, kind: 'receive' as const,
+      rate: window.boost.netSeparationGain / window.boost.duration,
+    })),
+  ]
+  const slow = document.rulesSnapshot.roles.ice.slow
+  if (slow && slow.duration > 0 && slow.fullSeparationLoss > 0) {
+    // Authored hang-ice is a union, not additive per overlapping status.
+    const merged: Array<{ start: number; end: number; sourceActionId: string }> = []
+    for (const window of authoredSlowWindowsFor(document, action.actorId)) {
+      const previous = merged.at(-1)
+      if (previous && previous.end >= window.start) previous.end = Math.max(previous.end, window.end)
+      else merged.push({ start: window.start, end: window.end, sourceActionId: window.sourceActionId })
+    }
+    windows.push(...merged.map((window) => ({ ...window, kind: 'slow' as const, rate: -slow.fullSeparationLoss / slow.duration })))
+  }
+  const zones = applyControlEffects && applyEZoneEffects && actor ? document.actions.filter((candidate): candidate is EZoneAction => {
+    if (candidate.type !== 'eZone' || candidate.startTime >= stoppedEnd || actionEndTime(candidate) <= action.startTime) return false
+    const owner = document.initialScene.players.find((player) => player.id === candidate.actorId)
+    return !!owner && owner.team !== actor.team && (document.rulesSnapshot.roles[owner.role].e?.slowMultiplier ?? 1) < 1
+  }) : []
+  const excluded = new Set([...ignoredActionIds, action.id])
+  const zoneOwners = new Set(zones.map((zone) => zone.actorId))
+  const cuts = zones.flatMap((zone) => [zone.startTime, actionEndTime(zone)])
+  for (const candidate of document.actions) {
+    if ('actorId' in candidate && candidate.actorId && zoneOwners.has(candidate.actorId)) cuts.push(candidate.startTime, actionEndTime(candidate))
+  }
+  // Pre-index zone rules and use the same selective projection/exclusion memo
+  // for every scale trial; no full-frame or signature lookup inside samples.
+  const activeZones = zones.flatMap((zone) => {
+    const owner = document.initialScene.players.find((player) => player.id === zone.actorId)
+    return owner ? [{ zone, ownerId: owner.id, multiplier: document.rulesSnapshot.roles[owner.role].e!.slowMultiplier }] : []
+  })
+  const centers = new Map<string, Map<number, PlayerState['position'] | undefined>>()
+  return {
+    start: action.startTime, end: stoppedEnd, baseSpeed: document.rulesSnapshot.field.baseMoveSpeed, windows, cuts,
+    multiplierAt: activeZones.length ? (position, time) => {
+      let multiplier = 1
+      for (const { zone, ownerId, multiplier: configured } of activeZones) {
+        if (zone.startTime > time || actionEndTime(zone) <= time || configured >= multiplier) continue
+        let ownerCenters = centers.get(ownerId)
+        if (!ownerCenters) { ownerCenters = new Map(); centers.set(ownerId, ownerCenters) }
+        if (!ownerCenters.has(time)) ownerCenters.set(time,
+          projectSceneCore(document, time, false, applyControlEffects, hitMap, false, excluded, ownerId).players[0]?.position)
+        const center = ownerCenters.get(time)
+        if (center && distance(position, center) <= zone.radius) multiplier = configured
+      }
+      return multiplier
+    } : undefined,
+  }
+}
+
+function traceTimedMove(
+  document: TacticDocumentV1, action: MoveAction, applyControlEffects: boolean,
+  hitMap: IceQHitMap, applyEZoneEffects = true, ignoredActionIds: ReadonlySet<string> = new Set(),
+): TimedMoveTrace {
+  const key = JSON.stringify([action, applyControlEffects, applyEZoneEffects, [...ignoredActionIds].sort()])
+  return memoized(projectionMemo(hitMap).timedTraces, key, 128, () => integrateTimedMove(
+    resolvedMovePath(action), timedMoveContext(document, action, applyControlEffects, hitMap, applyEZoneEffects, ignoredActionIds),
+  ))
+}
+
+/** Content-edit API. Preserve authored time while solving reachable geometry. */
+export function resolveTimedMoveGeometry(document: TacticDocumentV1, action: MoveAction): TimedMoveGeometry {
+  const withPossession = createBallPossessionScope(document)
+  return withPossession(() => solveTimedMoveGeometry(action,
+    timedMoveContext(document, action, true, buildIceQHitMap(document), true, new Set()), document.rulesSnapshot.field))
+}
+
+export interface TimedMoveBoostSegment {
+  kind: 'q' | 'receive'
+  sourceActionId: string
+  overlapStart: number
+  overlapEnd: number
+  separationGain: number
+  path: PlayerState['position'][]
+}
+
+/** Timed-run colors use the very same physical distance samples as tokens. */
+export function timedMoveBoosts(document: TacticDocumentV1, action: MoveAction): TimedMoveBoostSegment[] {
+  const withPossession = createBallPossessionScope(document)
+  return withPossession(() => {
+    const trace = traceTimedMove(document, action, true, buildIceQHitMap(document))
+    const length = pathLength(trace.path)
+    return trace.windows.flatMap((window) => {
+      if (window.kind === 'slow' || length <= POSITION_EPSILON) return []
+      const start = Math.max(action.startTime, window.start)
+      const end = Math.min(trace.samples.at(-1)!.time, window.end)
+      const from = timedMoveDistanceAt(trace, start)
+      const to = timedMoveDistanceAt(trace, end)
+      return end > start && to > from + POSITION_EPSILON ? [{ kind: window.kind,
+        sourceActionId: window.sourceActionId, overlapStart: start, overlapEnd: end,
+        separationGain: window.rate * (end - start), path: slicePath(trace.path, from / length, to / length),
+      }] : []
+    })
+  })
 }
 
 function traceFollowMove(
@@ -502,6 +623,34 @@ function traceMoveWithEZoneSlow(
   hitMap: IceQHitMap,
   ignoredActionIds: ReadonlySet<string> = new Set(),
 ): EZoneMoveTrace {
+  if (action.timingConstraint && !action.ballTarget && !action.targetPlayerId) {
+    const trace = traceTimedMove(document, action, applyControlEffects, hitMap, true, ignoredActionIds)
+    const length = pathLength(trace.path)
+    const traveled = timedMoveDistanceAt(trace, time)
+    const segments: EZoneSlowSegment[] = []
+    const statusSegments: StatusSlowSegment[] = []
+    for (const interval of trace.intervals) {
+      if (interval.startTime >= time || interval.endDistance <= interval.startDistance + POSITION_EPSILON || length <= POSITION_EPSILON) continue
+      const endTime = Math.min(time, interval.endTime)
+      const endDistance = timedMoveDistanceAt(trace, endTime)
+      const path = slicePath(trace.path, interval.startDistance / length, endDistance / length)
+      if (interval.multiplier < 1 - POSITION_EPSILON) {
+        const previous = segments.at(-1)
+        if (previous && previous.endTime === interval.startTime && previous.multiplier === interval.multiplier) {
+          previous.endTime = endTime
+          previous.path.push(...path.slice(1))
+        } else segments.push({ startTime: interval.startTime, endTime, multiplier: interval.multiplier, path })
+      }
+      if (interval.slowed) {
+        const previous = statusSegments.at(-1)
+        if (previous && previous.endTime === interval.startTime) {
+          previous.endTime = endTime
+          previous.path.push(...path.slice(1))
+        } else statusSegments.push({ startTime: interval.startTime, endTime, path: path.map((point) => ({ ...point })) })
+      }
+    }
+    return { traveled, segments, statusSegments }
+  }
   const key = JSON.stringify([action, time, applyControlEffects, [...ignoredActionIds].sort()])
   return memoized(projectionMemo(hitMap).moveTraces, key, 128, () => computeMoveWithEZoneSlow(
     document, action, time, applyControlEffects, hitMap, ignoredActionIds,
@@ -533,7 +682,7 @@ function computeMoveWithEZoneSlow(
   const hasOverlappingSlow = authoredSlowWindowsFor(document, action.actorId).some(
     (window) => window.start < end && window.end > action.startTime,
   )
-  if ((!hasOverlappingEnemyZone || action.timingConstraint) && !hasOverlappingSlow) {
+  if (!hasOverlappingEnemyZone && !hasOverlappingSlow) {
     return { traveled: moveDistanceWithoutEZoneSlow(document, action, end), segments: [], statusSegments: [] }
   }
 
@@ -563,7 +712,7 @@ function computeMoveWithEZoneSlow(
     const probeDistance = Math.min(routeLength, traveled + unslowedStep / 2)
     const probePosition = pointAlongPath(route, probeDistance / Math.max(routeLength, 0.0001))
     const probeTime = (stepStart + stepEnd) / 2
-    const multiplier = action.timingConstraint ? 1 : eZoneMultiplierAt(
+    const multiplier = eZoneMultiplierAt(
         document,
         movingActor,
         probePosition,
@@ -747,6 +896,10 @@ function movementProgress(
   }
 
   const routeLength = pathLength(resolvedMovePath(action))
+  if (action.timingConstraint && !action.ballTarget && !action.targetPlayerId) {
+    const trace = traceTimedMove(document, action, applyControlEffects, hitMap, applyEZoneEffects, ignoredActionIds)
+    return clamp(timedMoveDistanceAt(trace, time) / Math.max(routeLength, 0.0001), 0, 1)
+  }
   const traveled = applyControlEffects && applyEZoneEffects
     ? moveDistanceWithEZoneSlow(document, action, effectiveTime, applyControlEffects, hitMap, ignoredActionIds)
     : moveDistanceWithoutEZoneSlow(document, action, effectiveTime)
@@ -1227,6 +1380,13 @@ export function statusSlowSegmentsForMove(
 /** Shared formal route for both fixed-point and player-following moves. */
 export function projectedMovePath(document: TacticDocumentV1, action: MoveAction): PlayerState['position'][] {
   if (action.ballTarget && action.pickupTrace?.length) return action.pickupTrace.map((sample) => ({ ...sample.position }))
+  if (action.timingConstraint && !action.targetPlayerId) {
+    const withPossession = createBallPossessionScope(document)
+    return withPossession(() => {
+      const trace = traceTimedMove(document, action, true, buildIceQHitMap(document))
+      return truncatePath(trace.path, trace.traveled)
+    })
+  }
   if (!action.targetPlayerId || !action.syncActionId) return resolvedMovePath(action)
   const hitMap = buildIceQHitMap(document)
   return traceFollowMove(document, action, actionEndTime(action), true, hitMap, true, new Set()).path.map((point) => ({ ...point }))
@@ -1243,6 +1403,14 @@ export function projectedMovePathSegment(
     ...action.pickupTrace.filter((sample) => sample.time > startTime && sample.time < endTime).map((sample) => ({ ...sample.position })),
     pickupTracePosition(action.pickupTrace, endTime),
   ]
+  if (action.timingConstraint && !action.targetPlayerId) {
+    const withPossession = createBallPossessionScope(document)
+    return withPossession(() => {
+      const trace = traceTimedMove(document, action, true, buildIceQHitMap(document))
+      const length = Math.max(pathLength(trace.path), POSITION_EPSILON)
+      return slicePath(trace.path, timedMoveDistanceAt(trace, startTime) / length, timedMoveDistanceAt(trace, endTime) / length)
+    })
+  }
   if (!action.targetPlayerId || !action.syncActionId) {
     const route = resolvedMovePath(action)
     return slicePath(

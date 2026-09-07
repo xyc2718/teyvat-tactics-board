@@ -1,4 +1,4 @@
-import type { MatchupRating, RoleId, TacticAction, ToolId } from '../domain/model/types'
+import type { MatchupRating, PlayerState, RoleId, RuleSetV1, TacticAction, ToolId } from '../domain/model/types'
 import { MATCHUP_LABELS } from '../domain/rules/defaultRules'
 
 export const roleColors: Record<RoleId, string> = {
@@ -49,4 +49,9 @@ export function actionLabel(action: TacticAction): string {
 
 export function matchupLabel(rating: MatchupRating): string {
   return rating === null ? '未评估' : MATCHUP_LABELS[rating]
+}
+
+export function playerRoleLabel(player: PlayerState, rules: RuleSetV1): string {
+  const role = rules.roles[player.role]
+  return `${player.name} · ${role.shortLabel}·${role.label}`
 }

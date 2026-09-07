@@ -55,14 +55,14 @@ describe('Inspector Q cooldown run timing', () => {
     expect(selectedRun()).toMatchObject({
       startTime: 4, duration: 4, timingConstraint: { kind: 'qCooldown', sourceActionId: 'source-q' },
     })
-    expect(pathLength(selectedRun().path)).toBeCloseTo(4)
+    expect(pathLength(selectedRun().path)).toBeCloseTo(4 + 2.3 / 4.3 * 0.8)
     expect(screen.getByText('Q 冷却结束 · 8.00s')).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: /持续时间/ })).toBeDisabled()
     expect(button).toHaveAttribute('aria-pressed', 'true')
 
     act(() => useTacticStore.getState().updateRoleRule('water', 'qCooldown', 7))
     expect(selectedRun().duration).toBeCloseTo(5)
-    expect(pathLength(selectedRun().path)).toBeCloseTo(5)
+    expect(pathLength(selectedRun().path)).toBeCloseTo(5 + 2.3 / 4.3 * 0.8)
     expect(screen.getByText('Q 冷却结束 · 9.00s')).toBeInTheDocument()
     expect(useTacticStore.getState().document.actions.filter((action) => action.type === 'qMove')).toHaveLength(1)
   })
@@ -107,8 +107,8 @@ describe('Inspector Q cooldown run timing', () => {
     useTacticStore.setState({ document })
     render(<InspectorPanel />)
     fireEvent.click(screen.getByRole('button', { name: '跑到 Q 冷却结束' }))
-    fireEvent.click(screen.getByRole('button', { name: '选择其他球员关键帧' }))
-    fireEvent.click(screen.getByRole('tab', { name: '红方 2' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择关键帧' }))
+    fireEvent.click(screen.getByRole('tab', { name: '红方 2 · 火·蛮牛' }))
     fireEvent.click(screen.getByRole('button', { name: '等待结束10.00s' }))
     expect(selectedRun()).toMatchObject({
       duration: 6,

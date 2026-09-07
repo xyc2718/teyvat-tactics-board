@@ -2,6 +2,7 @@ import type { TacticDocumentV1 } from '../model/types'
 import { actionEndTime } from './durations'
 import { documentFreezeWindows } from './projectFrame'
 import { loosePassJointTimes } from './loosePass'
+import { documentTimingKeyframes } from './timingKeyframes'
 
 const EPSILON = 1e-6
 const jointCache = new WeakMap<TacticDocumentV1, { signature: string; times: number[] }>()
@@ -50,6 +51,7 @@ export function timelineJointTimes(document: TacticDocumentV1): number[] {
     ...document.actions.flatMap((action) => action.type === 'loosePass' ? loosePassJointTimes(action, document.rulesSnapshot) : []),
     ...cooldownReadyTimes,
     ...documentFreezeWindows(document).flatMap((window) => [window.startsAt, window.endsAt]),
+    ...documentTimingKeyframes(document).map((keyframe) => keyframe.time),
   ]
     .filter((time) => Number.isFinite(time) && time >= 0)
     .sort((left, right) => left - right)
