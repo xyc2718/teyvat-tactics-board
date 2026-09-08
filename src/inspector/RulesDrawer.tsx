@@ -40,7 +40,7 @@ export function RulesDrawer() {
               <RuleInput label="小禁区半径" value={rules.field.smallPenaltyRadius} suffix="格" onChange={(value) => updateField('smallPenaltyRadius', value)} />
               <RuleInput label="大禁区半径" value={rules.field.largePenaltyRadius} suffix="格" onChange={(value) => updateField('largePenaltyRadius', value)} />
             </RuleSection>
-            <RuleSection title="传球" description="按最远传球标定：球从 2 倍标定速度线性减速至 0；默认 8 格耗时 1 秒。">
+            <RuleSection title="传球" description="按最远传球标定：球从 2 倍标定速度线性减速至 0。安全距离只免疫普通截球，不免疫岩护罩。">
               <RuleInput label="安全距离" value={rules.passing.safeDistance} suffix="格" onChange={(value) => updatePassing('safeDistance', value)} />
               <RuleInput label="最大有效距离" value={rules.passing.maxDistance} suffix="格" onChange={(value) => updatePassing('maxDistance', value)} />
               <RuleInput label="标定球速" value={rules.passing.ballSpeed} suffix="格/s" onChange={(value) => updatePassing('ballSpeed', value)} />
@@ -59,9 +59,10 @@ export function RulesDrawer() {
               return <RuleSection key={role} title={`${rule.label}（${rule.shortLabel}）`} description={rule.q.kind === 'blink' ? 'Q 规则时间按瞬时位移处理。' : 'Q 按加速冲刺播放。'}>
                 <RuleInput label="攻击半径" value={rule.attackRadius} suffix="格" onChange={(value) => updateRole(role, 'attackRadius', value)} />
                 {rule.attackInnerRadius !== undefined && <RuleInput label="攻击内半径" value={rule.attackInnerRadius} suffix="格" onChange={(value) => updateRole(role, 'attackInnerRadius', value)} />}
-                <RuleInput label="Q 最大距离" value={rule.q.maxDistance} suffix="格" onChange={(value) => updateRole(role, 'qDistance', value)} />
+                <RuleInput label={rule.q.fixedDistance ? 'Q 固定距离' : 'Q 最大距离'} value={rule.q.maxDistance} suffix="格" onChange={(value) => updateRole(role, 'qDistance', value)} />
                 <RuleInput label="Q 冷却" value={rule.q.cooldown} suffix="s" onChange={(value) => updateRole(role, 'qCooldown', value)} />
                 <RuleInput label="Q 位移时间" value={rule.q.duration} suffix="s" onChange={(value) => updateRole(role, 'qDuration', value)} />
+                {role === 'geo' && rule.shield && <p className="rule-capability-note">护罩半径 {rule.shield.radius} 格：可挡传球、空传及非红蓄力射门；冻结时仍可原地挡球。仅做风险分析，无需添加护罩动作。</p>}
                 {boost && <>
                   <RuleInput label="加速有效时间" value={boost.duration} suffix="s" onChange={(value) => updateRoleExtra(role, 'boostDuration', value)} />
                   <RuleInput label="累计身位收益" value={boost.netSeparationGain} suffix="格" onChange={(value) => updateRoleExtra(role, 'boostGain', value)} />
@@ -129,7 +130,7 @@ function MatchupRow({ attacker }: { attacker: RoleId }) {
   const values: MatchupRating[] = [null, -2, -1, 0, 1, 2]
   return <>
     <strong className="matrix-row-head">{rules.roles[attacker].shortLabel} · {rules.roles[attacker].label}</strong>
-    {ROLE_IDS.map((defender) => <select key={`${attacker}-${defender}`} value={rules.matchups[attacker][defender] ?? 'none'} onChange={(event) => setMatchup(attacker, defender, event.target.value === 'none' ? null : Number(event.target.value) as MatchupRating)}>
+    {ROLE_IDS.map((defender) => <select key={`${attacker}-${defender}`} aria-label={`${rules.roles[attacker].shortLabel}进攻对${rules.roles[defender].shortLabel}防守`} value={rules.matchups[attacker][defender] ?? 'none'} onChange={(event) => setMatchup(attacker, defender, event.target.value === 'none' ? null : Number(event.target.value) as MatchupRating)}>
       {values.map((value) => <option key={value ?? 'none'} value={value ?? 'none'}>{matchupLabel(value)}</option>)}
     </select>)}
   </>

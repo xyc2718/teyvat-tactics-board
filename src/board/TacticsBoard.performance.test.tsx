@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as projection from '../domain/timeline/projectFrame'
 import * as passThreat from '../domain/rules/passThreat'
 import * as passReception from '../domain/timeline/passReception'
+import * as geoShield from '../domain/rules/geoShield'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import * as timingKeyframes from '../domain/timeline/timingKeyframes'
 import { useTacticStore } from '../editor/useTacticStore'
@@ -72,7 +73,7 @@ it('draws a failed homing pass only to its actual landing point with a curved co
   expect(screen.getByText(/未接到：已耗尽飞行距离/)).toBeInTheDocument()
 })
 
-it.each([false, true])('reuses saved route geometry during real timeline scrubs and refreshes after document edits (timed=%s)', (timed) => {
+it.each([{ timed: false, geo: false }, { timed: true, geo: false }, { timed: true, geo: true }])('reuses saved route geometry during real timeline scrubs and refreshes after document edits (timed=$timed, geo=$geo)', ({ timed, geo }) => {
   const fixture = createFollowPerformanceFixture()
   const fixtureRun = fixture.actions.find((action) => action.type === 'move' && action.actorId === 'blue-ice')
   if (fixtureRun?.type !== 'move') throw new Error('Missing fixture target run')
@@ -82,12 +83,26 @@ it.each([false, true])('reuses saved route geometry during real timeline scrubs 
   useTacticStore.getState().select({ kind: 'player', id: 'red-fire' })
   useTacticStore.getState().setTool('move')
   useTacticStore.getState().createAction('red-fire', { x: 15, y: 8 }, 'blue-ice')
+  if (geo) {
+    const document = structuredClone(useTacticStore.getState().document)
+    for (const player of document.initialScene.players) {
+      if (player.id === 'red-water' || player.id === 'red-fire') player.role = 'geo'
+    }
+    document.actions.push({
+      id: 'geo-bounced-flight', type: 'loosePass', actorId: 'blue-ice', startTime: 8, duration: 3,
+      aimDirection: { x: 1, y: 0 }, flightOutcome: 'grounded',
+      path: [{ x: 17, y: 10 }, { x: 20, y: 10 }, { x: 17, y: 10 }],
+    })
+    // Keep the resolved chase/zone/flight fixture; shield analysis is advisory.
+    useTacticStore.setState({ document })
+  }
   const route = vi.spyOn(projection, 'projectedMovePath')
   const slow = vi.spyOn(projection, 'eZoneSlowSegmentsForMove')
   const classification = vi.spyOn(passThreat, 'classifyPassThreat')
   const corridor = vi.spyOn(passThreat, 'buildPassCorridor')
   const solver = vi.spyOn(passReception, 'solvePassReception')
   const timedSolver = vi.spyOn(projection, 'resolveTimedMoveGeometry')
+  const shield = vi.spyOn(geoShield, 'analyzeActionGeoShield')
   const { container } = render(<><TacticsBoard /><TimelinePanel /><InspectorPanel /></>)
   const slider = screen.getByRole('slider', { name: '播放位置' })
   const routeCalls = route.mock.calls.length
@@ -96,11 +111,24 @@ it.each([false, true])('reuses saved route geometry during real timeline scrubs 
   const corridorCalls = corridor.mock.calls.length
   const solverCalls = solver.mock.calls.length
   const timedSolverCalls = timedSolver.mock.calls.length
+  const shieldCalls = shield.mock.calls.length
+  if (geo) expect(shieldCalls).toBeGreaterThan(0)
   expect(routeCalls).toBeGreaterThan(0)
   expect(classificationCalls).toBeGreaterThan(0)
   expect(corridorCalls).toBeGreaterThan(0)
   for (const value of Array.from({ length: timed ? 90 : 6 }, (_, index) => (index * 1543 + 9000) % 10000)) {
     fireEvent.change(slider, { target: { value: String(value) } })
+  }
+  if (geo) {
+    // Paused slider inputs snap to keyframes. Also exercise ninety unique
+    // projected times, so a small fixture joint catalog cannot hide work.
+    const projectedTimes = new Set<number>()
+    for (let index = 0; index < 90; index += 1) {
+      const time = ((index * 37) % 90) / 10 + 0.001
+      act(() => { useTacticStore.setState({ currentTime: time, currentKeyframe: null }) })
+      projectedTimes.add(useTacticStore.getState().currentTime)
+    }
+    expect(projectedTimes.size).toBe(90)
   }
   expect(route).toHaveBeenCalledTimes(routeCalls)
   expect(slow).toHaveBeenCalledTimes(slowCalls)
@@ -108,6 +136,7 @@ it.each([false, true])('reuses saved route geometry during real timeline scrubs 
   expect(corridor).toHaveBeenCalledTimes(corridorCalls)
   expect(solver).toHaveBeenCalledTimes(solverCalls)
   expect(timedSolver).toHaveBeenCalledTimes(timedSolverCalls)
+  expect(shield).toHaveBeenCalledTimes(shieldCalls)
   expect(container.querySelectorAll('.player-token').length).toBe(6)
   act(() => {
     const document = structuredClone(useTacticStore.getState().document)
@@ -120,4 +149,5 @@ it.each([false, true])('reuses saved route geometry during real timeline scrubs 
   expect(slow.mock.calls.length).toBeGreaterThan(slowCalls)
   expect(classification.mock.calls.length).toBeGreaterThan(classificationCalls)
   expect(corridor.mock.calls.length).toBeGreaterThan(corridorCalls)
+  if (geo) expect(shield.mock.calls.length).toBeGreaterThan(shieldCalls)
 })

@@ -23,9 +23,10 @@ describe('rule assistance', () => {
   })
   it('uses the configured directional default matchup matrix', () => {
     expect(createDefaultDocument().rulesSnapshot.matchups).toEqual({
-      water: { water: 1, fire: -2, ice: 1 },
-      fire: { water: 0, fire: 0, ice: 1 },
-      ice: { water: -1, fire: 0, ice: 1 },
+      water: { water: 1, fire: -2, ice: 1, geo: -1 },
+      fire: { water: 0, fire: 0, ice: 1, geo: 1 },
+      ice: { water: -1, fire: 0, ice: 1, geo: 0 },
+      geo: { water: 0, fire: -1, ice: 1, geo: 0 },
     })
   })
 

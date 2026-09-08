@@ -4,7 +4,6 @@ export const BASIC_ROLE_IDS = ['water', 'fire', 'ice', 'electro', 'geo', 'anemo'
 
 const extraRoleLabels = {
   electro: { label: '雷', shortLabel: '雷' },
-  geo: { label: '岩', shortLabel: '岩' },
   anemo: { label: '风', shortLabel: '风' },
 }
 
@@ -13,7 +12,7 @@ export function isBasicRoleId(value: unknown): value is BasicRoleId {
 }
 
 function isSimulationRole(role: BasicRoleId): role is RoleId {
-  return role === 'water' || role === 'fire' || role === 'ice'
+  return role === 'water' || role === 'fire' || role === 'ice' || role === 'geo'
 }
 
 export function effectiveBasicRole(document: TacticDocumentV1, player: PlayerState): BasicRoleId {

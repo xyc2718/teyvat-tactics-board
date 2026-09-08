@@ -22,6 +22,7 @@ import { analyzeDocumentIceQHits, doesEZoneSlowMove, evaluateQDistanceEffect, pr
 import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from './passThreat'
 import { cooldownRemainingText, qCooldownSequenceConflicts } from './qCooldown'
 import { evaluateShotActionPressure, shotPressureComparison, shotPressureModeLabel, shotPressureSummary } from './shotPressure'
+import { analyzeActionGeoShield, geoShieldPassSummary, geoShieldShotSummary } from './geoShield'
 
 function clampRating(value: number): Exclude<MatchupRating, null> {
   return Math.max(-2, Math.min(2, Math.round(value))) as Exclude<MatchupRating, null>
@@ -136,7 +137,7 @@ export function evaluateMatchup(
   return { attackerId, defenderId, base, final, appliedModifiers, facts }
 }
 
-function passWarnings(document: TacticDocumentV1, action: PassAction): RuleWarning[] {
+function passWarnings(document: TacticDocumentV1, action: PassAction, hasShieldRisk = false): RuleWarning[] {
   const rules = document.rulesSnapshot
   const length = pathLength(action.path)
   const startFrame = projectFrame(document, action.startTime)
@@ -164,8 +165,10 @@ function passWarnings(document: TacticDocumentV1, action: PassAction): RuleWarni
       {
         id: `pass-safe-${action.id}`,
         severity: 'info',
-        title: '安全距离传球',
-        detail: `${length.toFixed(2)} 格 ≤ ${rules.passing.safeDistance} 格，按当前规则不会被截断。`,
+        title: hasShieldRisk ? '普通截球安全距离' : '安全距离传球',
+        detail: hasShieldRisk
+          ? `${length.toFixed(2)} 格 ≤ ${rules.passing.safeDistance} 格，免疫普通截球，但线路仍有岩护罩风险。`
+          : `${length.toFixed(2)} 格 ≤ ${rules.passing.safeDistance} 格，按当前规则不会被截断。`,
         actionId: action.id,
       },
     ]
@@ -291,7 +294,26 @@ export function evaluateWarnings(document: TacticDocumentV1): RuleWarning[] {
   const eByPlayer = new Map<string, Array<Extract<(typeof document.actions)[number], { type: 'eZone' }>>>()
 
   for (const action of document.actions) {
-    if (action.type === 'pass') warnings.push(...passWarnings(document, action))
+    if (action.type === 'pass' || action.type === 'loosePass' || action.type === 'shoot') {
+      const shield = analyzeActionGeoShield(document, action)
+      if (action.type === 'pass') warnings.push(...passWarnings(document, action, shield.passSegments.length > 0))
+      if (shield.passSegments.length > 0) warnings.push({
+        id: `geo-shield-pass-${action.id}`,
+        severity: 'warning',
+        title: `${action.type === 'loosePass' ? '空传' : '传球'}线路有岩护罩风险`,
+        detail: `${geoShieldPassSummary(shield.passSegments, document.initialScene.players)}。冻结时仍可原地挡球；仅为可达性提示，不自动改变球权。`,
+        actionId: action.id,
+        playerIds: [...new Set([action.actorId, ...shield.passSegments.flatMap((segment) => segment.opponentIds)])],
+      })
+      if (shield.shot) warnings.push({
+        id: `geo-shield-shot-${action.id}`,
+        severity: 'warning',
+        title: '岩可抵达射门线路',
+        detail: `${geoShieldShotSummary(shield.shot)}。从射门起始时刻估算；此护罩提示独立于原有最早受击窗口，不改变其颜色。`,
+        actionId: action.id,
+        playerIds: [action.actorId, shield.shot.defenderId],
+      })
+    }
     if (action.type === 'shoot') warnings.push(...shotWarnings(document, action))
     if (action.type === 'qMove') {
       const list = qByPlayer.get(action.actorId) ?? []

@@ -3,7 +3,7 @@ import { normalizeAngle } from '../domain/geometry/geometry'
 import type { TacticDocumentV1 } from '../domain/model/types'
 import { BASIC_ROLE_IDS } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
-import { defaultRules } from '../domain/rules/defaultRules'
+import { defaultRules, ROLE_IDS } from '../domain/rules/defaultRules'
 import { moveTimingWouldCycle } from '../domain/timeline/moveTimingDependencies'
 import { resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { instantQActionAtKeyframe } from '../domain/timeline/playerKeyframes'
@@ -19,7 +19,7 @@ const nonNegative = finiteNumber.nonnegative()
 const positive = finiteNumber.positive()
 const vec2Schema = z.object({ x: finiteNumber, y: finiteNumber })
 const teamSchema = z.enum(['blue', 'red'])
-const roleSchema = z.enum(['water', 'fire', 'ice'])
+const roleSchema = z.enum(ROLE_IDS)
 const ratingSchema = z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2), z.null()])
 
 const playerSchema = z.object({
@@ -185,6 +185,7 @@ const roleRuleSchema = z.object({
     effectiveDuration: nonNegative,
     effectiveSeparationLoss: nonNegative,
   }).optional(),
+  shield: z.object({ radius: positive }).strict().optional(),
   e: z.object({
     radius: positive,
     duration: nonNegative,
@@ -196,11 +197,25 @@ const roleRuleSchema = z.object({
   ...role,
   q: {
     ...role.q,
-    fixedDistance: role.q.fixedDistance ?? role.id === 'fire',
+    fixedDistance: role.q.fixedDistance ?? (role.id === 'fire' || role.id === 'geo'),
   },
 }))
 
-const matchupRowSchema = z.object({ water: ratingSchema, fire: ratingSchema, ice: ratingSchema })
+function matchupRowSchema(role: 'water' | 'fire' | 'ice') {
+  return z.object({
+    water: ratingSchema,
+    fire: ratingSchema,
+    ice: ratingSchema,
+    geo: ratingSchema.default(defaultRules.matchups[role].geo),
+  })
+}
+
+const geoMatchupRowSchema = z.object({
+  water: ratingSchema.default(defaultRules.matchups.geo.water),
+  fire: ratingSchema.default(defaultRules.matchups.geo.fire),
+  ice: ratingSchema.default(defaultRules.matchups.geo.ice),
+  geo: ratingSchema.default(defaultRules.matchups.geo.geo),
+})
 
 const rulesSchema = z.object({
   version: z.string().min(1).max(80),
@@ -226,8 +241,18 @@ const rulesSchema = z.object({
     innerRed: positive,
     interruptedByAttack: z.boolean(),
   }),
-  roles: z.object({ water: roleRuleSchema, fire: roleRuleSchema, ice: roleRuleSchema }),
-  matchups: z.object({ water: matchupRowSchema, fire: matchupRowSchema, ice: matchupRowSchema }),
+  roles: z.object({
+    water: roleRuleSchema,
+    fire: roleRuleSchema,
+    ice: roleRuleSchema,
+    geo: roleRuleSchema.default(() => structuredClone(defaultRules.roles.geo)),
+  }),
+  matchups: z.object({
+    water: matchupRowSchema('water'),
+    fire: matchupRowSchema('fire'),
+    ice: matchupRowSchema('ice'),
+    geo: geoMatchupRowSchema.default(() => ({ ...defaultRules.matchups.geo })),
+  }),
   modifiers: z.array(
     z.object({
       id: z.string().min(1).max(100),

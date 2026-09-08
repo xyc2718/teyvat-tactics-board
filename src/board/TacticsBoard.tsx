@@ -5,6 +5,7 @@ import { compilePath } from '../domain/geometry/compiledPath'
 import { goalOpening } from '../domain/geometry/field'
 import { passIsDropped } from '../domain/model/passFlight'
 import { basicRoleDisplay, basicRoleRule, effectiveBasicRole } from '../domain/model/basicRoles'
+import { analyzeActionGeoShield, GEO_SHIELD_LABELS, geoShieldPassSummary, geoShieldShotSummary, type GeoShieldSegment, type GeoShieldShotEvaluation } from '../domain/rules/geoShield'
 import {
   buildPassCorridor,
   classifyPassThreat,
@@ -122,6 +123,9 @@ function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, 
   const eZoneSlowSegments = moveAction ? eZoneSlowSegmentsForMove(document, moveAction) : []
   const statusSlowSegments = moveAction ? statusSlowSegmentsForMove(document, moveAction) : []
   const shotPressure = action.type === 'shoot' ? evaluateShotActionPressure(document, action) : null
+  const geoShield = action.type === 'pass' || action.type === 'loosePass' || action.type === 'shoot'
+    ? analyzeActionGeoShield(document, action, path)
+    : null
   const passFrame = action.type === 'pass' ? projectFrame(document, action.startTime) : null
   const passer = action.type === 'pass' ? passFrame?.players.find((player) => player.id === action.actorId) : null
   const passSegments = action.type === 'pass' && passer && passFrame
@@ -134,7 +138,7 @@ function deriveActionGeometry(document: TacticDocumentV1, action: TacticAction, 
   return {
     path, qEffect, moveAction, renderedPath, waterBoosts, receiveBoosts,
     eZoneSlowSegments, statusSlowSegments, shotPressure,
-    passSegments, passCorridor, passLanding,
+    passSegments, passCorridor, passLanding, geoShield,
   }
 }
 
@@ -206,7 +210,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const toolActor = resolveToolActor(tool, selectedPlayer, frame, rules)
   const actionActor = toolNeedsActor(tool) ? toolActor : selectedPlayer
   const selectedPass = selection?.kind === 'action'
-    ? document.actions.find((action) => action.id === selection.id && action.type === 'pass')
+    ? document.actions.find((action) => action.id === selection.id && (action.type === 'pass' || action.type === 'loosePass'))
     : undefined
   const selectedAction = selection?.kind === 'action'
     ? document.actions.find((action) => action.id === selection.id)
@@ -227,7 +231,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
 
   useEffect(() => {
     const nextPassActionIds = new Set(
-      document.actions.filter((action) => action.type === 'pass').map((action) => action.id),
+      document.actions.filter((action) => action.type === 'pass' || action.type === 'loosePass').map((action) => action.id),
     )
     const addedPass = [...nextPassActionIds].some((actionId) => !knownPassActionIdsRef.current.has(actionId))
     knownPassActionIdsRef.current = nextPassActionIds
@@ -419,7 +423,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
     if (!elevated && !(isPlaying ? isCurrent : atJoint || remainingPlannedPath)) return null
     const geometry = actionGeometry.get(action.id)
     if (!geometry) return null
-    const { path, qEffect, moveAction, renderedPath, waterBoosts, receiveBoosts, eZoneSlowSegments, statusSlowSegments, shotPressure, passSegments, passCorridor, passLanding } = geometry
+    const { path, qEffect, moveAction, renderedPath, waterBoosts, receiveBoosts, eZoneSlowSegments, statusSlowSegments, shotPressure, passSegments, passCorridor, passLanding, geoShield } = geometry
     return (
       <g
         key={action.id}
@@ -428,6 +432,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         pointerEvents={elevated ? 'none' : undefined}
         onPointerDown={(event) => { event.stopPropagation(); select({ kind: 'action', id: action.id }) }}
       >
+        {geoShield && geoShield.passSegments.length > 0 && <GeoShieldRoute segments={geoShield.passSegments} players={document.initialScene.players} />}
         {action.type === 'pass'
           ? <PassThreatLines
               segments={passSegments}
@@ -455,7 +460,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           <title>未接到 · 球在此落地</title>
         </g>}
         {document.view.analysis && action.type === 'qMove' && <QAnalysis action={action} document={document} scale={SCALE} />}
-        {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} />}
+        {action.type === 'shoot' && shotPressure && <ShotPressureLabel path={path} evaluation={shotPressure} shield={geoShield?.shot ?? null} />}
         {elevated && action.type !== 'shoot' && action.type !== 'loosePass' && !(action.type === 'pass' && action.targetPlayerId) && !(action.type === 'move' && (action.targetPlayerId || action.ballTarget)) && path.map((point, index) => (
           <g
             key={`${action.id}-handle-${index}`}
@@ -555,7 +560,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
   const zoomSurfacePercent = Math.max(1, boardZoom) * 100
   const boardRenderPercent = Math.min(1, boardZoom) * 100
   const hasPassLegendContext = boardMode === 'simulation'
-    && Boolean(tool === 'pass' || selectedPass || document.actions.some((action) => action.type === 'pass'))
+    && Boolean(tool === 'pass' || tool === 'loosePass' || selectedPass || document.actions.some((action) => action.type === 'pass' || action.type === 'loosePass'))
   const showsSimulationAnalysis = boardMode === 'simulation' && document.view.analysis
   const basicToolName = tool === 'move' ? '移动箭头' : toolLabels[tool].label
   const basicToolPrompt = isRangeInspectionTool(tool)
@@ -921,16 +926,46 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
 function ShotPressureLabel({
   path,
   evaluation,
+  shield,
 }: {
   path: Vec2[]
   evaluation: NonNullable<ReturnType<typeof evaluateShotActionPressure>>
+  shield: GeoShieldShotEvaluation | null
 }) {
   const anchor = pointAlongPath(path, 0.52)
-  return <g className={`shot-pressure-label ${evaluation.isRisk ? 'risk' : 'safe'}`} pointerEvents="none">
-    <rect x={anchor.x * SCALE - 91} y={anchor.y * SCALE - 30} width="182" height="17" rx="6" />
-    <text x={anchor.x * SCALE} y={anchor.y * SCALE - 19} textAnchor="middle">{shotPressureSummary(evaluation)}</text>
+  return <g pointerEvents="none">
+    <g className={`shot-pressure-label ${evaluation.isRisk ? 'risk' : 'safe'}`}>
+      <rect x={anchor.x * SCALE - 91} y={anchor.y * SCALE - 30} width="182" height="17" rx="6" />
+      <text x={anchor.x * SCALE} y={anchor.y * SCALE - 19} textAnchor="middle">{shotPressureSummary(evaluation)}</text>
+    </g>
+    {shield && <g className="geo-shield-shot-label" aria-label="岩护罩射门提示">
+      <rect x={anchor.x * SCALE - 108} y={anchor.y * SCALE - 10} width="216" height="17" rx="6" />
+      <text x={anchor.x * SCALE} y={anchor.y * SCALE + 1} textAnchor="middle">{geoShieldShotSummary(shield)}</text>
+      <title>独立护罩风险；不改变原有最早受击窗口，未自动判定挡球。</title>
+    </g>}
   </g>
 }
+
+const GeoShieldRoute = memo(function GeoShieldRoute({ segments, players }: { segments: GeoShieldSegment[]; players: PlayerState[] }) {
+  return <g className="geo-shield-route" aria-label="岩护罩传球风险" pointerEvents="none">
+    {segments.map((segment, index) => {
+      const title = `${geoShieldPassSummary([segment], players)} · 路程 ${segment.startDistance.toFixed(2)}–${segment.endDistance.toFixed(2)} 格`
+      const point = segment.path[0]
+      // A tangent or exact arrival at the final endpoint is still a risk.
+      // Butt-capped zero-length polylines are invisible, so keep a point mark.
+      if (point && segment.endDistance - segment.startDistance <= 1e-9) return <circle
+        key={`${segment.kind}-${index}`}
+        cx={point.x * SCALE} cy={point.y * SCALE} r="6"
+        className={`geo-shield-contact geo-shield-${segment.kind}`}
+      ><title>{title}</title></circle>
+      return <polyline
+        key={`${segment.kind}-${index}`}
+        points={pointsAttribute(segment.path)}
+        className={`geo-shield-segment geo-shield-${segment.kind}`}
+      ><title>{title}</title></polyline>
+    })}
+  </g>
+})
 
 const LoosePassMarkers = memo(function LoosePassMarkers({ action }: { action: LoosePassAction }) {
   const last = action.path.at(-1)
@@ -1007,6 +1042,7 @@ function PassThreatLegend({ onClose }: { onClose: () => void }) {
   return <section className="pass-threat-legend" aria-label="传球威胁图例">
     <div className="pass-threat-legend-items">
       {PASS_THREAT_ORDER.map((level) => <span className="pass-threat-legend-item" key={level}><i className={`threat-${level}`} />{PASS_THREAT_LABELS[level]}</span>)}
+      {(['inPlace', 'reachable'] as const).map((kind) => <span className="pass-threat-legend-item" key={kind}><i className={`geo-shield-${kind}`} />{GEO_SHIELD_LABELS[kind]}</span>)}
     </div>
     <button type="button" onClick={onClose} aria-label="关闭传球威胁图例" title="关闭图例">×</button>
   </section>

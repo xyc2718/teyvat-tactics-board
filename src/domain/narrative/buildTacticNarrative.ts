@@ -5,6 +5,7 @@ import { passIsDropped, passIsReceived } from '../model/passFlight'
 import { evaluateWarnings } from '../rules/evaluateRules'
 import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from '../rules/passThreat'
 import { evaluateShotActionPressure, shotPressureComparison, shotPressureSummary } from '../rules/shotPressure'
+import { analyzeActionGeoShield, geoShieldPassSummary, geoShieldShotSummary } from '../rules/geoShield'
 import { actionEndTime } from '../timeline/durations'
 import { waterQMoveBoost } from '../timeline/movementEffects'
 import { analyzeDocumentIceQHits, evaluateQDistanceEffect, projectedMovePath, projectFrame } from '../timeline/projectFrame'
@@ -102,16 +103,23 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
           ? `${receiver} 在 ${actionEndTime(action).toFixed(2)}s 接球`
           : '球到达落点后成为自由球'
       const traveledDistance = Math.min(pathLength(action.path), document.rulesSnapshot.passing.maxDistance)
-      return `${timing}，${name} 向 ${receiver} 传球，实际路线累计 ${traveledDistance.toFixed(2)} 格；${outcome}；最高威胁为“${PASS_THREAT_LABELS[threat]}”。`
+      const shield = analyzeActionGeoShield(document, action)
+      const shieldText = shield.passSegments.length > 0 ? `；${geoShieldPassSummary(shield.passSegments, startFrame.players)}` : ''
+      return `${timing}，${name} 向 ${receiver} 传球，实际路线累计 ${traveledDistance.toFixed(2)} 格；${outcome}；普通截球最高威胁为“${PASS_THREAT_LABELS[threat]}”${shieldText}。`
     }
-    case 'loosePass':
-      return `${timing}，${name} 空传，反弹前后累计 ${pathLength(action.path).toFixed(2)} 格；${action.flightOutcome === 'goal' ? '进入球门后停止' : action.flightOutcome === 'pickedUp' ? '球被捡起并随持球者移动' : '停下后成为可捡起的自由球'}。`
+    case 'loosePass': {
+      const shield = analyzeActionGeoShield(document, action)
+      const shieldText = shield.passSegments.length > 0 ? `；${geoShieldPassSummary(shield.passSegments, startFrame.players)}` : ''
+      return `${timing}，${name} 空传，反弹前后累计 ${pathLength(action.path).toFixed(2)} 格；${action.flightOutcome === 'goal' ? '进入球门后停止' : action.flightOutcome === 'pickedUp' ? '球被捡起并随持球者移动' : '停下后成为可捡起的自由球'}${shieldText}。`
+    }
     case 'shoot': {
       const zone = actor ? getShootZone(actor.position, actor.team, document.rulesSnapshot.field.width, document.rulesSnapshot.field.height, document.rulesSnapshot.field.smallPenaltyRadius, document.rulesSnapshot.field.largePenaltyRadius) : 'outside'
       const shot = endFrame.shots.find((candidate) => candidate.actionId === action.id)
       const pressure = evaluateShotActionPressure(document, action)
       const pressureText = pressure ? `；${shotPressureSummary(pressure)}，${shotPressureComparison(pressure)}` : ''
-      return `${timing}，${name} 在${zone === 'inner' ? '小禁区' : zone === 'outer' ? '大禁区' : '禁区外'}进行${action.charge === 'yellow' ? '黄' : '红'}蓄力射门；${shot?.interrupted ? '蓄力被攻击打断' : shot?.completed ? '蓄力完成' : '当前规则下未形成有效射门'}${pressureText}。`
+      const shield = analyzeActionGeoShield(document, action).shot
+      const shieldText = shield ? `；${geoShieldShotSummary(shield)}（独立护罩提示）` : ''
+      return `${timing}，${name} 在${zone === 'inner' ? '小禁区' : zone === 'outer' ? '大禁区' : '禁区外'}进行${action.charge === 'yellow' ? '黄' : '红'}蓄力射门；${shot?.interrupted ? '蓄力被攻击打断' : shot?.completed ? '蓄力完成' : '当前规则下未形成有效射门'}${pressureText}${shieldText}。`
     }
     case 'eZone': {
       const eRule = actor ? document.rulesSnapshot.roles[actor.role].e : undefined

@@ -89,7 +89,7 @@ describe('App shell', () => {
     expect(container.querySelectorAll('.player-token')).toHaveLength(6)
   })
 
-  it('uses each effective original role saved range and omits unavailable ranges without inspection writes', () => {
+  it('uses each supported effective role saved range and omits unavailable ranges without inspection writes', () => {
     const document = createDefaultDocument()
     document.rulesSnapshot.roles.fire.attackRadius = 2.25
     document.rulesSnapshot.roles.fire.q.maxDistance = 4.25
@@ -103,7 +103,11 @@ describe('App shell', () => {
 
     for (const tool of ['攻击范围', '打击范围']) {
       fireEvent.click(screen.getByRole('button', { name: tool }))
-      for (const [name, label] of [['蓝方 1', '雷'], ['红方 1', '岩'], ['红方 2', '风']]) {
+      fireEvent.keyDown(screen.getByRole('button', { name: `红方 1，岩，可查看${tool}` }), { key: 'Enter' })
+      expect(screen.queryByText(/范围参数暂未提供/)).not.toBeInTheDocument()
+      if (tool === '攻击范围') expect(container.querySelector('.attack-range')).toHaveAttribute('r', '75')
+      else expect(container.querySelector('.strike-range')).toHaveAttribute('r', '195')
+      for (const [name, label] of [['蓝方 1', '雷'], ['红方 2', '风']]) {
         fireEvent.keyDown(screen.getByRole('button', { name: `${name}，${label}，范围参数暂未提供` }), { key: 'Enter' })
         expect(screen.getByText(`${label}的范围参数暂未提供`)).toBeInTheDocument()
         expect(container.querySelector('.analysis-ranges')).not.toBeInTheDocument()
@@ -1046,7 +1050,9 @@ describe('App shell', () => {
     expect(container.querySelector('.pass-preview-max')).toBeInTheDocument()
     expect(container.querySelectorAll('.pass-preview-segment')).toHaveLength(0)
     const legend = screen.getByLabelText('传球威胁图例')
-    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(6)
+    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(8)
+    expect(legend.querySelector('.geo-shield-inPlace')).toBeInTheDocument()
+    expect(legend.querySelector('.geo-shield-reachable')).toBeInTheDocument()
     expect(legend.parentElement).toHaveClass('board-shell')
     expect(board.closest('.board-stage')).not.toContainElement(legend)
 

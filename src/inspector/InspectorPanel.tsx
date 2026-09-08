@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useState } from 'react'
 import { normalizeAngle, pathLength } from '../domain/geometry/geometry'
-import type { MoveAction, TacticDocumentV1, TimingTargetReference, WaitAction } from '../domain/model/types'
+import type { MoveAction, RoleId, TacticDocumentV1, TimingTargetReference, WaitAction } from '../domain/model/types'
 import { passIsDropped, passIsReceived } from '../domain/model/passFlight'
 import { evaluateWarnings } from '../domain/rules/evaluateRules'
+import { ROLE_IDS } from '../domain/rules/defaultRules'
+import { analyzeActionGeoShield, geoShieldPassSummary, geoShieldShotSummary } from '../domain/rules/geoShield'
 import { evaluatePlayerSituation, type BallArrival } from '../domain/rules/playerSituation'
 import {
   evaluateShotActionPressure,
@@ -46,6 +48,13 @@ export function InspectorPanel() {
     () => selectedAction?.type === 'shoot' ? evaluateShotActionPressure(document, selectedAction) : null,
     [document, selectedAction],
   )
+  const selectedGeoShield = useMemo(() => selectedAction && (selectedAction.type === 'pass' || selectedAction.type === 'loosePass' || selectedAction.type === 'shoot')
+    ? analyzeActionGeoShield(document, selectedAction)
+    : null, [document, selectedAction])
+  const selectedQActor = selectedAction?.type === 'qMove'
+    ? document.initialScene.players.find((player) => player.id === selectedAction.actorId)
+    : undefined
+  const selectedQRule = selectedQActor ? document.rulesSnapshot.roles[selectedQActor.role].q : undefined
   const selectedPathLength = useMemo(() => selectedAction && 'path' in selectedAction
     ? pathLength(selectedAction.type === 'move' ? projectedMovePath(document, selectedAction) : selectedAction.path)
     : null, [document, selectedAction])
@@ -86,8 +95,8 @@ export function InspectorPanel() {
           <section className="inspector-section">
             <h3>角色状态</h3>
             <label className="field-row"><span>职业</span>
-              <select value={selectedPlayer.role} onChange={(event) => setRole(selectedPlayer.id, event.target.value as 'water' | 'fire' | 'ice')}>
-                <option value="water">水灵</option><option value="fire">蛮牛</option><option value="ice">霜役</option>
+              <select value={selectedPlayer.role} onChange={(event) => setRole(selectedPlayer.id, event.target.value as RoleId)}>
+                {ROLE_IDS.map((role) => <option key={role} value={role}>{document.rulesSnapshot.roles[role].label}</option>)}
               </select>
             </label>
             <label className="field-row"><span>队伍</span>
@@ -108,6 +117,7 @@ export function InspectorPanel() {
               {document.rulesSnapshot.roles[selectedPlayer.role].e && <Metric label="E 剩余" value={`${(frame.cooldowns[selectedPlayer.id]?.e ?? 0).toFixed(1)}s`} />}
               <Metric label="攻击半径" value={`${document.rulesSnapshot.roles[selectedPlayer.role].attackRadius} 格`} />
               <Metric label="Q 距离" value={`${document.rulesSnapshot.roles[selectedPlayer.role].q.maxDistance} 格`} />
+              {selectedPlayer.role === 'geo' && document.rulesSnapshot.roles.geo.shield && <Metric label="护罩半径" value={`${document.rulesSnapshot.roles.geo.shield.radius} 格`} />}
               <Metric label="坐标" value={`${selectedPlayer.position.x.toFixed(1)}, ${selectedPlayer.position.y.toFixed(1)}`} />
             </div>
           </section>
@@ -174,7 +184,9 @@ export function InspectorPanel() {
             {selectedAction.type === 'wait' && selectedAction.actorId && <WaitTimingEditor key={selectedAction.id} action={selectedAction} document={document} />}
             {selectedAction.type === 'move' && !selectedAction.targetPlayerId && !selectedAction.ballTarget && selectedAction.curveControl && <p className="callout">拖动球场上的青色曲线控制点调整弧度；{selectedAction.timingConstraint ? '结束时间不变，距离按沿途实际速度更新。' : '动作时长会随曲线长度自动更新。'}</p>}
             {selectedAction.type === 'move' && selectedAction.targetPlayerId && <p className="callout">贴身跟随 {document.initialScene.players.find((player) => player.id === selectedAction.targetPlayerId)?.name ?? selectedAction.targetPlayerId}；结束时间同步目标动作，追上后保持约 {selectedAction.followGap?.toFixed(2)} 格攻击间距。</p>}
-            {selectedAction.type === 'qMove' && <p className="callout">拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。</p>}
+            {selectedAction.type === 'qMove' && <p className="callout">{selectedQRule?.fixedDistance
+              ? `拖动白色控制点调整方向；Q 固定 ${selectedQRule.maxDistance} 格，仅在球场边界截短。`
+              : '拖动球场上的白色控制点，可缩短或弯曲路径；路径会自动限制在职业 Q 最大距离内。'}</p>}
             {(selectedAction.type === 'move' || selectedAction.type === 'qMove') && selectedAction.ballTarget && <div className="pickup-constraint-card">
               <strong>{selectedAction.type === 'qMove' ? 'Q 穿球约束' : '追踪自由球'}</strong>
               <p>{selectedPickup
@@ -188,6 +200,10 @@ export function InspectorPanel() {
               <select value={selectedAction.charge} onChange={(event) => setShotCharge(selectedAction.id, event.target.value as 'yellow' | 'red')}><option value="yellow">黄色蓄力</option><option value="red">红色满蓄</option></select>
             </label>}
             {selectedAction.type === 'shoot' && selectedShotPressure && <ShotPressureCard evaluation={selectedShotPressure} />}
+            {selectedGeoShield?.shot && <div className="geo-shield-card" aria-label="岩护罩射门提示">
+              <strong>{geoShieldShotSummary(selectedGeoShield.shot)}</strong>
+              <small>从射门开始时刻估算；独立于最早受击窗口，不自动判定挡球。</small>
+            </div>}
             {selectedAction.type === 'pass' && <p className="callout">
               {selectedAction.targetPlayerId ? '球持续朝接球者当前位置转向；' : ''}
               {passIsDropped(selectedAction, document.rulesSnapshot)
@@ -195,11 +211,15 @@ export function InspectorPanel() {
                 : passIsReceived(selectedAction, document.rulesSnapshot)
                   ? `接球时刻 ${(selectedAction.startTime + selectedAction.duration).toFixed(2)}s。`
                   : '到达指定落点后成为自由球。'}
-              {' '}按实际路线累计距离计算，≤ {document.rulesSnapshot.passing.safeDistance} 格为安全段，最多飞行 {document.rulesSnapshot.passing.maxDistance} 格。
+              {' '}按实际路线累计距离计算，≤ {document.rulesSnapshot.passing.safeDistance} 格免疫普通截球，但仍可能被岩护罩阻挡；最多飞行 {document.rulesSnapshot.passing.maxDistance} 格。
             </p>}
             {selectedAction.type === 'receive' && selectedAction.sourceActionId && <p className="callout">此接球节点由对应传球自动生成，时间随传球起点和接球队员轨迹更新。</p>}
             {selectedAction.type === 'receive' && selectedAction.pickupActionId && <p className="callout">此捡球节点由跑动或 Q 与球的实际接触自动生成，时间不可直接修改。跳到该节点后可立即传球。</p>}
             {selectedAction.type === 'loosePass' && <p className="callout">按指定方向飞行，撞墙反弹不重置速度或剩余路程。{selectedAction.flightOutcome === 'pickedUp' ? '球已在途中被捡起，飞行在接触时刻结束；之后随持球者移动。' : selectedAction.flightOutcome === 'goal' ? '球进入球门后停止。' : '飞行结束后停在终点，等待跑动或 Q 捡球。'}空传不使用普通传球的安全区判定。</p>}
+            {selectedGeoShield && selectedGeoShield.passSegments.length > 0 && <div className="geo-shield-card" aria-label="岩护罩传球提示">
+              <strong>{geoShieldPassSummary(selectedGeoShield.passSegments, document.initialScene.players)}</strong>
+              <small>蓝色实线：原地护罩；蓝紫虚线：跑动 / Q 可达护罩。冻结时仍可原地挡球；提示不会自动改变球权。</small>
+            </div>}
             <button className="danger-button" onClick={() => { deleteAction(selectedAction.id); select(null) }}>删除动作</button>
           </section>
         </div>

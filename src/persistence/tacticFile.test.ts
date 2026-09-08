@@ -2,10 +2,105 @@ import { describe, expect, it } from 'vitest'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import { BASIC_ROLE_IDS, effectiveBasicRole } from '../domain/model/basicRoles'
 import { MAX_PASS_PATH_POINTS } from '../domain/model/passFlight'
-import { parseTactic, serializeTactic } from './tacticFile'
+import { defaultRules } from '../domain/rules/defaultRules'
+import { loadDraft, parseTactic, saveDraft, serializeTactic } from './tacticFile'
 import { createBallPickupAction, normalizeBallActions } from '../domain/timeline/looseBall'
 
 describe('tactic file boundary', () => {
+  it('adds only missing Geo rules and matchups to a legacy V1 snapshot, including draft recovery', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.roles.fire.q.maxDistance = 4.6
+    document.rulesSnapshot.roles.water.attackRadius = 0
+    document.rulesSnapshot.roles.water.attackInnerRadius = 0
+    document.rulesSnapshot.passing.ballSpeed = 8
+    document.rulesSnapshot.matchups.water.fire = null
+    document.rulesSnapshot.matchups.ice.water = 0
+    document.basicPlayerRoles = { 'blue-water': 'geo' }
+    document.actions.push({ id: 'saved-wait', type: 'wait', actorId: 'blue-fire', startTime: 1, duration: 2 })
+    const expected = { ...structuredClone(document), meta: { ...document.meta, updatedAt: expect.any(String) } }
+    Reflect.deleteProperty(document.rulesSnapshot.roles, 'geo')
+    Reflect.deleteProperty(document.rulesSnapshot.matchups, 'geo')
+    for (const row of Object.values(document.rulesSnapshot.matchups)) Reflect.deleteProperty(row, 'geo')
+
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document).toEqual(expected)
+    saveDraft(document)
+    expect(loadDraft()).toEqual(expected)
+    parsed.document.rulesSnapshot.roles.geo.q.maxDistance = 5
+    parsed.document.rulesSnapshot.roles.geo.shield!.radius = 2
+    parsed.document.rulesSnapshot.matchups.geo.water = 2
+    expect(defaultRules.roles.geo.q.maxDistance).toBe(2.4)
+    expect(defaultRules.roles.geo.shield?.radius).toBe(1)
+    expect(defaultRules.matchups.geo.water).toBe(0)
+    const second = parseTactic(serializeTactic(document))
+    if (!second.ok) throw Error(second.error)
+    expect(second.document).toEqual(expected)
+  })
+
+  it('fills partial Geo matchup defaults while preserving explicit neutral and null values', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.matchups.geo.water = null
+    document.rulesSnapshot.matchups.geo.fire = 0
+    document.rulesSnapshot.matchups.fire.geo = null
+    Reflect.deleteProperty(document.rulesSnapshot.matchups.geo, 'ice')
+    Reflect.deleteProperty(document.rulesSnapshot.matchups.geo, 'geo')
+    Reflect.deleteProperty(document.rulesSnapshot.matchups.water, 'geo')
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document.rulesSnapshot.matchups).toMatchObject({
+      water: { geo: -1 }, fire: { geo: null }, ice: { geo: 0 },
+      geo: { water: null, fire: 0, ice: 1, geo: 0 },
+    })
+    const roundTrip = parseTactic(serializeTactic(parsed.document))
+    if (!roundTrip.ok) throw Error(roundTrip.error)
+    expect(roundTrip.document.rulesSnapshot).toEqual(parsed.document.rulesSnapshot)
+  })
+
+  it('round-trips explicit custom Geo parameters, player roles and independent basic identities', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.roles.geo = {
+      id: 'geo', label: '自定义岩', shortLabel: '岩', attackRadius: 0,
+      q: { kind: 'blink', maxDistance: 3.25, fixedDistance: false, cooldown: 0, duration: 0, turnable: true },
+      shield: { radius: 1.75 },
+    }
+    document.initialScene.players[0]!.role = 'geo'
+    document.stepMarkers[0]!.snapshot = structuredClone(document.initialScene)
+    document.basicPlayerRoles = { 'blue-water': 'electro' }
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document).toEqual({ ...document, meta: { ...document.meta, updatedAt: expect.any(String) } })
+    delete document.rulesSnapshot.roles.geo.shield
+    const withoutShield = parseTactic(serializeTactic(document))
+    if (!withoutShield.ok) throw Error(withoutShield.error)
+    expect(withoutShield.document.rulesSnapshot.roles.geo.shield).toBeUndefined()
+  })
+
+  it.each([
+    ['role', null], ['role', {}], ['shield', null], ['shield', {}],
+    ['shield', { radius: 0 }], ['shield', { radius: -1 }], ['shield', { radius: Infinity }],
+    ['shield', { radius: '1' }], ['shield', { radius: 1, cooldown: 0 }],
+    ['row', null], ['row', []], ['rating', 3], ['rating', '0'],
+  ])('rejects malformed explicit Geo %s data without defaulting it (%j)', (field, value) => {
+    const document = createDefaultDocument()
+    if (field === 'role') Object.assign(document.rulesSnapshot.roles, { geo: value })
+    if (field === 'shield') Object.assign(document.rulesSnapshot.roles.geo, { shield: value })
+    if (field === 'row') Object.assign(document.rulesSnapshot.matchups, { geo: value })
+    if (field === 'rating') Object.assign(document.rulesSnapshot.matchups.geo, { fire: value })
+    const parsed = parseTactic(serializeTactic(document))
+    expect(parsed.ok).toBe(false)
+    if (!parsed.ok) expect(parsed.error).toContain('geo')
+  })
+
+  it('still requires the original role and matchup data in a legacy file', () => {
+    const document = createDefaultDocument()
+    Reflect.deleteProperty(document.rulesSnapshot.matchups.water, 'fire')
+    expect(parseTactic(serializeTactic(document)).ok).toBe(false)
+    document.rulesSnapshot.matchups.water.fire = -2
+    Reflect.deleteProperty(document.rulesSnapshot.roles, 'ice')
+    expect(parseTactic(serializeTactic(document)).ok).toBe(false)
+  })
+
   it.each([8, 6.5])('preserves legacy/custom ordinary pass calibration %s without adding a loose-pass block', (speed) => {
     const document = createDefaultDocument()
     document.rulesSnapshot.passing.ballSpeed = speed
@@ -84,9 +179,10 @@ describe('tactic file boundary', () => {
     if (!result.ok) expect(result.error).toMatch(/basicPlayerRoles|基础角色/)
   })
 
-  it('rejects new identities when used as simulation player or rule roles', () => {
+  it('rejects unsupported simulation identities and mismatched role-rule IDs', () => {
     const source = createDefaultDocument()
     expect(parseTactic(serializeTactic(source).replace('"role": "water"', '"role": "electro"')).ok).toBe(false)
+    expect(parseTactic(serializeTactic(source).replace('"id": "water"', '"id": "anemo"')).ok).toBe(false)
     expect(parseTactic(serializeTactic(source).replace('"id": "water"', '"id": "geo"')).ok).toBe(false)
   })
 
@@ -330,13 +426,14 @@ describe('tactic file boundary', () => {
     if (result.ok) expect(result.document.staticMoveArrows).toEqual([])
   })
 
-  it('restores fixed fire-Q semantics when importing an older V1 rule snapshot', () => {
+  it('restores fixed Fire/Geo Q semantics when the snapshot omits the distance flag', () => {
     const legacy = createDefaultDocument() as unknown as {
-      rulesSnapshot: { roles: Record<'water' | 'fire' | 'ice', { q: Record<string, unknown> }> }
+      rulesSnapshot: { roles: Record<'water' | 'fire' | 'ice' | 'geo', { q: Record<string, unknown> }> }
     }
     delete legacy.rulesSnapshot.roles.water.q.fixedDistance
     delete legacy.rulesSnapshot.roles.fire.q.fixedDistance
     delete legacy.rulesSnapshot.roles.ice.q.fixedDistance
+    delete legacy.rulesSnapshot.roles.geo.q.fixedDistance
 
     const result = parseTactic(JSON.stringify(legacy))
 
@@ -345,6 +442,7 @@ describe('tactic file boundary', () => {
     expect(result.document.rulesSnapshot.roles.water.q.fixedDistance).toBe(false)
     expect(result.document.rulesSnapshot.roles.fire.q.fixedDistance).toBe(true)
     expect(result.document.rulesSnapshot.roles.ice.q.fixedDistance).toBe(false)
+    expect(result.document.rulesSnapshot.roles.geo.q.fixedDistance).toBe(true)
   })
 
   it('defaults legacy ice-zone speed and Q rules and rejects multipliers above normal', () => {

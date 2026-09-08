@@ -4,6 +4,7 @@ import { parseTactic, serializeTactic } from './tacticFile'
 import {
   createTacticLibrary,
   MAX_TACTIC_SNAPSHOTS,
+  type LibraryBackupV1,
   type StoredTacticRecord,
   type TacticLibraryBackend,
 } from './tacticLibrary'
@@ -36,6 +37,71 @@ function deterministicLibrary(backend = new MemoryBackend()) {
 }
 
 describe('tactic library', () => {
+  it.each(['current', 'snapshot'] as const)('rejects malformed explicit Geo in a backup %s before replacing any library data', async (location) => {
+    const source = deterministicLibrary()
+    await source.library.initialize(createDefaultDocument())
+    await source.library.create(createDefaultDocument())
+    const backup = JSON.parse(await source.library.exportBackup()) as LibraryBackupV1
+    const record = backup.tactics[1]!
+    const invalid = createDefaultDocument()
+    invalid.rulesSnapshot.roles.geo.shield = { radius: 0 }
+    if (location === 'current') record.documentJson = serializeTactic(invalid)
+    else record.snapshots[0]!.documentJson = serializeTactic(invalid)
+    const destination = deterministicLibrary()
+    const existing = createDefaultDocument()
+    existing.meta.title = 'Existing library must survive'
+    await destination.library.initialize(existing)
+    const before = structuredClone(destination.backend.records)
+    const activeBefore = destination.backend.activeId
+
+    await expect(destination.library.importBackup(JSON.stringify(backup))).rejects.toThrow('未修改当前战术库')
+    expect(destination.backend.records).toEqual(before)
+    expect(destination.backend.activeId).toBe(activeBefore)
+  })
+
+  it('migrates legacy Geo defaults and preserves custom Geo through history, copies and full-library backups', async () => {
+    const source = deterministicLibrary()
+    const legacy = createDefaultDocument()
+    legacy.rulesSnapshot.passing.ballSpeed = 8
+    legacy.rulesSnapshot.roles.fire.q.maxDistance = 4
+    legacy.rulesSnapshot.matchups.water.fire = null
+    legacy.basicPlayerRoles = { 'blue-water': 'geo' }
+    const expectedLegacy = structuredClone(legacy)
+    Reflect.deleteProperty(legacy.rulesSnapshot.roles, 'geo')
+    Reflect.deleteProperty(legacy.rulesSnapshot.matchups, 'geo')
+    for (const row of Object.values(legacy.rulesSnapshot.matchups)) Reflect.deleteProperty(row, 'geo')
+    const first = await source.library.initialize(legacy)
+    expect((await source.library.open(first.activeId))?.rulesSnapshot).toEqual(expectedLegacy.rulesSnapshot)
+
+    const custom = createDefaultDocument()
+    custom.initialScene.players[0]!.role = 'geo'
+    custom.stepMarkers[0]!.snapshot = structuredClone(custom.initialScene)
+    custom.rulesSnapshot.roles.geo.shield = { radius: 1.7 }
+    custom.rulesSnapshot.roles.geo.q.maxDistance = 3.2
+    custom.rulesSnapshot.matchups.geo.fire = 0
+    custom.rulesSnapshot.matchups.water.geo = null
+    custom.basicPlayerRoles = { 'blue-water': 'electro' }
+    const second = await source.library.create(custom)
+    const originalRules = structuredClone(custom.rulesSnapshot)
+    custom.meta.notes = 'Updated Geo tactic'
+    custom.rulesSnapshot.roles.geo.shield.radius = 2
+    await source.library.save(second.activeId, custom)
+    const copy = await source.library.duplicate(second.activeId)
+    const destination = deterministicLibrary()
+    await destination.library.importBackup(await source.library.exportBackup())
+    expect((await destination.library.open(first.activeId))?.rulesSnapshot).toEqual(expectedLegacy.rulesSnapshot)
+    expect((await destination.library.open(first.activeId))?.basicPlayerRoles).toEqual(legacy.basicPlayerRoles)
+    const restoredCopy = await destination.library.open(copy!.id)
+    expect(restoredCopy?.rulesSnapshot).toEqual(custom.rulesSnapshot)
+    expect(restoredCopy?.initialScene).toEqual(custom.initialScene)
+    expect(restoredCopy?.basicPlayerRoles).toEqual(custom.basicPlayerRoles)
+    const snapshots = await destination.library.snapshots(second.activeId)
+    const restoredHistory = await destination.library.restore(second.activeId, snapshots.at(-1)!.id)
+    expect(restoredHistory?.rulesSnapshot).toEqual(originalRules)
+    const legacySnapshots = await destination.library.snapshots(first.activeId)
+    expect((await destination.library.restore(first.activeId, legacySnapshots[0]!.id))?.rulesSnapshot).toEqual(expectedLegacy.rulesSnapshot)
+  })
+
   it('preserves Q cooldown source identities in copies, snapshots and full-library backups', async () => {
     const { library } = deterministicLibrary()
     const document = createDefaultDocument()

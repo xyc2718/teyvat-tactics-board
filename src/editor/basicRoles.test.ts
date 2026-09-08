@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BASIC_ROLE_IDS, effectiveBasicRole } from '../domain/model/basicRoles'
+import { BASIC_ROLE_IDS, basicRoleDisplay, basicRoleRule, effectiveBasicRole } from '../domain/model/basicRoles'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import type { BasicRoleId } from '../domain/model/types'
 import * as passReception from '../domain/timeline/passReception'
@@ -119,6 +119,27 @@ describe('basic player role edits', () => {
     const document = useTacticStore.getState().document
     expect(document.basicPlayerRoles).toEqual({ 'blue-water': 'fire', 'red-fire': 'anemo' })
     expect(document.initialScene.players.find((player) => player.id === 'blue-water')?.role).toBe('ice')
+  })
+
+  it('uses real Geo ranges without converting the independent basic override into a simulation role', () => {
+    const state = useTacticStore.getState()
+    state.setBasicPlayerRole('blue-water', 'geo')
+    state.setBoardMode('simulation')
+    expect(useTacticStore.getState().document.initialScene.players[0]!.role).toBe('water')
+    state.setPlayerRole('blue-water', 'fire')
+    state.setBoardMode('basic')
+    const document = useTacticStore.getState().document
+    const role = effectiveBasicRole(document, document.initialScene.players[0]!)
+    expect(role).toBe('geo')
+    const rules = document.rulesSnapshot
+    expect(basicRoleDisplay(role, rules)).toMatchObject({ label: '岩', shortLabel: '岩' })
+    expect(basicRoleRule(role, rules)).toBe(rules.roles.geo)
+    expect(basicRoleRule(role, rules)?.attackRadius).toBe(1.5)
+    expect(rules.roles.geo.attackRadius + rules.roles.geo.q.maxDistance).toBe(3.9)
+    rules.roles.geo.attackRadius = 1.8
+    expect(basicRoleRule(role, rules)?.attackRadius).toBe(1.8)
+    expect(basicRoleRule('electro', rules)).toBeUndefined()
+    expect(basicRoleRule('anemo', rules)).toBeUndefined()
   })
 
   it('round-trips drafts, import, undo and redo with one history entry per role edit', () => {

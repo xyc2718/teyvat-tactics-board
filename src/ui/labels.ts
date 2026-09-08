@@ -5,6 +5,7 @@ export const roleColors: Record<RoleId, string> = {
   water: '#69d8f0',
   fire: '#ff795f',
   ice: '#b9e8ff',
+  geo: '#e5bd67',
 }
 
 export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = {

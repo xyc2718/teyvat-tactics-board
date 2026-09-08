@@ -1,6 +1,6 @@
 import type { MatchupRating, RoleId, RuleSetV1 } from '../model/types'
 
-export const ROLE_IDS: RoleId[] = ['water', 'fire', 'ice']
+export const ROLE_IDS = ['water', 'fire', 'ice', 'geo'] as const satisfies readonly RoleId[]
 
 export const MATCHUP_LABELS: Record<Exclude<MatchupRating, null>, string> = {
   [-2]: '极不利',
@@ -101,11 +101,27 @@ export const defaultRules: RuleSetV1 = {
         qDistanceMultiplier: 0.7,
       },
     },
+    geo: {
+      id: 'geo',
+      label: '岩',
+      shortLabel: '岩',
+      attackRadius: 1.5,
+      q: {
+        kind: 'blink',
+        maxDistance: 2.4,
+        fixedDistance: true,
+        cooldown: 9,
+        duration: 0,
+        turnable: false,
+      },
+      shield: { radius: 1 },
+    },
   },
   matchups: {
-    water: { water: 1, fire: -2, ice: 1 },
-    fire: { water: 0, fire: 0, ice: 1 },
-    ice: { water: -1, fire: 0, ice: 1 },
+    water: { water: 1, fire: -2, ice: 1, geo: -1 },
+    fire: { water: 0, fire: 0, ice: 1, geo: 1 },
+    ice: { water: -1, fire: 0, ice: 1, geo: 0 },
+    geo: { water: 0, fire: -1, ice: 1, geo: 0 },
   },
   modifiers: [
     {

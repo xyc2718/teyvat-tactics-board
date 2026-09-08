@@ -296,13 +296,20 @@ export function createTacticLibrary(
     if (backup.type !== 'teyvat-tactic-library' || backup.schemaVersion !== 1 || !Array.isArray(backup.tactics)) {
       throw new Error('这不是受支持的战术库备份。')
     }
-    const recordsById = new Map(backup.tactics
-      .filter(isStoredRecord)
-      .filter((record) => entryFromRecord(record) !== null)
-      .map((record) => [record.id, {
+    // Validate the entire backup before touching the current library. Dropping a
+    // malformed record or historical snapshot would turn a restore into data loss.
+    const recordsById = new Map<string, StoredTacticRecord>()
+    for (const record of backup.tactics) {
+      if (!isStoredRecord(record)
+        || !parseStoredDocument(record.documentJson)
+        || !record.snapshots.every(isStoredSnapshot)) {
+        throw new Error('备份中包含无效战术或历史快照，未修改当前战术库。')
+      }
+      recordsById.set(record.id, {
         ...record,
-        snapshots: record.snapshots.filter(isStoredSnapshot).slice(-MAX_TACTIC_SNAPSHOTS),
-      }] as const))
+        snapshots: record.snapshots.slice(-MAX_TACTIC_SNAPSHOTS),
+      })
+    }
     const records = [...recordsById.values()]
     if (records.length === 0) throw new Error('备份中没有可恢复的战术。')
     const active = records.find((record) => record.id === backup.activeId) ?? records[0]!

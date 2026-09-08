@@ -24,6 +24,8 @@
   --hang-ice: #f08cff;
   --hang-ice-light: #ffd1ff;
   --hang-ice-surface: rgba(50, 19, 61, 0.96);
+  --geo-shield-in-place: #48baff;
+  --geo-shield-reachable: #9280ff;
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.28);
 }
 
@@ -222,6 +224,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .pickup-error-dialog .accent-button { min-width:92px; min-height:44px; }
 .pickup-error-dialog .subtle { margin-top:10px; }
 .pass-threat-segment { stroke: var(--threat-color); stroke-linecap: butt; }
+.geo-shield-inPlace { --geo-shield-color: var(--geo-shield-in-place); }
+.geo-shield-reachable { --geo-shield-color: var(--geo-shield-reachable); }
+.geo-shield-segment { fill:none; stroke:var(--geo-shield-color); stroke-width:12px; stroke-linecap:butt; pointer-events:none; }
+.geo-shield-segment.geo-shield-reachable { stroke-dasharray:12 7; }
+.geo-shield-contact { fill:var(--geo-shield-color); stroke:var(--geo-shield-color); stroke-width:2px; pointer-events:none; }
+.geo-shield-contact.geo-shield-reachable { fill:none; stroke-dasharray:3 2; }
+.pass-threat-legend-item i.geo-shield-inPlace { border-top-color:var(--geo-shield-color); }
+.pass-threat-legend-item i.geo-shield-reachable { border-top-color:var(--geo-shield-color); border-top-style:dashed; }
+.geo-shield-shot-label rect { fill:rgba(7,20,16,.94); stroke:var(--geo-shield-reachable); stroke-width:1.5; }
+.geo-shield-shot-label text { fill:#c7beff; font-size:8px; font-weight:700; }
+.geo-shield-card { display:grid; gap:7px; margin:12px 0; padding:12px; border:1px solid var(--geo-shield-reachable); border-radius:8px; background:rgba(87,68,162,.1); color:#c7beff; }
+.geo-shield-card small { color:var(--muted); line-height:1.6; }
+.rule-capability-note { grid-column:1 / -1; color:var(--muted); font-size:12px; line-height:1.7; }
 .pass-threat-segment.threat-safe { --threat-color: #73dda2; stroke-dasharray: none; }
 .pass-threat-segment.threat-baseRisk { --threat-color: #e7c867; stroke-dasharray: 5 6; }
 .pass-threat-segment.threat-qSingle { --threat-color: #f0a44f; stroke-dasharray: 12 5; }

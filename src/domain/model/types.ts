@@ -1,6 +1,6 @@
 export type TeamId = 'blue' | 'red'
-export type RoleId = 'water' | 'fire' | 'ice'
-export type BasicRoleId = RoleId | 'electro' | 'geo' | 'anemo'
+export type RoleId = 'water' | 'fire' | 'ice' | 'geo'
+export type BasicRoleId = RoleId | 'electro' | 'anemo'
 export type MatchupRating = -2 | -1 | 0 | 1 | 2 | null
 export type BoardMode = 'simulation' | 'basic'
 export type ToolId =
@@ -264,6 +264,9 @@ export interface RoleRule {
     fullSeparationLoss: number
     effectiveDuration: number
     effectiveSeparationLoss: number
+  }
+  shield?: {
+    radius: number
   }
   e?: {
     radius: number
