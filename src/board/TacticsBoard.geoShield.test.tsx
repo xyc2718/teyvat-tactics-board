@@ -67,6 +67,32 @@ it('marks frozen Geo on a safe short pass without replacing its ordinary color o
   expect(document).toEqual(original)
 })
 
+it('removes overshoot-only pass hints and refreshes them when the full Q can land on the route', () => {
+  const document = fixture()
+  document.initialScene.statuses = []
+  document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 0, y: 5 }
+  document.initialScene.players.find((player) => player.id === 'blue-water')!.position = { x: 1.28, y: 5 }
+  document.initialScene.players.find((player) => player.id === 'blue-ice')!.position = { x: 1.32, y: 5 }
+  document.actions = [{
+    id: 'short-pass', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 0.15,
+    path: [{ x: 1.28, y: 5 }, { x: 1.32, y: 5 }],
+  }]
+  show(document, 'short-pass')
+  const { container } = render(<><TacticsBoard /><InspectorPanel /></>)
+  expect(container.querySelector('.geo-shield-route')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('岩护罩传球提示')).not.toBeInTheDocument()
+  expect(evaluateWarnings(document).some((warning) => warning.id === 'geo-shield-pass-short-pass')).toBe(false)
+  expect(buildTacticNarrative(document).entries.find((entry) => entry.id === 'action-short-pass')?.detail).not.toContain('岩跑动 / Q 护罩')
+  act(() => {
+    const next = structuredClone(document)
+    next.initialScene.players.find((player) => player.id === 'red-fire')!.position.x = 3.7
+    useTacticStore.setState({ document: next })
+  })
+  expect(container.querySelector('.geo-shield-segment.geo-shield-reachable')).toBeInTheDocument()
+  expect(screen.getByLabelText('岩护罩传球提示')).toHaveTextContent('红方 2')
+  expect(container.querySelector('.pass-threat-segment.threat-safe')).toBeInTheDocument()
+})
+
 it('keeps the legend closed during time changes and reopens it for a newly added loose pass', () => {
   const document = fixture()
   show(document, 'short-pass')

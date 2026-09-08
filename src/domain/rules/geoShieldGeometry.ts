@@ -50,22 +50,31 @@ function inside(point: Vec2, field: FieldSize): boolean {
     && point.y >= -EPSILON && point.y <= field.height + EPSILON
 }
 
-/** Extreme legal run origins in the intersection of a run disk and the field. */
-function runOrigins(position: Vec2, target: Vec2, runDistance: number, field: FieldSize): Vec2[] {
-  if (runDistance <= EPSILON) return [position]
-  const result = [position]
+/** Nearest legal launch outside a target's fixed-Q overshoot disk. */
+function runOutsideDisk(position: Vec2, target: Vec2, radius: number, field: FieldSize): number {
+  const candidates: Vec2[] = []
   const gap = distance(position, target)
   if (gap > EPSILON) {
-    const farthest = interpolate(target, position, 1 + runDistance / gap)
-    if (inside(farthest, field)) result.push(farthest)
+    candidates.push(interpolate(target, position, radius / gap))
+  } else {
+    candidates.push(
+      { x: target.x + radius, y: target.y }, { x: target.x - radius, y: target.y },
+      { x: target.x, y: target.y + radius }, { x: target.x, y: target.y - radius },
+    )
   }
   for (const [start, end] of edges(field)) {
-    if (distance(position, start) <= runDistance + EPSILON) result.push(start)
-    for (const ratio of circleSegmentCuts(position, runDistance, start, end)) {
-      result.push(interpolate(start, end, ratio))
+    candidates.push(start)
+    for (const ratio of circleSegmentCuts(target, radius, start, end)) {
+      candidates.push(interpolate(start, end, ratio))
     }
   }
-  return result
+  let best = Infinity
+  for (const origin of candidates) {
+    if (inside(origin, field) && distance(origin, target) >= radius - EPSILON) {
+      best = Math.min(best, distance(position, origin))
+    }
+  }
+  return best
 }
 
 function landing(origin: Vec2, target: Vec2, qDistance: number, field: FieldSize): Vec2 {
@@ -73,26 +82,20 @@ function landing(origin: Vec2, target: Vec2, qDistance: number, field: FieldSize
 }
 
 /**
- * A clipped Q may end anywhere on a field edge. On each edge, minimize
- * max(0, |P-B|-availableDistance) + max(0, distance(B, segment)-radius).
- * This convex, piecewise smooth function has minima at circle/capsule cuts,
- * projections, or the reflected shortest path. No angular/time search is used.
+ * A field-clipped Q is useful only if that boundary landing already covers
+ * the route. Find the nearest point in each edge/capsule intersection, then
+ * the running required BEFORE Q to reach it. No post-Q return run is allowed.
  */
-function boundaryResidual(
+function boundaryPreRun(
   position: Vec2, start: Vec2, end: Vec2, radius: number,
-  qDistance: number, runDistance: number, field: FieldSize,
+  qDistance: number, field: FieldSize,
 ): number {
   let best = Infinity
-  const availableDistance = qDistance + runDistance
   for (const [edgeStart, edgeEnd] of edges(field)) {
     const candidates: Vec2[] = [edgeStart, edgeEnd]
-    const edgeLength = distance(edgeStart, edgeEnd)
-    const ux = (edgeEnd.x - edgeStart.x) / edgeLength
-    const uy = (edgeEnd.y - edgeStart.y) / edgeLength
-    const normal = (point: Vec2) => (point.x - edgeStart.x) * -uy + (point.y - edgeStart.y) * ux
     for (const point of [position, start, end]) candidates.push(closestOnSegment(point, edgeStart, edgeEnd))
-    for (const [center, circleRadius] of [[position, availableDistance], [start, radius], [end, radius]] as const) {
-      for (const ratio of circleSegmentCuts(center, circleRadius, edgeStart, edgeEnd)) {
+    for (const center of [start, end]) {
+      for (const ratio of circleSegmentCuts(center, radius, edgeStart, edgeEnd)) {
         candidates.push(interpolate(edgeStart, edgeEnd, ratio))
       }
     }
@@ -111,57 +114,40 @@ function boundaryResidual(
       }
     }
 
-    const signed = normal(position)
-    const reflected = { x: position.x + 2 * signed * uy, y: position.y - 2 * signed * ux }
-    for (const target of [start, end, closestOnSegment(reflected, start, end)]) {
-      const denominator = normal(target) - normal(reflected)
-      if (Math.abs(denominator) > EPSILON) {
-        const candidate = interpolate(reflected, target, -normal(reflected) / denominator)
-        candidates.push(closestOnSegment(candidate, edgeStart, edgeEnd))
-      }
-    }
-
     for (const boundary of candidates) {
+      if (distanceToSegment(boundary, start, end) > radius + EPSILON) continue
       const gap = distance(position, boundary)
       const preRun = Math.max(0, gap - qDistance)
       const origin = gap <= EPSILON ? position : interpolate(position, boundary, preRun / gap)
       // The full Q must really reach this edge; never shorten an interior Q.
       const actualLanding = landing(origin, boundary, qDistance, field)
       if (distance(actualLanding, boundary) > 1e-6) continue
-      const residual = Math.max(0, preRun - runDistance)
-        + Math.max(0, distanceToSegment(boundary, start, end) - radius)
-      best = Math.min(best, residual)
+      best = Math.min(best, preRun)
     }
   }
   return best
 }
 
-/** Remaining running after the earliest available fixed Q, in grid units. */
-export function fixedQResidual(
+/** Minimum legal running BEFORE a full/clipped Q whose landing covers the route. */
+export function fixedQPreRunDistance(
   position: Vec2, start: Vec2, end: Vec2, radius: number,
-  qDistance: number, runDistance: number, field: FieldSize,
+  qDistance: number, field: FieldSize,
 ): number {
   const nearest = closestOnSegment(position, start, end)
   const minimum = distance(position, nearest)
   if (minimum > qDistance + radius) {
     // Run and Q point toward the target, wholly inside the convex field.
-    return Math.max(0, minimum - radius - qDistance - runDistance)
+    return minimum - radius - qDistance
   }
   const maximum = Math.max(distance(position, start), distance(position, end))
   if (maximum + radius >= qDistance - EPSILON) return 0
 
-  // Every target shield center is too near for a full blink. Running away
-  // during cooldown can fix the overshoot; a field edge may clip the blink.
-  let best = boundaryResidual(position, start, end, radius, qDistance, runDistance, field)
-  for (const target of [start, end]) {
-    for (const origin of runOrigins(position, target, runDistance, field)) {
-      const gap = distance(origin, target)
-      // If this extreme goes past the annulus, a prefix of the same legal
-      // straight run reaches the annulus while Q is still cooling down.
-      if (gap >= qDistance - radius) return 0
-      const actualLanding = landing(origin, target, qDistance, field)
-      best = Math.min(best, Math.max(0, distanceToSegment(actualLanding, start, end) - radius))
-    }
-  }
-  return best
+  // All route points are too near. First run to a legal launch position,
+  // or use a genuinely covering boundary landing. Crossing the capsule on
+  // the way to an overshooting landing never counts as a shield block.
+  return Math.min(
+    boundaryPreRun(position, start, end, radius, qDistance, field),
+    runOutsideDisk(position, start, qDistance - radius, field),
+    runOutsideDisk(position, end, qDistance - radius, field),
+  )
 }

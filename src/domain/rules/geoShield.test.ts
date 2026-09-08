@@ -67,6 +67,23 @@ describe('Geo shield reach', () => {
     expect(evaluateGeoShieldReach(frame, defender, [{ x: 1.2, y: 0.1 }], rules)).toMatchObject({ mode: 'q', earliestTime: 0 })
   })
 
+  it.each([0, 20])('requires a legal launch position instead of walking back after an overshooting Q at x=%s', (x) => {
+    const { defender, frame, rules } = fixture({ x, y: 5 })
+    const target = { x: x === 0 ? 1.3 : 18.7, y: 5 }
+    const result = evaluateGeoShieldReach(frame, defender, [target], rules)!
+    // A 2.4-grid Q straight inward lands 1.1 grids beyond the target.
+    // With the wall behind us, the nearest legal launch is sideways, where
+    // the full landing is exactly one shield radius beyond the target.
+    const preRun = Math.sqrt((2.4 - 1) ** 2 - 1.3 ** 2)
+    expect(result.qTime).toBeCloseTo(preRun)
+    expect(result).toMatchObject({ mode: 'direct' })
+    expect(result.earliestTime).toBeCloseTo(0.3)
+    frame.cooldowns[defender.id]!.q = 0.2
+    expect(evaluateGeoShieldReach(frame, defender, [target], rules)!.qTime).toBeCloseTo(preRun)
+    frame.cooldowns[defender.id]!.q = 0.8
+    expect(evaluateGeoShieldReach(frame, defender, [target], rules)!.qTime).toBeCloseTo(0.8)
+  })
+
   it('lets cooldown elapse during freeze and runs only after thaw while waiting', () => {
     const { defender, frame, rules } = fixture({ x: 5, y: 5 })
     frame.time = 2
@@ -98,7 +115,7 @@ describe('Geo shield reach', () => {
     defender.position = { x: 0, y: 5 }
     frame.cooldowns[defender.id]!.q = 0.5
     const sideways = evaluateGeoShieldReach(frame, defender, [{ x: 2, y: 5 }], rules)!
-    expect(sideways.qTime).toBeCloseTo(0.5 + 2.4 - Math.hypot(2, 0.5) - 0.01)
+    expect(sideways.qTime).toBeCloseTo(Math.sqrt((2.4 - 0.01) ** 2 - 2 ** 2))
   })
 
   it('uses finite segment capsules and their radial interval, including both endpoints', () => {
@@ -113,6 +130,18 @@ describe('Geo shield reach', () => {
 })
 
 describe('Geo pass route analysis', () => {
+  it.each(['pass', 'loosePass'] as const)('does not flag a fast %s just because Q crosses the ball before overshooting', (type) => {
+    const { document, pass } = fixture({ x: 0, y: 5 })
+    pass.path = [{ x: 1.28, y: 5 }, { x: 1.32, y: 5 }]
+    pass.duration = 0.15
+    // Calibrate a short loose flight to the same arrival; no freeze/CD excuse.
+    document.rulesSnapshot.loosePassing = { maxDistance: 0.04, maxDuration: 0.15 }
+    const action = type === 'pass' ? pass : {
+      ...pass, type, aimDirection: { x: 1, y: 0 }, flightOutcome: 'grounded' as const,
+    }
+    expect(analyzeActionGeoShield(document, action).passSegments).toEqual([])
+  })
+
   it('allows shield obstruction within a two-grid otherwise safe pass, including frozen Geo', () => {
     const { document, defender, pass } = fixture()
     document.initialScene.statuses.push({ id: 'freeze', playerId: defender.id, kind: 'frozen', sourceActionId: 'setup', startsAt: 0, endsAt: 20 })
@@ -274,6 +303,19 @@ describe('independent Geo shot hints', () => {
     rules.roles.geo.q.duration = 5
     expect(analyzeActionGeoShield(document, shot).shot!.earliestTime).toBeCloseTo(1.2)
     expect(analyzeActionGeoShield(document, shot).shot!.mode).toBe('direct')
+  })
+
+  it('uses full-Q landing rather than crossing an entire short shot route', () => {
+    const { document, shot, defender } = fixture({ x: 0, y: 5 })
+    shot.path = [{ x: 1.3, y: 4.99 }, { x: 1.3, y: 5.01 }]
+    const pressure = evaluateShotActionPressure(document, shot)
+    const result = analyzeActionGeoShield(document, shot).shot!
+    expect(result).toMatchObject({ defenderId: defender.id, mode: 'direct' })
+    expect(result.earliestTime).toBeCloseTo(0.3)
+    expect(evaluateShotActionPressure(document, shot)).toEqual(pressure)
+    // A longer finite route really does intersect the full-Q landing ring.
+    shot.path[1] = { x: 1.3, y: 7 }
+    expect(analyzeActionGeoShield(document, shot).shot).toMatchObject({ mode: 'q', earliestTime: 0 })
   })
 
   it('hides exactly two seconds, shows unrounded just-below-two, and skips red before projection', () => {

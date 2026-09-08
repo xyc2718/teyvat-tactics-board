@@ -3,7 +3,7 @@ import { distance, distanceToSegment } from '../geometry/geometry'
 import type { LoosePassAction, PassAction, PlayerState, ProjectedFrame, RuleSetV1, ShootAction, TacticDocumentV1, Vec2 } from '../model/types'
 import { deceleratingDistance, deceleratingTime, passTimeForDistance } from '../timeline/durations'
 import { projectFrameAtKeyframe } from '../timeline/projectFrame'
-import { circleSegmentCuts, fixedQResidual } from './geoShieldGeometry'
+import { circleSegmentCuts, fixedQPreRunDistance } from './geoShieldGeometry'
 import { loosePassingRule } from './loosePassing'
 
 const EPSILON = 1e-9
@@ -74,10 +74,12 @@ function segmentReach(context: DefenderContext, start: Vec2, end: Vec2): GeoShie
   const gap = distanceToSegment(player.position, start, end)
   if (gap <= radius + EPSILON) return { earliestTime: 0, directTime: 0, qTime: 0, mode: 'inPlace' }
   const directTime = frozenDelay + (gap - radius) / speed
-  const residual = rule.q.fixedDistance
-    ? fixedQResidual(player.position, start, end, radius, rule.q.maxDistance, runDuringCooldown, field)
-    : Math.max(0, gap - radius - rule.q.maxDistance - runDuringCooldown)
-  const qTime = qReady + rule.q.duration + residual / speed
+  const preRun = rule.q.fixedDistance
+    ? fixedQPreRunDistance(player.position, start, end, radius, rule.q.maxDistance, field)
+    : Math.max(0, gap - radius - rule.q.maxDistance)
+  // Cooldown may elapse during the launch-position run, but the completed
+  // Q itself must land with its shield on the route; no walking back after Q.
+  const qTime = qReady + rule.q.duration + Math.max(0, preRun - runDuringCooldown) / speed
   return directTime <= qTime
     ? { earliestTime: directTime, directTime, qTime, mode: 'direct' }
     : { earliestTime: qTime, directTime, qTime, mode: 'q' }
