@@ -7,6 +7,25 @@ import { loadDraft, parseTactic, saveDraft, serializeTactic } from './tacticFile
 import { createBallPickupAction, normalizeBallActions } from '../domain/timeline/looseBall'
 
 describe('tactic file boundary', () => {
+  it.each(['岩', '万象', '自定义万象'])('updates only the former Geo full name on import and draft recovery (%s)', (label) => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.roles.geo.label = label
+    document.rulesSnapshot.roles.geo.q.maxDistance = 3.1
+    document.rulesSnapshot.roles.geo.q.cooldown = 12
+    document.rulesSnapshot.roles.fire.label = '岩'
+    const expected = structuredClone(document.rulesSnapshot)
+    expected.roles.geo.label = label === '岩' ? '万象' : label
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document.rulesSnapshot).toEqual(expected)
+    expect(parsed.document.rulesSnapshot.roles.geo.shortLabel).toBe('岩')
+    saveDraft(document)
+    expect(loadDraft()?.rulesSnapshot).toEqual(expected)
+    const roundTrip = parseTactic(serializeTactic(parsed.document))
+    if (!roundTrip.ok) throw Error(roundTrip.error)
+    expect(roundTrip.document.rulesSnapshot).toEqual(expected)
+  })
+
   it('adds only missing Geo rules and matchups to a legacy V1 snapshot, including draft recovery', () => {
     const document = createDefaultDocument()
     document.rulesSnapshot.roles.fire.q.maxDistance = 4.6

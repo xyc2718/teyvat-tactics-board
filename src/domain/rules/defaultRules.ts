@@ -103,7 +103,7 @@ export const defaultRules: RuleSetV1 = {
     },
     geo: {
       id: 'geo',
-      label: '岩',
+      label: '万象',
       shortLabel: '岩',
       attackRadius: 1.5,
       q: {

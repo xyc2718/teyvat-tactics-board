@@ -128,6 +128,7 @@ it('shows all four simulation roles and the directed four-by-four matchup table'
   const rolePicker = screen.getByRole('combobox', { name: '职业' })
   expect(within(rolePicker).getAllByRole('option')).toHaveLength(4)
   expect(rolePicker).toHaveValue('geo')
+  expect(within(rolePicker).getByRole('option', { name: '万象' })).toBeInTheDocument()
   expect(screen.getByText('护罩半径')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '职业对位' }))
   const dialog = screen.getByRole('dialog', { name: '规则设置' })

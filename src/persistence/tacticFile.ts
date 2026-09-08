@@ -195,6 +195,8 @@ const roleRuleSchema = z.object({
   }).optional(),
 }).transform((role) => ({
   ...role,
+  // Upgrade the former default full name without replacing custom names/rules.
+  label: role.id === 'geo' && role.label === '岩' ? defaultRules.roles.geo.label : role.label,
   q: {
     ...role.q,
     fixedDistance: role.q.fixedDistance ?? (role.id === 'fire' || role.id === 'geo'),

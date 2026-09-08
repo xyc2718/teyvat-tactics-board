@@ -132,7 +132,7 @@ describe('basic player role edits', () => {
     const role = effectiveBasicRole(document, document.initialScene.players[0]!)
     expect(role).toBe('geo')
     const rules = document.rulesSnapshot
-    expect(basicRoleDisplay(role, rules)).toMatchObject({ label: '岩', shortLabel: '岩' })
+    expect(basicRoleDisplay(role, rules)).toMatchObject({ label: '万象', shortLabel: '岩' })
     expect(basicRoleRule(role, rules)).toBe(rules.roles.geo)
     expect(basicRoleRule(role, rules)?.attackRadius).toBe(1.5)
     expect(rules.roles.geo.attackRadius + rules.roles.geo.q.maxDistance).toBe(3.9)

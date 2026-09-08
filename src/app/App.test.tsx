@@ -103,7 +103,7 @@ describe('App shell', () => {
 
     for (const tool of ['攻击范围', '打击范围']) {
       fireEvent.click(screen.getByRole('button', { name: tool }))
-      fireEvent.keyDown(screen.getByRole('button', { name: `红方 1，岩，可查看${tool}` }), { key: 'Enter' })
+      fireEvent.keyDown(screen.getByRole('button', { name: `红方 1，万象，可查看${tool}` }), { key: 'Enter' })
       expect(screen.queryByText(/范围参数暂未提供/)).not.toBeInTheDocument()
       if (tool === '攻击范围') expect(container.querySelector('.attack-range')).toHaveAttribute('r', '75')
       else expect(container.querySelector('.strike-range')).toHaveAttribute('r', '195')
@@ -177,7 +177,7 @@ describe('App shell', () => {
     await waitFor(() => expect(useTacticStore.getState().document.basicPlayerRoles).toEqual(saved.basicPlayerRoles))
     expect(useTacticStore.getState()).toMatchObject({ boardMode: 'simulation', past: [], future: [] })
     fireEvent.click(screen.getByRole('button', { name: '基础模式' }))
-    expect(screen.getByRole('button', { name: '蓝方 1，岩' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '蓝方 1，万象' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '红方 2，风' })).toBeInTheDocument()
   })
 
