@@ -110,7 +110,7 @@ export const defaultRules: RuleSetV1 = {
         kind: 'blink',
         maxDistance: 2.4,
         fixedDistance: true,
-        cooldown: 9,
+        cooldown: 8,
         duration: 0,
         turnable: false,
       },

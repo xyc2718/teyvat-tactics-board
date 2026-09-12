@@ -7,6 +7,18 @@ import { loadDraft, parseTactic, saveDraft, serializeTactic } from './tacticFile
 import { createBallPickupAction, normalizeBallActions } from '../domain/timeline/looseBall'
 
 describe('tactic file boundary', () => {
+  it('defaults Geo Q to eight seconds without overwriting a saved nine-second cooldown', () => {
+    const document = createDefaultDocument()
+    expect(document.rulesSnapshot.roles.geo.q.cooldown).toBe(8)
+    expect(document.rulesSnapshot.roles.fire.q.cooldown).toBe(9)
+    document.rulesSnapshot.roles.geo.q.cooldown = 9
+    const parsed = parseTactic(serializeTactic(document))
+    if (!parsed.ok) throw Error(parsed.error)
+    expect(parsed.document.rulesSnapshot.roles.geo.q.cooldown).toBe(9)
+    saveDraft(document)
+    expect(loadDraft()?.rulesSnapshot.roles.geo.q.cooldown).toBe(9)
+  })
+
   it.each(['岩', '万象', '自定义万象'])('updates only the former Geo full name on import and draft recovery (%s)', (label) => {
     const document = createDefaultDocument()
     document.rulesSnapshot.roles.geo.label = label
@@ -44,6 +56,7 @@ describe('tactic file boundary', () => {
     const parsed = parseTactic(serializeTactic(document))
     if (!parsed.ok) throw Error(parsed.error)
     expect(parsed.document).toEqual(expected)
+    expect(parsed.document.rulesSnapshot.roles.geo.q.cooldown).toBe(8)
     saveDraft(document)
     expect(loadDraft()).toEqual(expected)
     parsed.document.rulesSnapshot.roles.geo.q.maxDistance = 5
