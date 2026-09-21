@@ -43,7 +43,7 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
       onPlayerChosen?.()
       return
     }
-    if (tool === 'qMove' || tool === 'loosePass') {
+    if (tool === 'qMove' || tool === 'sprint' || tool === 'loosePass') {
       chooseActor(player.id)
       onPlayerChosen?.()
       return
@@ -73,12 +73,12 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
             const actorCandidate = isRangeInspectionTool(tool)
               || tool === 'loosePass'
               || (tool !== 'select'
-                && (!actor || tool === 'qMove')
+                && (!actor || tool === 'qMove' || tool === 'sprint')
                 && isToolActorEligible(tool, player, frame, document.rulesSnapshot))
-            const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && actor
+            const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && tool !== 'sprint' && actor
               ? isToolTargetPlayerEligible(tool, actor, player)
               : false
-            const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || isBallReleaseTool(tool) || tool === 'qMove')
+            const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!actor || isBallReleaseTool(tool) || tool === 'qMove' || tool === 'sprint')
             return (
               <button
                 key={player.id}
@@ -96,6 +96,7 @@ export function RosterPanel({ onPlayerChosen }: { onPlayerChosen?: () => void })
       <div className="legend-block">
         <span><i className="legend-line move" />跑动</span>
         <span><i className="legend-line q" />Q 位移</span>
+        <span><i className="legend-line sprint" />雷 E 冲刺</span>
         <span><i className="legend-line pass" />传球</span>
         <span><i className="legend-line shoot" />射门</span>
       </div>

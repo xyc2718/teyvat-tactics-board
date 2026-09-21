@@ -60,7 +60,7 @@ export function playerActionKeyframes(
       actionId: action.id,
       edge,
       time,
-      label: `${action.label?.trim() || actionTypeLabel(action.type)}${edge === 'start' ? '开始' : '结束'}`,
+      label: `${action.label?.trim() || (action.type === 'move' && action.sprint ? '雷 E' : actionTypeLabel(action.type))}${edge === 'start' ? '开始' : '结束'}`,
       reference: { playerId, actionId: action.id, edge },
     })))
     .sort((left, right) => left.time - right.time || left.id.localeCompare(right.id))

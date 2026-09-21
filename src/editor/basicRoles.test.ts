@@ -138,8 +138,22 @@ describe('basic player role edits', () => {
     expect(rules.roles.geo.attackRadius + rules.roles.geo.q.maxDistance).toBe(3.9)
     rules.roles.geo.attackRadius = 1.8
     expect(basicRoleRule(role, rules)?.attackRadius).toBe(1.8)
-    expect(basicRoleRule('electro', rules)).toBeUndefined()
+    expect(basicRoleRule('electro', rules)).toBe(rules.roles.electro)
     expect(basicRoleRule('anemo', rules)).toBeUndefined()
+  })
+
+  it('uses the saved Electro name and ranges without changing the simulation identity', () => {
+    const state = useTacticStore.getState()
+    state.setBasicPlayerRole('blue-water', 'electro')
+    const document = useTacticStore.getState().document
+    const role = effectiveBasicRole(document, document.initialScene.players[0]!)
+    expect(role).toBe('electro')
+    expect(document.initialScene.players[0]!.role).toBe('water')
+    expect(basicRoleRule(role, document.rulesSnapshot)).toMatchObject({ attackInnerRadius: 0.2, attackRadius: 1, q: { maxDistance: 1.8 } })
+    document.rulesSnapshot.roles.electro.label = '自定义雷'
+    document.rulesSnapshot.roles.electro.attackRadius = 1.2
+    expect(basicRoleDisplay(role, document.rulesSnapshot).label).toBe('自定义雷')
+    expect(basicRoleRule(role, document.rulesSnapshot)?.attackRadius).toBe(1.2)
   })
 
   it('round-trips drafts, import, undo and redo with one history entry per role edit', () => {

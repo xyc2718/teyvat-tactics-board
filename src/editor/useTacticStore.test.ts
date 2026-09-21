@@ -1327,6 +1327,7 @@ describe('tactic store timeline edits', () => {
 
   it('re-solves an in-flight named pass when a new receiver run creates the catch', () => {
     const document = useTacticStore.getState().document
+    Object.assign(document.rulesSnapshot.passing, { maxDistance: 8, ballSpeed: 4 })
     const ice = document.initialScene.players.find((player) => player.id === 'blue-ice')!
     ice.position = { x: 12, y: 7 }
     document.initialScene.ball = {

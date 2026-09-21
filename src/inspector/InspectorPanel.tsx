@@ -15,6 +15,7 @@ import {
 import { projectedMovePath, projectFrameAtKeyframe } from '../domain/timeline/projectFrame'
 import { resolveTimingKeyframe } from '../domain/timeline/timingKeyframes'
 import { findMoveQCooldownTarget, resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
+import { createElectroSprintStateReader } from '../domain/timeline/electroSprint'
 import { useTacticStore } from '../editor/useTacticStore'
 import { actionLabel, matchupLabel, playerRoleLabel } from '../ui/labels'
 import { TimingKeyframeDialog } from './TimingKeyframeDialog'
@@ -114,16 +115,17 @@ export function InspectorPanel() {
             </button>
             <div className="metric-grid">
               <Metric label="Q 剩余" value={`${(frame.cooldowns[selectedPlayer.id]?.q ?? 0).toFixed(1)}s`} />
-              {document.rulesSnapshot.roles[selectedPlayer.role].e && <Metric label="E 剩余" value={`${(frame.cooldowns[selectedPlayer.id]?.e ?? 0).toFixed(1)}s`} />}
+              {(document.rulesSnapshot.roles[selectedPlayer.role].e || document.rulesSnapshot.roles[selectedPlayer.role].sprint) && <Metric label="E 剩余" value={`${(frame.cooldowns[selectedPlayer.id]?.e ?? 0).toFixed(1)}s`} />}
               <Metric label="攻击半径" value={`${document.rulesSnapshot.roles[selectedPlayer.role].attackRadius} 格`} />
               <Metric label="Q 距离" value={`${document.rulesSnapshot.roles[selectedPlayer.role].q.maxDistance} 格`} />
               {selectedPlayer.role === 'geo' && document.rulesSnapshot.roles.geo.shield && <Metric label="护罩半径" value={`${document.rulesSnapshot.roles.geo.shield.radius} 格`} />}
               <Metric label="坐标" value={`${selectedPlayer.position.x.toFixed(1)}, ${selectedPlayer.position.y.toFixed(1)}`} />
             </div>
+            {selectedPlayer.role === 'electro' && <SprintEnergy document={document} playerId={selectedPlayer.id} time={currentTime} />}
           </section>
           {latestPlayerMove && !latestPlayerMove.targetPlayerId && !latestPlayerMove.ballTarget && <section className="inspector-section latest-move-editor">
             <div className="section-title-row">
-              <h3>最后一段跑动</h3>
+              <h3>{latestPlayerMove.sprint ? '最后一段雷 E' : '最后一段跑动'}</h3>
               <span>{latestPlayerMove.startTime.toFixed(2)}–{(latestPlayerMove.startTime + latestPlayerMove.duration).toFixed(2)}s</span>
             </div>
             <MovePathModeButtons
@@ -150,7 +152,7 @@ export function InspectorPanel() {
             <details><summary>客观依据</summary><ul>
               <li>{playerSituation.selectedArrival.player.name}距球 {playerSituation.selectedArrival.ballDistance.toFixed(2)} 格，Q 剩余 {playerSituation.selectedArrival.qCooldownAtStart.toFixed(2)}s</li>
               <li>{playerSituation.opponentArrival.player.name}距球 {playerSituation.opponentArrival.ballDistance.toFixed(2)} 格，Q 剩余 {playerSituation.opponentArrival.qCooldownAtStart.toFixed(2)}s</li>
-              <li>按当前站位、冻结、基础移速及 Q 距离/用时/CD 估算，不含反应时间</li>
+              <li>按当前站位、冻结、基础移速、Q 和雷 E 的能量/冷却估算，不含反应时间</li>
             </ul></details>
           </section>}
         </div>
@@ -159,7 +161,7 @@ export function InspectorPanel() {
       {selectedAction && (
         <div className="inspector-content">
           <section className="inspector-section">
-            <div className="action-kind"><span className={`action-dot type-${selectedAction.type}`} />{actionLabel(selectedAction)}</div>
+            <div className="action-kind"><span className={`action-dot type-${selectedAction.type} ${selectedAction.type === 'move' && selectedAction.sprint ? 'type-sprint' : ''}`} />{actionLabel(selectedAction)}</div>
             {showAdvancedTimeline
               ? <>
                   <label className="field-row"><span>开始时间</span><NumberInput value={selectedAction.startTime} step={0.1} disabled={selectedAction.type === 'receive' && Boolean(selectedAction.sourceActionId || selectedAction.pickupActionId)} onChange={(value) => updateTiming(selectedAction.id, 'startTime', value)} suffix="s" /></label>
@@ -172,6 +174,7 @@ export function InspectorPanel() {
                     : <div className="inline-info"><span>动作时长</span><strong>{selectedAction.duration.toFixed(2)}s</strong></div>}
                 </>}
             {selectedPathLength !== null && <div className="inline-info"><span>路径长度</span><strong>{selectedPathLength.toFixed(2)} 格</strong></div>}
+            {selectedAction.type === 'move' && selectedAction.sprint && <SprintActionEditor key={`sprint-${selectedAction.id}`} action={selectedAction} document={document} currentTime={currentTime} />}
             {selectedAction.type === 'move' && !selectedAction.targetPlayerId && !selectedAction.ballTarget && <MovePathModeButtons
               curved={Boolean(selectedAction.curveControl)}
               onChange={(mode) => setMovePathMode(selectedAction.id, mode)}
@@ -298,7 +301,7 @@ function MoveTimingEditor({
         checked={timingFixed}
         onChange={(event) => setMoveTimingFixed(action.id, event.target.checked)}
       />
-      <span><strong>固定跑动时间</strong><small>按时长、关键帧或 Q 冷却确定结束时刻</small></span>
+      <span><strong>{action.sprint ? '固定冲刺时间' : '固定跑动时间'}</strong><small>按时长、关键帧或 Q 冷却确定结束时刻</small></span>
     </label>
     {timingFixed && <div className="move-timing-controls">
       <label className="field-row">
@@ -332,7 +335,7 @@ function MoveTimingEditor({
         {(keyframe || qBound) && <button type="button" className="quiet-button" onClick={() => setMoveTimingFixed(action.id, true)}>改为手动时间</button>}
       </div>
       {!qTarget && !qBound && <p className="subtle">{unavailableReason}</p>}
-      <p className="callout">结束时间固定，跑动距离按实际加速、减速计算；调整方向或曲线后会重新计算可达位置。</p>
+      <p className="callout">{action.sprint ? '雷 E 以独立速度冲刺，不受跑动加减速影响；固定时间改变距离，不能超过可用能量。' : '结束时间固定，跑动距离按实际加速、减速计算；调整方向或曲线后会重新计算可达位置。'}</p>
     </div>}
     {dialogOpen && <TimingKeyframeDialog
       action={action}
@@ -344,6 +347,31 @@ function MoveTimingEditor({
       }}
     />}
   </div>
+}
+
+function SprintEnergy({ document, playerId, time, ignoreActionId }: { document: TacticDocumentV1; playerId: string; time: number; ignoreActionId?: string }) {
+  const readEnergy = useMemo(() => createElectroSprintStateReader(document, playerId, ignoreActionId), [document, playerId, ignoreActionId])
+  const energy = readEnergy(time)
+  return <div className="sprint-energy-card" aria-label="雷 E 能量">
+    <div className="inline-info"><span>{energy.active ? '冲刺中 · 不回复能量' : '雷 E 能量'}</span><strong>{(energy.energy * 100).toFixed(1)}%</strong></div>
+    <meter min="0" max="1" value={energy.energy} aria-label="雷 E 能量百分比" />
+    <small>可用 {energy.maxDuration.toFixed(2)}s / {energy.maxDistance.toFixed(2)} 格 · E 冷却 {energy.cooldown.toFixed(2)}s</small>
+  </div>
+}
+
+function SprintActionEditor({ action, document, currentTime }: { action: MoveAction; document: TacticDocumentV1; currentTime: number }) {
+  const stopSprint = useTacticStore((state) => state.stopSprint)
+  const [elapsed, setElapsed] = useState(() => currentTime > action.startTime && currentTime < action.startTime + action.duration
+    ? currentTime - action.startTime : action.duration / 2)
+  return <>
+    <SprintEnergy document={document} playerId={action.actorId} time={action.startTime} ignoreActionId={action.id} />
+    <div className="sprint-energy-card">
+      <label className="field-row"><span>冲刺多久后停止</span><NumberInput value={elapsed} step={0.1} suffix="s" onChange={setElapsed} /></label>
+      <button type="button" className="quiet-button" disabled={elapsed <= 0 || elapsed >= action.duration}
+        onClick={() => stopSprint(action.id, action.startTime + elapsed)}>在此停止雷 E</button>
+      <p className="subtle">主动停止保留剩余能量并进入冷却。接到球则自动停止，余下路线变为可独立修改或删除的普通跑动。</p>
+    </div>
+  </>
 }
 
 function WaitTimingEditor({ action, document }: { action: WaitAction; document: TacticDocumentV1 }) {
@@ -388,7 +416,8 @@ function contestOutcomeLabel(outcome: 'ahead' | 'level' | 'behind', margin: numb
 }
 
 function arrivalSummary(arrival: BallArrival): string {
-  return `${arrival.player.name} ${compactSeconds(arrival.earliestTime)}s（${arrival.mode === 'q' ? 'Q 抢球' : '直跑抢球'}）`
+  const label = { q: 'Q 抢球', e: '雷 E 抢球', qE: 'Q + 雷 E 抢球', direct: '直跑抢球' }
+  return `${arrival.player.name} ${compactSeconds(arrival.earliestTime)}s（${label[arrival.mode]}）`
 }
 
 function ShotPressureCard({
@@ -404,7 +433,8 @@ function ShotPressureCard({
       距离 {earliest.gap.toFixed(2)} 格 · 攻击环 {earliest.attackInnerRadius.toFixed(2)}–{earliest.attackOuterRadius.toFixed(2)} 格 ·
       需逼近 {earliest.radialEntryDistance.toFixed(2)} 格 · {shotPressureModeLabel(earliest.mode)}
       {earliest.frozenDelay > 0 ? ` · 冻结等待 ${earliest.frozenDelay.toFixed(2)}s` : ''}
-      {earliest.mode === 'q' ? ` · Q CD ${earliest.qCooldownAtStart.toFixed(2)}s / Q 动作 ${earliest.qDuration.toFixed(2)}s` : ''}
+      {earliest.mode === 'q' || earliest.mode === 'qE' ? ` · Q CD ${earliest.qCooldownAtStart.toFixed(2)}s / Q 动作 ${earliest.qDuration.toFixed(2)}s` : ''}
+      {earliest.mode === 'e' || earliest.mode === 'qE' ? ` · E 能量 ${(earliest.eEnergy * 100).toFixed(0)}% / E CD ${earliest.eCooldownAtStart.toFixed(2)}s` : ''}
     </small>}
   </div>
 }

@@ -146,19 +146,19 @@ it('adds independent shot shield hints, preserves pressure color, and excludes r
   expect(container.querySelector('.shot-pressure-label')).toHaveClass(expectedColor)
 })
 
-it('shows all four simulation roles and the directed four-by-four matchup table', () => {
+it('shows all five simulation roles and the directed five-by-five matchup table', () => {
   const document = fixture()
   show(document)
   useTacticStore.setState({ selection: { kind: 'player', id: 'red-fire' }, showRules: true })
   render(<><InspectorPanel /><RulesDrawer /></>)
   const rolePicker = screen.getByRole('combobox', { name: '职业' })
-  expect(within(rolePicker).getAllByRole('option')).toHaveLength(4)
+  expect(within(rolePicker).getAllByRole('option')).toHaveLength(5)
   expect(rolePicker).toHaveValue('geo')
   expect(within(rolePicker).getByRole('option', { name: '万象' })).toBeInTheDocument()
   expect(screen.getByText('护罩半径')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '职业对位' }))
   const dialog = screen.getByRole('dialog', { name: '规则设置' })
-  expect(within(dialog).getAllByRole('combobox', { name: /进攻对.+防守/ })).toHaveLength(16)
+  expect(within(dialog).getAllByRole('combobox', { name: /进攻对.+防守/ })).toHaveLength(25)
   const geoToFire = within(dialog).getByRole('combobox', { name: '岩进攻对火防守' })
   expect(geoToFire).toHaveValue('-1')
   expect(within(dialog).getByRole('combobox', { name: '火进攻对岩防守' })).toHaveValue('1')

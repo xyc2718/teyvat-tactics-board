@@ -342,7 +342,7 @@ export function TimelinePanel() {
               return (
                 <button
                   key={action.id}
-                  className={`player-track-action type-${action.type} ${action.type === 'receive' && action.pickupActionId ? 'pickup-event' : ''} ${instant ? 'instant' : ''} ${actionSelected ? 'selected' : ''}`}
+                  className={`player-track-action type-${action.type} ${action.type === 'move' && action.sprint ? 'type-sprint' : ''} ${action.type === 'receive' && action.pickupActionId ? 'pickup-event' : ''} ${instant ? 'instant' : ''} ${actionSelected ? 'selected' : ''}`}
                   style={{ left: `${timePercent(action.startTime, sliderMax)}%`, width: `${width}%` }}
                   onClick={() => select({ kind: 'action', id: action.id })}
                   aria-label={`选择${actionLabel}动作，不移动播放头`}

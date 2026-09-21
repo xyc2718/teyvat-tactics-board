@@ -42,6 +42,11 @@ function actionDetail(document: TacticDocumentV1, action: TacticAction): string 
   switch (action.type) {
     case 'move': {
       const route = projectedMovePath(document, action)
+      if (action.sprint) {
+        const rule = actor ? document.rulesSnapshot.roles[actor.role].sprint : undefined
+        const energy = startFrame.sprints?.[action.actorId]?.energy
+        return `${timing}，${name} 沿${action.curveControl ? '曲线' : '直线'}进行雷 E 冲刺，实际路线 ${pathLength(route).toFixed(2)} 格${energy === undefined ? '' : `，开始时能量 ${(energy * 100).toFixed(1)}%`}；冲刺不受普通跑动加减速影响，期间不回能，停止后进入 ${rule?.cooldown ?? 0}s 冷却。`
+      }
       const boost = action.timingConstraint ? null : waterQMoveBoost(document, action)
       const boostText = boost
         ? `；其中 ${boost.overlapStart.toFixed(2)}–${boost.overlapEnd.toFixed(2)}s 为水 Q 加速段，累计身位收益 +${boost.separationGain.toFixed(2)} 格`
@@ -170,7 +175,7 @@ export function buildTacticNarrative(document: TacticDocumentV1): TacticNarrativ
       kind: 'action' as const,
       title: action.type === 'status' && action.status === 'slowed'
         ? `挂冰 · ${document.initialScene.players.find((player) => player.id === action.targetId)?.name ?? action.targetId}`
-        : `${actionTitles[action.type]} · ${actorName(document, action)}`,
+        : `${action.type === 'move' && action.sprint ? '雷 E' : actionTitles[action.type]} · ${actorName(document, action)}`,
       detail: actionDetail(document, action),
     })),
   ].sort((left, right) => left.time - right.time || (

@@ -68,7 +68,7 @@ const moveKeyframeReferenceSchema = z.object({
 const timingTargetReferenceSchema = z.union([
   z.object({
     playerId: z.string().min(1).max(100), actionId: z.string().min(1).max(120),
-    event: z.enum(['qReady', 'qBoost', 'receiveBoost', 'freeze']), edge: z.enum(['start', 'end']),
+    event: z.enum(['qReady', 'qBoost', 'receiveBoost', 'freeze', 'eReady']), edge: z.enum(['start', 'end']),
   }).strict(),
   z.object({
     playerId: z.string().min(1).max(100), statusId: z.string().min(1).max(120),
@@ -86,6 +86,8 @@ const moveTimingConstraintSchema = z.discriminatedUnion('kind', [
 ])
 const ballTargetSchema = z.object({ sourceActionId: z.string().min(1).max(120).nullable() })
 const receptionOriginSchema = z.object({ sourceActionId: z.string().min(1).max(120), offset: nonNegative })
+// A 24-segment sampled curve plus a catch/stop cut must survive round trips.
+const MAX_MOVE_PATH_POINTS = 26
 const pickupTraceSchema = z.array(z.object({ time: nonNegative, position: vec2Schema })).min(1).max(MAX_PICKUP_TRACE_POINTS)
 
 const actionSchema = z.discriminatedUnion('type', [
@@ -93,15 +95,17 @@ const actionSchema = z.discriminatedUnion('type', [
     ...actionBase,
     type: z.literal('move'),
     actorId: z.string(),
-    path: z.array(vec2Schema).min(2).max(20),
+    path: z.array(vec2Schema).min(2).max(MAX_MOVE_PATH_POINTS),
     curveControl: vec2Schema.optional(),
     targetPlayerId: z.string().optional(),
     syncActionId: z.string().optional(),
     followGap: nonNegative.optional(),
     timingConstraint: moveTimingConstraintSchema.optional(),
-    timingRouteBasis: z.object({ endOffset: routeOffsetSchema, controlOffset: routeOffsetSchema.optional(), pathOffsets: z.array(routeOffsetSchema).max(19).optional() }).optional(),
+    timingRouteBasis: z.object({ endOffset: routeOffsetSchema, controlOffset: routeOffsetSchema.optional(), pathOffsets: z.array(routeOffsetSchema).max(MAX_MOVE_PATH_POINTS - 1).optional() }).optional(),
     ballTarget: ballTargetSchema.optional(),
     pickupTrace: pickupTraceSchema.optional(),
+    sprint: z.literal(true).optional(),
+    sprintReceptionSourceId: z.string().min(1).max(120).optional(),
   }),
   z.object({
     ...actionBase,
@@ -186,6 +190,12 @@ const roleRuleSchema = z.object({
     effectiveSeparationLoss: nonNegative,
   }).optional(),
   shield: z.object({ radius: positive }).strict().optional(),
+  sprint: z.object({
+    maxDistance: positive,
+    maxDuration: positive,
+    cooldown: nonNegative,
+    recoveryDuration: positive,
+  }).strict().optional(),
   e: z.object({
     radius: positive,
     duration: nonNegative,
@@ -199,7 +209,7 @@ const roleRuleSchema = z.object({
   label: role.id === 'geo' && role.label === '岩' ? defaultRules.roles.geo.label : role.label,
   q: {
     ...role.q,
-    fixedDistance: role.q.fixedDistance ?? (role.id === 'fire' || role.id === 'geo'),
+    fixedDistance: role.q.fixedDistance ?? (role.id === 'fire' || role.id === 'geo' || role.id === 'electro'),
   },
 }))
 
@@ -209,6 +219,7 @@ function matchupRowSchema(role: 'water' | 'fire' | 'ice') {
     fire: ratingSchema,
     ice: ratingSchema,
     geo: ratingSchema.default(defaultRules.matchups[role].geo),
+    electro: ratingSchema.default(defaultRules.matchups[role].electro),
   })
 }
 
@@ -217,6 +228,15 @@ const geoMatchupRowSchema = z.object({
   fire: ratingSchema.default(defaultRules.matchups.geo.fire),
   ice: ratingSchema.default(defaultRules.matchups.geo.ice),
   geo: ratingSchema.default(defaultRules.matchups.geo.geo),
+  electro: ratingSchema.default(defaultRules.matchups.geo.electro),
+})
+
+const electroMatchupRowSchema = z.object({
+  water: ratingSchema.default(defaultRules.matchups.electro.water),
+  fire: ratingSchema.default(defaultRules.matchups.electro.fire),
+  ice: ratingSchema.default(defaultRules.matchups.electro.ice),
+  geo: ratingSchema.default(defaultRules.matchups.electro.geo),
+  electro: ratingSchema.default(defaultRules.matchups.electro.electro),
 })
 
 const rulesSchema = z.object({
@@ -248,12 +268,14 @@ const rulesSchema = z.object({
     fire: roleRuleSchema,
     ice: roleRuleSchema,
     geo: roleRuleSchema.default(() => structuredClone(defaultRules.roles.geo)),
+    electro: roleRuleSchema.default(() => structuredClone(defaultRules.roles.electro)),
   }),
   matchups: z.object({
     water: matchupRowSchema('water'),
     fire: matchupRowSchema('fire'),
     ice: matchupRowSchema('ice'),
     geo: geoMatchupRowSchema.default(() => ({ ...defaultRules.matchups.geo })),
+    electro: electroMatchupRowSchema.default(() => ({ ...defaultRules.matchups.electro })),
   }),
   modifiers: z.array(
     z.object({
@@ -407,6 +429,7 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
   for (const [roleId, role] of Object.entries(document.rulesSnapshot.roles)) {
     if (role.id !== roleId) return `职业规则 ${roleId} 的内部 ID 不一致。`
     if ((role.attackInnerRadius ?? 0) > role.attackRadius) return `${role.label}的攻击内半径不能大于外半径。`
+    if (role.sprint && role.id !== 'electro') return '只有雷职业可以配置冲刺规则。'
   }
 
   const pointInField = (point: { x: number; y: number }) =>
@@ -465,6 +488,19 @@ function validateDocumentIntegrity(document: TacticDocumentV1): string | null {
       const followFields = [action.targetPlayerId, action.syncActionId, action.followGap]
       const hasFollowField = followFields.some((value) => value !== undefined)
       const hasCompleteFollow = followFields.every((value) => value !== undefined)
+      if (action.sprintReceptionSourceId) {
+        const source = document.actions.find((candidate) => candidate.id === action.sprintReceptionSourceId)
+        if (!action.sprint || source?.type !== 'pass' || source.targetPlayerId !== action.actorId) {
+          return `动作 ${action.id} 的雷 E 接球中断来源无效。`
+        }
+      }
+      if (action.sprint) {
+        const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+        const sprint = actor && document.rulesSnapshot.roles[actor.role].sprint
+        if (actor?.role !== 'electro' || !sprint) return `动作 ${action.id} 的雷 E 缺少雷职业或冲刺规则。`
+        if (hasFollowField || action.ballTarget || action.pickupTrace) return `动作 ${action.id} 的雷 E 不能同时设置跟随或捡球。`
+        if (action.duration > sprint.maxDuration + 1e-6) return `动作 ${action.id} 的雷 E 时长超过满能量上限。`
+      }
       if (hasFollowField && !hasCompleteFollow) return `动作 ${action.id} 的跟随信息不完整。`
       if (action.targetPlayerId && !knownPlayers.has(action.targetPlayerId)) return `动作 ${action.id} 的跟随目标不存在。`
       if (action.targetPlayerId === action.actorId) return `动作 ${action.id} 不能跟随自己。`

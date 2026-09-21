@@ -1,10 +1,11 @@
-import { resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
+import { pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
 import type { MoveAction, PlayerState, TacticAction, TacticDocumentV1, Vec2 } from '../domain/model/types'
 import { actionEndTime, movementDuration, qDuration } from '../domain/timeline/durations'
 import { resolveTimingKeyframe } from '../domain/timeline/timingKeyframes'
 import { resolveMoveQCooldownTarget } from '../domain/timeline/moveTiming'
 import { documentFreezeWindows, projectFrame, projectPlayerPosition, resolveTimedMoveGeometry } from '../domain/timeline/projectFrame'
 import { earliestLegalQStart } from '../domain/rules/qCooldown'
+import { electroSprintState, sprintSpeed, syncSprintPath } from '../domain/timeline/electroSprint'
 
 const EPSILON = 1e-6
 
@@ -14,6 +15,11 @@ type FollowSyncAction = Extract<TacticAction, { type: 'move' | 'qMove' }>
 
 /** Fix the time, not speed: physical geometry and playback share one domain solver. */
 export function syncConstrainedMovePath(document: TacticDocumentV1, action: MoveAction): boolean {
+  if (action.sprint) {
+    const before = JSON.stringify(action)
+    syncSprintPath(document, action)
+    return JSON.stringify(action) !== before
+  }
   if (!action.timingConstraint || action.targetPlayerId || action.ballTarget) return false
   const geometry = resolveTimedMoveGeometry(document, action)
   const changed = geometry.path.length !== action.path.length || geometry.path.some((point, index) => {
@@ -33,6 +39,28 @@ export function syncConstrainedMovePath(document: TacticDocumentV1, action: Move
   else delete action.timingRouteBasis
   return true
 }
+
+/** Uses the locomotion mode's own physical speed, never stretches a sprint. */
+export function runDuration(document: TacticDocumentV1, action: MoveAction): number {
+  const actor = document.initialScene.players.find((player) => player.id === action.actorId)
+  return action.sprint && actor
+    ? pathLength(resolvedMovePath(action)) / Math.max(sprintSpeed(document.rulesSnapshot.roles[actor.role]), EPSILON)
+    : movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+}
+
+export function planSimpleSprint(document: TacticDocumentV1, actorId: string, requestedStart: number, target?: Vec2): LocomotionPlan | null {
+  const actor = document.initialScene.players.find((player) => player.id === actorId)
+  if (!actor || !document.rulesSnapshot.roles[actor.role].sprint) return null
+  const speed = sprintSpeed(document.rulesSnapshot.roles[actor.role])
+  return planSimpleLocomotion(document, actorId, requestedStart,
+    (scheduled, start) => target
+      ? Math.min(distanceTo(scheduled.position, target) / speed, electroSprintState(document, actorId, start).maxDuration)
+      : 0,
+    (start) => start + electroSprintState(document, actorId, start).cooldown,
+    true)
+}
+
+function distanceTo(left: Vec2, right: Vec2): number { return Math.hypot(left.x - right.x, left.y - right.y) }
 
 function isActorSequenceAction(action: TacticAction, actorId: string): action is ActorSequenceAction {
   return (action.type === 'move' || action.type === 'qMove' || action.type === 'wait')
@@ -187,6 +215,9 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): boolean {
         // Reflow may still move source and run; commit finalization owns fallback.
         if (!target) continue
         const nextDuration = target.readyTime - action.startTime
+        // A moved source can exceed E's energy. Leave the last valid duration
+        // intact so transaction finalization can detach the invalid binding.
+        if (action.sprint && nextDuration > electroSprintState(document, action.actorId, action.startTime, action.id).maxDuration + EPSILON) continue
         if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
         action.duration = nextDuration
         if (syncConstrainedMovePath(document, action)) timingChanged = true
@@ -199,6 +230,7 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): boolean {
         continue
       }
       const nextDuration = Math.max(0, referencedTime - action.startTime)
+      if (action.sprint && nextDuration > electroSprintState(document, action.actorId, action.startTime, action.id).maxDuration + EPSILON) continue
       if (Math.abs(nextDuration - action.duration) > EPSILON) timingChanged = true
       action.duration = nextDuration
       if (syncConstrainedMovePath(document, action)) timingChanged = true
@@ -209,7 +241,7 @@ export function syncFollowMoveTimings(document: TacticDocumentV1): boolean {
 }
 
 /** Latest continuation joint, including pass/receive events and a derived thaw boundary. */
-export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: string): number {
+export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: string, includeFreeze = true): number {
   const latestActionJoint = document.actions.reduce((latest, action) => (
     isActorSequenceAction(action, actorId)
       ? Math.max(latest, actionEndTime(action))
@@ -219,6 +251,7 @@ export function latestActorSequenceJoint(document: TacticDocumentV1, actorId: st
           ? Math.max(latest, action.startTime)
       : latest
   ), 0)
+  if (!includeFreeze) return latestActionJoint
   return documentFreezeWindows(document, actorId).reduce(
     (latest, window) => Math.max(latest, window.endsAt),
     latestActionJoint,
@@ -236,6 +269,7 @@ export function planSimpleLocomotion(
   requestedStart: number,
   durationAt: (actor: PlayerState, startTime: number) => number,
   normalizeStart: (candidate: number) => number = (candidate) => candidate,
+  interruptAtFutureFreeze = false,
 ): LocomotionPlan | null {
   const locomotion = document.actions
     .filter((action): action is ActorSequenceAction => isActorSequenceAction(action, actorId))
@@ -268,7 +302,7 @@ export function planSimpleLocomotion(
     }
 
     const freezeConflict = freezeWindows.find((window) => {
-      if (duration <= EPSILON) {
+      if (duration <= EPSILON || interruptAtFutureFreeze) {
         return window.startsAt <= startTime + EPSILON && window.endsAt > startTime + EPSILON
       }
       return startTime < window.endsAt - EPSILON && window.startsAt < proposedEnd - EPSILON
@@ -294,13 +328,21 @@ export function planSimpleQ(
   actorId: string,
   requestedStart: number,
 ): LocomotionPlan | null {
-  return planSimpleLocomotion(
-    document,
+  const activeSprint = document.actions.find((action) => action.type === 'move' && action.sprint
+    && action.actorId === actorId && action.startTime <= requestedStart && actionEndTime(action) > requestedStart)
+  const planning = activeSprint ? { ...document, actions: document.actions.filter((action) => action.id !== activeSprint.id) } : document
+  const plan = planSimpleLocomotion(
+    planning,
     actorId,
     requestedStart,
     (actor) => qDuration(actor, document.rulesSnapshot),
     (candidate) => earliestLegalQStart(document, actorId, candidate),
   )
+  if (plan && activeSprint) {
+    const actor = projectFrame(document, plan.startTime).players.find((player) => player.id === actorId)
+    if (actor) return { ...plan, actor, origin: { ...actor.position } }
+  }
+  return plan
 }
 
 export function planSimpleWait(
@@ -428,10 +470,9 @@ export function reflowSimpleLocomotion(
             : action.ballTarget ? authoredDuration
             : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
               ? Math.max(0, referencedTime - plannedStart)
-              : movementDuration(
-                  resolvedMovePath({ ...action, path: [{ ...scheduledActor.position }, ...tail] }),
-                  document.rulesSnapshot,
-                ),
+              : runDuration(document, { ...action, path: [{ ...scheduledActor.position }, ...tail] }),
+          action.sprint ? (start) => start + electroSprintState(planningDocument, actorId, start).cooldown : undefined,
+          !!action.sprint,
         )
     if (!plan) continue
 
@@ -471,7 +512,7 @@ export function reflowSimpleLocomotion(
         ? authoredDuration
         : action.timingConstraint?.kind === 'keyframe' && referencedTime !== null
           ? Math.max(0, referencedTime - plan.startTime)
-          : movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+          : runDuration(document, action)
       : qDuration(plan.actor, document.rulesSnapshot)
     if (action.type === 'move') syncConstrainedMovePath(document, action)
     scheduled.push(action)

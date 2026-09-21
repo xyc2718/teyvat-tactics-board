@@ -34,9 +34,10 @@ describe('loose flight calibration and reflections', () => {
     expect(result.duration).toBe(3)
     expect(pathLength(result.path)).toBe(6)
     expect(loosePassPosition(action, 1.5, rules)).toEqual({ x: 6.5, y: 3 })
-    expect(passTravelDistance(1, rules)).toBe(6)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], rules)).toBeCloseTo(2 * (1 - Math.sqrt(0.5)))
+    expect(passTravelDistance(1, rules)).toBeCloseTo(50 / 9)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], rules)).toBeCloseTo(3 * (1 - Math.sqrt(0.6)))
     const legacy = structuredClone(rules)
+    legacy.passing.maxDistance = 8
     legacy.passing.ballSpeed = 8
     expect(passDuration([{ x: 0, y: 0 }, { x: 8, y: 0 }], legacy)).toBe(1)
   })

@@ -11,6 +11,7 @@ import { documentFreezeWindows, projectFrame } from './projectFrame'
 // Keep it explicit so new-document defaults do not silently rewrite old fixtures.
 function legacyPassDocument() {
   const document = createDefaultDocument()
+  document.rulesSnapshot.passing.maxDistance = 8
   document.rulesSnapshot.passing.ballSpeed = 8
   return document
 }

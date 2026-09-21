@@ -23,17 +23,18 @@ describe('rule assistance', () => {
   })
   it('uses the configured directional default matchup matrix', () => {
     expect(createDefaultDocument().rulesSnapshot.matchups).toEqual({
-      water: { water: 1, fire: -2, ice: 1, geo: -1 },
-      fire: { water: 0, fire: 0, ice: 1, geo: 1 },
-      ice: { water: -1, fire: 0, ice: 1, geo: 0 },
-      geo: { water: 0, fire: -1, ice: 1, geo: 0 },
+      water: { water: 1, fire: -2, ice: 1, geo: -1, electro: 0 },
+      fire: { water: 0, fire: 0, ice: 1, geo: 1, electro: 0 },
+      ice: { water: -1, fire: 0, ice: 1, geo: 0, electro: -2 },
+      geo: { water: 0, fire: -1, ice: 1, geo: 0, electro: 0 },
+      electro: { water: 0, fire: 0, ice: 2, geo: -1, electro: null },
     })
   })
 
   it.each([
     [3, 'info'],
     [6, 'warning'],
-    [9, 'hard'],
+    [11, 'hard'],
   ] as const)('classifies a %s-grid pass as %s', (length, severity) => {
     const document = createDefaultDocument()
     const pass: PassAction = {

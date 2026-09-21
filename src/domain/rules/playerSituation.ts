@@ -82,7 +82,9 @@ function arrivalToBall(
   return {
     player,
     ballDistance,
-    ...evaluateReachTiming(frame, player, ballDistance, document.rulesSnapshot),
+    ...evaluateReachTiming(frame, player, ballDistance, document.rulesSnapshot, {
+      gap: ballDistance, innerRadius: 0, outerRadius: 0, center: frame.ball.position,
+    }),
   }
 }
 

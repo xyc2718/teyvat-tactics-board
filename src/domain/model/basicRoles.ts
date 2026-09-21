@@ -3,7 +3,6 @@ import type { BasicRoleId, PlayerState, RoleId, RoleRule, RuleSetV1, TacticDocum
 export const BASIC_ROLE_IDS = ['water', 'fire', 'ice', 'electro', 'geo', 'anemo'] as const satisfies readonly BasicRoleId[]
 
 const extraRoleLabels = {
-  electro: { label: '雷', shortLabel: '雷' },
   anemo: { label: '风', shortLabel: '风' },
 }
 
@@ -12,7 +11,7 @@ export function isBasicRoleId(value: unknown): value is BasicRoleId {
 }
 
 function isSimulationRole(role: BasicRoleId): role is RoleId {
-  return role === 'water' || role === 'fire' || role === 'ice' || role === 'geo'
+  return role !== 'anemo'
 }
 
 export function effectiveBasicRole(document: TacticDocumentV1, player: PlayerState): BasicRoleId {

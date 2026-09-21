@@ -1,6 +1,6 @@
 import type { MatchupRating, RoleId, RuleSetV1 } from '../model/types'
 
-export const ROLE_IDS = ['water', 'fire', 'ice', 'geo'] as const satisfies readonly RoleId[]
+export const ROLE_IDS = ['water', 'fire', 'ice', 'geo', 'electro'] as const satisfies readonly RoleId[]
 
 export const MATCHUP_LABELS: Record<Exclude<MatchupRating, null>, string> = {
   [-2]: '极不利',
@@ -21,8 +21,8 @@ export const defaultRules: RuleSetV1 = {
   },
   passing: {
     safeDistance: 4,
-    maxDistance: 8,
-    ballSpeed: 4,
+    maxDistance: 10,
+    ballSpeed: 10 / 3,
     interceptStartWidth: 0.18,
     interceptEndWidth: 0.8,
   },
@@ -116,12 +116,29 @@ export const defaultRules: RuleSetV1 = {
       },
       shield: { radius: 1 },
     },
+    electro: {
+      id: 'electro',
+      label: '雷',
+      shortLabel: '雷',
+      attackInnerRadius: 0.2,
+      attackRadius: 1,
+      q: {
+        kind: 'blink',
+        maxDistance: 1.8,
+        fixedDistance: true,
+        cooldown: 10,
+        duration: 0,
+        turnable: false,
+      },
+      sprint: { maxDistance: 8, maxDuration: 3.8, cooldown: 4, recoveryDuration: 15 },
+    },
   },
   matchups: {
-    water: { water: 1, fire: -2, ice: 1, geo: -1 },
-    fire: { water: 0, fire: 0, ice: 1, geo: 1 },
-    ice: { water: -1, fire: 0, ice: 1, geo: 0 },
-    geo: { water: 0, fire: -1, ice: 1, geo: 0 },
+    water: { water: 1, fire: -2, ice: 1, geo: -1, electro: 0 },
+    fire: { water: 0, fire: 0, ice: 1, geo: 1, electro: 0 },
+    ice: { water: -1, fire: 0, ice: 1, geo: 0, electro: -2 },
+    geo: { water: 0, fire: -1, ice: 1, geo: 0, electro: 0 },
+    electro: { water: 0, fire: 0, ice: 2, geo: -1, electro: null },
   },
   modifiers: [
     {

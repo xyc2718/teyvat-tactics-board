@@ -43,7 +43,7 @@ export function resolvedMovePath(action: MoveAction): Vec2[] {
   if (!start || !end) return action.path.map((point) => ({ ...point }))
   return action.curveControl
     ? quadraticPath(start, action.curveControl, end)
-    : [{ ...start }, { ...end }]
+    : action.path.map((point) => ({ ...point }))
 }
 
 export function pointAlongPath(path: Vec2[], progress: number): Vec2 {

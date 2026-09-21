@@ -4,6 +4,7 @@ const ACTOR_TOOLS: ReadonlySet<ToolId> = new Set([
   'move',
   'wait',
   'qMove',
+  'sprint',
   'pass',
   'loosePass',
   'shoot',
@@ -33,6 +34,8 @@ export function isToolActorEligible(
   if (!toolNeedsActor(tool)) return false
   if (isBallReleaseTool(tool)) return frame.ball.carrierId === player.id
   if (tool === 'eZone') return rules.roles[player.role].e !== undefined
+  if (tool === 'sprint') return player.role === 'electro' && Boolean(rules.roles[player.role].sprint)
+    && frame.ball.carrierId !== player.id
   return true
 }
 
@@ -70,6 +73,7 @@ export function isToolTargetPlayerEligible(
 }
 
 export function actorPrompt(tool: ToolId): string {
+  if (tool === 'sprint') return '选择未持球的雷；从可用的 E 起点绘制冲刺路线'
   if (tool === 'loosePass') return '选择持球者或待接球球员；空传需在接球后发起'
   if (isBallReleaseTool(tool)) return '当前没有持球者，请先在“选择”模式设置球权'
   if (tool === 'eZone') return '选择一名霜役立即开启随身冰圈'
@@ -83,6 +87,7 @@ export function actorPrompt(tool: ToolId): string {
 }
 
 export function targetPrompt(tool: ToolId): string {
+  if (tool === 'sprint') return '点击终点绘制雷 E；范围由当前能量决定，可在右侧调整曲线和持续时间'
   if (tool === 'qMove') return '第 2/2 步：点击落点，或点击自由球用 Q 捡球；可返回第 1 步'
   if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈；点击队友后系统按其移动轨迹解算接球点，也可点击空地'
   if (tool === 'loosePass') return '第 2/2 步：点击空地指定空传方向；球会沿直线飞行，遇墙反弹'

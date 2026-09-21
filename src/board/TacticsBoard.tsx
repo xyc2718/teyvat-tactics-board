@@ -22,6 +22,7 @@ import { analyzeDocumentIceQHits, effectiveQPath, evaluateQDistanceEffect, eZone
 import { isOpeningStep } from '../domain/timeline/steps'
 import { loosePassingRule } from '../domain/timeline/loosePass'
 import { ballEpisodeSourceIdAt } from '../domain/timeline/looseBall'
+import { electroSprintState } from '../domain/timeline/electroSprint'
 import { useTacticStore } from '../editor/useTacticStore'
 import {
   actorPrompt,
@@ -282,7 +283,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         else createAction(actionActor?.id ?? null, point, id)
         return
       }
-      if ((tool === 'qMove' || tool === 'loosePass') && id !== 'ball') {
+      if ((tool === 'qMove' || tool === 'sprint' || tool === 'loosePass') && id !== 'ball') {
         chooseActor(id)
         return
       }
@@ -440,8 +441,8 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             />
           : <polyline
               points={pointsAttribute(renderedPath)}
-              className={`action-path action-${action.type} ${moveAction?.targetPlayerId ? 'action-move-follow' : ''} ${(action.type === 'move' || action.type === 'qMove') && action.ballTarget ? 'action-ball-pickup' : ''}`}
-              markerEnd={`url(#arrow-${action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'loosePass' ? 'loose-pass' : action.type === 'annotation' ? 'note' : 'move'})`}
+              className={`action-path action-${action.type} ${moveAction?.sprint ? 'action-sprint' : ''} ${moveAction?.targetPlayerId ? 'action-move-follow' : ''} ${(action.type === 'move' || action.type === 'qMove') && action.ballTarget ? 'action-ball-pickup' : ''}`}
+              markerEnd={`url(#arrow-${moveAction?.sprint ? 'sprint' : action.type === 'qMove' ? 'q' : action.type === 'shoot' ? 'shoot' : action.type === 'loosePass' ? 'loose-pass' : action.type === 'annotation' ? 'note' : 'move'})`}
             >
               {qEffect && qEffect.reduction > 0.005 && <title>冰圈影响：原路径 {qEffect.authoredDistance.toFixed(2)} 格，实际 Q 位移 {qEffect.effectiveDistance.toFixed(2)} 格</title>}
               {moveAction?.targetPlayerId && <title>贴身跟随 · 同步至目标动作结束 · 间距 {moveAction.followGap?.toFixed(2)} 格</title>}
@@ -610,6 +611,9 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           <marker id="arrow-move" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#f5d58b" />
           </marker>
+          <marker id="arrow-sprint" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#b99cff" />
+          </marker>
           <marker id="arrow-q" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
             <path d="M0,0 L7,3.5 L0,7 Z" fill="#7de2f2" />
           </marker>
@@ -703,6 +707,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
             tool={tool}
             actor={toolActor}
             document={document}
+            time={currentTime}
           />
         )}
 
@@ -733,12 +738,12 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
           const actorCandidate = isRangeInspectionTool(tool)
             || tool === 'loosePass'
             || (tool !== 'select'
-              && (!toolActor || tool === 'qMove')
+              && (!toolActor || tool === 'qMove' || tool === 'sprint')
               && isToolActorEligible(tool, player, frame, rules))
-          const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && toolActor
+          const targetCandidate = tool !== 'select' && !isRangeInspectionTool(tool) && tool !== 'qMove' && tool !== 'sprint' && toolActor
             ? isToolTargetPlayerEligible(tool, toolActor, player)
             : false
-          const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || isBallReleaseTool(tool) || tool === 'qMove')
+          const workflowDimmed = tool !== 'select' && !isRangeInspectionTool(tool) && toolNeedsActor(tool) && !selected && !actorCandidate && !targetCandidate && (!toolActor || isBallReleaseTool(tool) || tool === 'qMove' || tool === 'sprint')
           const statuses = boardMode === 'basic' ? [] : frame.statuses.filter((status) => status.playerId === player.id)
           const cooldown = boardMode === 'basic' ? undefined : frame.cooldowns[player.id]
           const shot = boardMode === 'basic' ? undefined : frame.shots.find((candidate) => {
@@ -765,7 +770,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
                 } else if (tool === 'move') {
                   if (!toolActor || toolActor.id === player.id) chooseActor(player.id)
                   else createAction(actionActor?.id ?? null, position, player.id)
-                } else if (tool === 'qMove' || tool === 'loosePass') {
+                } else if (tool === 'qMove' || tool === 'sprint' || tool === 'loosePass') {
                   chooseActor(player.id)
                 } else if (tool !== 'select' && toolNeedsActor(tool) && !toolActor) {
                   chooseActor(player.id)
@@ -900,7 +905,7 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
         <span className="guide-step">{isRangeInspectionTool(tool) ? '范围查看' : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? '1 / 1' : toolActor || !toolNeedsActor(tool) ? '2 / 2' : '1 / 2'}</span>
         <span><strong>{boardMode === 'basic' ? basicToolName : toolLabels[tool].label}</strong>{boardMode === 'basic' ? basicToolPrompt : tool === 'shoot' || tool === 'eZone' || tool === 'wait' ? actorPrompt(tool) : isRangeInspectionTool(tool) ? (toolActor ? targetPrompt(tool) : actorPrompt(tool)) : toolActor || !toolNeedsActor(tool) ? targetPrompt(tool) : actorPrompt(tool)}</span>
         <span className="guide-actions">
-          {boardMode === 'simulation' && toolActor && (tool === 'move' || tool === 'qMove') && <button
+          {boardMode === 'simulation' && toolActor && (tool === 'move' || tool === 'qMove' || tool === 'sprint') && <button
             type="button"
             className="guide-back-button"
             onClick={reselectToolActor}
@@ -985,13 +990,24 @@ function ToolPointerPreview({
   tool,
   actor,
   document,
+  time,
 }: {
   tool: ToolId
   actor: PlayerState
   document: TacticDocumentV1
+  time: number
 }) {
   const rules = document.rulesSnapshot
   const origin = actor.position
+
+  if (tool === 'sprint') {
+    const sprint = electroSprintState(document, actor.id, time)
+    return <g className="tool-preview-layer" pointerEvents="none">
+      <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={sprint.maxDistance * SCALE} className="tool-preview-range sprint-preview-range">
+        <title>当前能量 {(sprint.energy * 100).toFixed(0)}%；最多冲刺 {sprint.maxDistance.toFixed(2)} 格 / {sprint.maxDuration.toFixed(2)} 秒</title>
+      </circle>
+    </g>
+  }
 
   if (tool === 'qMove') {
     return <g className="tool-preview-layer" pointerEvents="none">

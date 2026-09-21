@@ -176,6 +176,7 @@ function passWarnings(document: TacticDocumentV1, action: PassAction, hasShieldR
 
   const direct = segments.some((segment) => segment.level === 'direct')
   const qReachable = highest === 'qSingle' || highest === 'qMultiple'
+  const eReachable = highest === 'eSingle' || highest === 'eMultiple'
   const interceptorIds = [...new Set(segments.flatMap((segment) => segment.opponentIds))]
   const interceptors = startFrame.players.filter((player) => interceptorIds.includes(player.id))
   const highestLabel = PASS_THREAT_LABELS[highest]
@@ -186,11 +187,13 @@ function passWarnings(document: TacticDocumentV1, action: PassAction, hasShieldR
       severity: 'warning',
       title: direct
         ? '对手位于传球截断走廊'
-        : highest === 'qMultiple'
-          ? '多名对手可用 Q 触达传球线路'
-          : qReachable
-            ? '一名对手可用 Q 触达传球线路'
-            : '传球进入截断区',
+        : eReachable
+          ? '对手可用雷 E 触达传球线路'
+          : highest === 'qMultiple'
+            ? '多名对手可用 Q 触达传球线路'
+            : qReachable
+              ? '一名对手可用 Q 触达传球线路'
+              : '传球进入截断区',
       detail: interceptors.length > 0
         ? `${length.toFixed(2)} 格传球，最高威胁为“${highestLabel}”；涉及 ${interceptors.map((player) => player.name).join('、')}。`
         : `${length.toFixed(2)} 格位于 ${rules.passing.safeDistance}–${rules.passing.maxDistance} 格普通截断区。`,
@@ -255,7 +258,7 @@ function shotWarnings(document: TacticDocumentV1, action: ShootAction): RuleWarn
     id: `shoot-pressure-${action.id}`,
     severity: pressure.isRisk ? 'warning' : 'info',
     title: pressure.isRisk ? '最早受击不晚于蓄力完成' : '蓄力领先最早受击',
-    detail: `${shotPressureSummary(pressure)}；${shotPressureComparison(pressure)}。双方距离 ${earliest.gap.toFixed(2)} 格，${earliest.defender.name} 需进入 ${earliest.attackInnerRadius.toFixed(2)}–${earliest.attackOuterRadius.toFixed(2)} 格攻击环，采用${shotPressureModeLabel(earliest.mode)}${earliest.frozenDelay > 0 ? `，先等待冻结 ${earliest.frozenDelay.toFixed(2)} 秒` : ''}${earliest.mode === 'q' ? `，起始 Q CD ${earliest.qCooldownAtStart.toFixed(2)} 秒、Q 用时 ${earliest.qDuration.toFixed(2)} 秒` : ''}。`,
+    detail: `${shotPressureSummary(pressure)}；${shotPressureComparison(pressure)}。双方距离 ${earliest.gap.toFixed(2)} 格，${earliest.defender.name} 需进入 ${earliest.attackInnerRadius.toFixed(2)}–${earliest.attackOuterRadius.toFixed(2)} 格攻击环，采用${shotPressureModeLabel(earliest.mode)}${earliest.frozenDelay > 0 ? `，先等待冻结 ${earliest.frozenDelay.toFixed(2)} 秒` : ''}${earliest.mode === 'q' || earliest.mode === 'qE' ? `，起始 Q CD ${earliest.qCooldownAtStart.toFixed(2)} 秒、Q 用时 ${earliest.qDuration.toFixed(2)} 秒` : ''}${earliest.mode === 'e' || earliest.mode === 'qE' ? `，起始雷 E 能量 ${(earliest.eEnergy * 100).toFixed(1)}%、E CD ${earliest.eCooldownAtStart.toFixed(2)} 秒` : ''}。`,
     actionId: action.id,
     playerIds: [shooter.id, earliest.defender.id],
   })
@@ -465,6 +468,7 @@ export function evaluateWarnings(document: TacticDocumentV1): RuleWarning[] {
     const eRule = owner ? document.rulesSnapshot.roles[owner.role].e : undefined
     if (!owner || !eRule) continue
     for (const move of document.actions.filter((action) => action.type === 'move')) {
+      if (move.sprint) continue
       const runner = document.initialScene.players.find((player) => player.id === move.actorId)
       if (!runner || runner.team === owner.team || !doesEZoneSlowMove(document, zone, move)) continue
       warnings.push({

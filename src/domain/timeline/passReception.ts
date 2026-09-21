@@ -58,9 +58,16 @@ interface FlightInterval {
 
 /** Keep target jumps exact. Additional smooth-event cuts share a fixed budget
  * with the regular grid, so even the maximum-size imported tactic stays bounded. */
-function flightIntervals(document: TacticDocumentV1, playerId: string, start: number, duration: number): FlightInterval[] {
+function flightIntervals(document: TacticDocumentV1, playerId: string, start: number, duration: number, passId?: string): FlightInterval[] {
   const jumps = new Set<number>()
   const smooth = new Set<number>()
+  // A solved receipt may materialize an E stop plus an ordinary tail. Neither
+  // boundary existed before this flight was solved. Adding that numerical cut
+  // would change midpoint headings before contact and move its own cause.
+  // Geometry still changes at the exact stop; only the integration partition
+  // remains independent of this flight's consequence (including deleted tails).
+  const causalStops = new Set(document.actions.flatMap((action) => action.type === 'move' && action.actorId === playerId
+    && action.sprintReceptionSourceId === passId && passId ? [actionEndTime(action)] : []))
   const add = (set: Set<number>, time: number) => {
     if (time > start && time <= start + duration) set.add(time - start)
   }
@@ -71,9 +78,9 @@ function flightIntervals(document: TacticDocumentV1, playerId: string, start: nu
     // Authored moves/waits can have detached initial positions too, so their
     // starts receive the same left/right treatment as instantaneous Q.
     if ((action.type === 'move' || action.type === 'qMove' || action.type === 'wait') && action.actorId === playerId) {
-      add(jumps, action.startTime)
+      if (action.type !== 'move' || !causalStops.has(action.startTime)) add(jumps, action.startTime)
     } else add(smooth, action.startTime)
-    add(smooth, actionEndTime(action))
+    if (action.type !== 'move' || action.actorId !== playerId || !causalStops.has(actionEndTime(action))) add(smooth, actionEndTime(action))
   }
   for (const window of documentFreezeWindows(document, playerId)) {
     add(jumps, window.startsAt)
@@ -223,7 +230,7 @@ export function solvePassReception(document: TacticDocumentV1, pass: PassAction)
     receiverPosition: { ...contact.target },
   })
 
-  for (const interval of flightIntervals(projectionDocument, pass.targetPlayerId, pass.startTime, maxDuration)) {
+  for (const interval of flightIntervals(projectionDocument, pass.targetPlayerId, pass.startTime, maxDuration, pass.id)) {
     // Read the left limit to avoid dragging the receiver through a Q jump.
     // This query offset is numerical only and never stored as gameplay time.
     const leftLimit = interval.jumpAtEnd

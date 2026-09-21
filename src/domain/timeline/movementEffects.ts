@@ -187,6 +187,7 @@ function buildMoveBoostEffect(
 }
 
 export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): WaterQMoveBoost | null {
+  if (move.sprint) return null
   const actor = document.initialScene.players.find((player) => player.id === move.actorId)
   const rule = actor?.role === 'water' ? document.rulesSnapshot.roles.water.afterQBoost : undefined
   if (!rule || rule.duration <= 0 || move.duration <= 0) return null
@@ -205,6 +206,7 @@ export function waterQMoveBoost(document: TacticDocumentV1, move: MoveAction): W
 }
 
 export function receiveMoveBoosts(document: TacticDocumentV1, move: MoveAction): ReceiveMoveBoost[] {
+  if (move.sprint) return []
   const windows = movementReceiveBoostWindowsFor(document, move.actorId, move.startTime, actionEndTime(move))
   const route = resolvedMovePath(move)
   const length = pathLength(route)

@@ -19,6 +19,7 @@ describe('tactic narrative', () => {
   })
   it('derives chronological ice hits, acceleration, pass threat, zones and hard warnings', () => {
     const document = createDefaultDocument()
+    Object.assign(document.rulesSnapshot.passing, { maxDistance: 8, ballSpeed: 4 })
     document.initialScene.players.find((player) => player.id === 'red-water')!.position = { x: 4.5, y: 7.8 }
     document.initialScene.players.find((player) => player.id === 'red-fire')!.position = { x: 6.5, y: 7.8 }
     const iceQ: QMoveAction = { id: 'narrative-ice', type: 'qMove', actorId: 'blue-ice', startTime: 0, duration: 1, path: [{ x: 3.5, y: 7.3 }, { x: 6.5, y: 7.3 }] }

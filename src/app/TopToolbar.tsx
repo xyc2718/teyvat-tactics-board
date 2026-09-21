@@ -5,7 +5,7 @@ import { downloadTactic, parseTactic } from '../persistence/tacticFile'
 import { toolLabels } from '../ui/labels'
 import { ResetTacticDialog } from './ResetTacticDialog'
 
-const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'pass', 'loosePass', 'shoot', 'annotation', 'attack', 'strikeRange', 'slow', 'eZone']
+const simulationTools: ToolId[] = ['select', 'move', 'wait', 'qMove', 'sprint', 'pass', 'loosePass', 'shoot', 'annotation', 'attack', 'strikeRange', 'slow', 'eZone']
 const basicTools: ToolId[] = ['select', 'move', 'attack', 'strikeRange']
 
 interface TopToolbarProps {
@@ -169,6 +169,7 @@ function ToolIcon({ tool }: { tool: ToolId }) {
     move: '↝',
     wait: 'Ⅱ',
     qMove: 'ϟ',
+    sprint: '⇉',
     pass: '⇢',
     loosePass: '↗',
     shoot: '◉',

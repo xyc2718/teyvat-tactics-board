@@ -213,7 +213,7 @@ describe('tactic file boundary', () => {
 
   it('rejects unsupported simulation identities and mismatched role-rule IDs', () => {
     const source = createDefaultDocument()
-    expect(parseTactic(serializeTactic(source).replace('"role": "water"', '"role": "electro"')).ok).toBe(false)
+    expect(parseTactic(serializeTactic(source).replace('"role": "water"', '"role": "anemo"')).ok).toBe(false)
     expect(parseTactic(serializeTactic(source).replace('"id": "water"', '"id": "anemo"')).ok).toBe(false)
     expect(parseTactic(serializeTactic(source).replace('"id": "water"', '"id": "geo"')).ok).toBe(false)
   })

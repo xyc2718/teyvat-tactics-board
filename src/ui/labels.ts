@@ -6,6 +6,7 @@ export const roleColors: Record<RoleId, string> = {
   fire: '#ff795f',
   ice: '#b9e8ff',
   geo: '#e5bd67',
+  electro: '#b99cff',
 }
 
 export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = {
@@ -13,6 +14,7 @@ export const toolLabels: Record<ToolId, { label: string; shortcut?: string }> = 
   move: { label: '跑动', shortcut: 'M' },
   wait: { label: '等待', shortcut: 'W' },
   qMove: { label: 'Q 技能', shortcut: 'Q' },
+  sprint: { label: '雷 E', shortcut: 'T' },
   pass: { label: '传球', shortcut: 'P' },
   loosePass: { label: '空传', shortcut: 'L' },
   shoot: { label: '射门', shortcut: 'S' },
@@ -39,6 +41,7 @@ export const actionLabels: Record<TacticAction['type'], string> = {
 }
 
 export function actionLabel(action: TacticAction): string {
+  if (action.type === 'move' && action.sprint) return '雷 E 冲刺'
   if (action.type === 'receive' && action.pickupActionId) return '捡球'
   if (action.type === 'move' && action.ballTarget) return '跑动捡球'
   if (action.type === 'qMove' && action.ballTarget) return 'Q 捡球'

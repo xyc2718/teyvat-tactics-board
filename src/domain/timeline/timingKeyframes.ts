@@ -47,6 +47,12 @@ export function documentTimingKeyframes(document: TacticDocumentV1): TimingKeyfr
       add({ playerId: player.id, actionId: action.id, event: 'qReady', edge: 'end' },
         action.startTime + role.q.cooldown, 'Q 冷却结束', [action.id])
     })
+    for (const action of document.actions) {
+      if (action.type === 'move' && action.sprint && action.actorId === player.id && action.duration > 0 && role.sprint) {
+        add({ playerId: player.id, actionId: action.id, event: 'eReady', edge: 'end' },
+          actionEndTime(action) + role.sprint.cooldown, '雷 E 冷却结束', [action.id])
+      }
+    }
     const qBoosts = movementQBoostWindowsFor(document, player.id, 0, Number.MAX_VALUE)
     qBoosts.forEach((window, index) => {
       const next = qBoosts[index + 1]

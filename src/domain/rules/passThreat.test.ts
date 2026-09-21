@@ -23,6 +23,7 @@ describe('pass threat classification', () => {
 
   it('follows corridor bends and uses cumulative distance for its width and endpoint', () => {
     const document = createDefaultDocument()
+    document.rulesSnapshot.passing.maxDistance = 8
     document.rulesSnapshot.passing.interceptStartWidth = 0.2
     document.rulesSnapshot.passing.interceptEndWidth = 0.6
     const polygon = buildPassCorridor([
@@ -40,14 +41,14 @@ describe('pass threat classification', () => {
     const document = createDefaultDocument()
     const frame = projectFrame(document, 0)
     const segments = classifyPassThreat(
-      [{ x: 0, y: 1 }, { x: 10, y: 1 }],
+      [{ x: 0, y: 1 }, { x: 12, y: 1 }],
       'blue',
       frame,
       document.rulesSnapshot,
     )
 
     expect(segments[0]).toMatchObject({ level: 'safe', startDistance: 0, endDistance: 4 })
-    expect(segments.at(-1)).toMatchObject({ level: 'drop', startDistance: 8, endDistance: 10 })
+    expect(segments.at(-1)).toMatchObject({ level: 'drop', startDistance: 10, endDistance: 12 })
   })
 
   it('distinguishes one Q-reachable opponent, multiple Q opponents, and a direct corridor', () => {
@@ -116,6 +117,8 @@ describe('pass threat classification', () => {
 
   it('allows an instant Q only when freeze and cooldown end before the ball arrives', () => {
     const document = createDefaultDocument()
+    // These thresholds were calibrated against the saved eight-grid/two-second flight.
+    Object.assign(document.rulesSnapshot.passing, { maxDistance: 8, ballSpeed: 4 })
     movePlayer(document, 'red-water', 10, 7)
     movePlayer(document, 'red-fire', 20, 0)
     movePlayer(document, 'red-ice', 20, 14)

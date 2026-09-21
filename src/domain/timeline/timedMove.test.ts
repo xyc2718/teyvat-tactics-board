@@ -201,9 +201,10 @@ describe('physical fixed-time runs', () => {
     move.path = [{ x: 2, y: 3 }, { x: 2.5, y: 4 }, { x: 3, y: 3 }]
     sync(document, move)
     expect(move.path).toHaveLength(3)
-    expect(move.path[1]!.x).toBeCloseTo(4, 9)
-    expect(move.path[1]!.y).toBeCloseTo(7, 9)
-    expect(move.path[2]!.x).toBeCloseTo(6, 9)
+    expect(move.path[1]!.x).toBeCloseTo(2 + 2 / Math.sqrt(5), 9)
+    expect(move.path[1]!.y).toBeCloseTo(3 + 4 / Math.sqrt(5), 9)
+    expect(move.path[2]!.x).toBeCloseTo(2 + 4 / Math.sqrt(5), 9)
+    expect(pathLength(projectedMovePath(document, move))).toBeCloseTo(4, 9)
     document.initialScene.statuses.push({ id: 'freeze', sourceActionId: 'freeze', playerId: move.actorId,
       kind: 'frozen', startsAt: 0, endsAt: 1 })
     sync(document, move)
@@ -211,8 +212,8 @@ describe('physical fixed-time runs', () => {
     expect(move.timingRouteBasis?.pathOffsets).toHaveLength(2)
     document.initialScene.statuses = []
     sync(document, move)
-    expect(move.path[1]!.x).toBeCloseTo(4, 9)
-    expect(move.path[1]!.y).toBeCloseTo(7, 9)
+    expect(move.path[1]!.x).toBeCloseTo(2 + 2 / Math.sqrt(5), 9)
+    expect(move.path[1]!.y).toBeCloseTo(3 + 4 / Math.sqrt(5), 9)
   })
 
   it('uses marked-ball pickup boost only after the solved catch, restarting its saved duration', () => {

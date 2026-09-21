@@ -1,7 +1,8 @@
 import { distance } from '../geometry/geometry'
 import { compilePath } from '../geometry/compiledPath'
-import type { PassAction, ProjectedFrame, RuleSetV1, TeamId, Vec2 } from '../model/types'
+import type { PassAction, PlayerState, ProjectedFrame, RuleSetV1, TeamId, Vec2 } from '../model/types'
 import { passTimeForDistance } from '../timeline/durations'
+import { createReachTimingEvaluator } from './reachTime'
 
 const SAMPLE_SPACING = 0.2
 const MAX_UNIFORM_SAMPLES = 512
@@ -11,7 +12,9 @@ export const PASS_THREAT_ORDER = [
   'safe',
   'baseRisk',
   'qSingle',
+  'eSingle',
   'qMultiple',
+  'eMultiple',
   'direct',
   'drop',
 ] as const
@@ -22,7 +25,9 @@ export const PASS_THREAT_LABELS: Record<PassThreatLevel, string> = {
   safe: '安全段',
   baseRisk: '普通截断区',
   qSingle: '单人 Q 可达',
+  eSingle: '雷 E 可达',
   qMultiple: '多人 Q 可达',
+  eMultiple: '多人技能可达（含雷 E）',
   direct: '直接截球走廊',
   drop: '超距落地',
 }
@@ -53,11 +58,16 @@ function frozenDelayAtFrame(frame: ProjectedFrame, playerId: string): number {
     .reduce((latest, status) => Math.max(latest, status.endsAt - frame.time), 0)
 }
 
+interface OpponentReach {
+  player: PlayerState
+  qAvailableDelay: number
+  evaluate: ReturnType<typeof createReachTimingEvaluator>
+}
+
 function classifyPoint(
   point: Vec2,
   distanceFromStart: number,
-  passerTeam: TeamId,
-  frame: ProjectedFrame,
+  opponents: OpponentReach[],
   rules: RuleSetV1,
 ): { level: PassThreatLevel; opponentIds: string[] } {
   if (distanceFromStart <= rules.passing.safeDistance + EPSILON) {
@@ -68,32 +78,38 @@ function classifyPoint(
   }
 
   const width = corridorWidth(distanceFromStart, rules)
-  const opponents = frame.players.filter((player) => player.team !== passerTeam)
-  const direct = opponents.filter((player) => distance(player.position, point) <= width)
+  const direct = opponents.filter(({ player }) => distance(player.position, point) <= width)
   if (direct.length > 0) {
-    return { level: 'direct', opponentIds: direct.map((player) => player.id) }
+    return { level: 'direct', opponentIds: direct.map(({ player }) => player.id) }
   }
 
   const ballArrivalTime = passTimeForDistance(distanceFromStart, rules)
-  const qReachable = opponents.filter((player) => {
+  const qReachable: string[] = []
+  const eReachable: string[] = []
+  for (const { player, qAvailableDelay, evaluate } of opponents) {
     const qRule = rules.roles[player.role].q
-    const requiredQDistance = Math.max(0, distance(player.position, point) - width)
-    if (requiredQDistance > qRule.maxDistance + EPSILON) return false
-
-    // Cooldown keeps ticking while frozen, but Q cannot begin until both
-    // cooldown and freeze have ended. A player already standing in the
-    // corridor was handled above and can still intercept in place.
-    const qAvailableDelay = Math.max(
-      Math.max(0, frame.cooldowns[player.id]?.q ?? 0),
-      frozenDelayAtFrame(frame, player.id),
-    )
-    return qAvailableDelay + qRule.duration <= ballArrivalTime + EPSILON
-  })
+    const gap = distance(player.position, point)
+    const requiredQDistance = Math.max(0, gap - width)
+    if (player.role === 'electro') {
+      const reach = evaluate(requiredQDistance, { gap, innerRadius: 0, outerRadius: width, center: point })
+      if (reach.qTime <= ballArrivalTime + EPSILON) qReachable.push(player.id)
+      else if (Math.min(reach.eTime, reach.qETime) <= ballArrivalTime + EPSILON) eReachable.push(player.id)
+    } else if (requiredQDistance <= qRule.maxDistance + EPSILON
+      && qAvailableDelay + qRule.duration <= ballArrivalTime + EPSILON) {
+      // Legacy ordinary/Q classifications remain unchanged. E is an added
+      // capability, not a change to every role's interception approximation.
+      qReachable.push(player.id)
+    }
+  }
+  if (eReachable.length > 0) {
+    const opponentIds = [...qReachable, ...eReachable]
+    return { level: opponentIds.length > 1 ? 'eMultiple' : 'eSingle', opponentIds }
+  }
   if (qReachable.length > 1) {
-    return { level: 'qMultiple', opponentIds: qReachable.map((player) => player.id) }
+    return { level: 'qMultiple', opponentIds: qReachable }
   }
   if (qReachable.length === 1) {
-    return { level: 'qSingle', opponentIds: qReachable.map((player) => player.id) }
+    return { level: 'qSingle', opponentIds: qReachable }
   }
   return { level: 'baseRisk', opponentIds: [] }
 }
@@ -108,6 +124,13 @@ export function classifyPassThreat(
   const compiled = compilePath(path)
   const total = compiled.length
   if (path.length < 2 || total <= EPSILON) return []
+  // Read statuses/resources once per defender, never project/hash a document
+  // inside the bounded path samples.
+  const opponents = frame.players.filter((player) => player.team !== passerTeam).map((player) => ({
+    player,
+    qAvailableDelay: Math.max(frame.cooldowns[player.id]?.q ?? 0, frozenDelayAtFrame(frame, player.id)),
+    evaluate: createReachTimingEvaluator(frame, player, rules),
+  }))
 
   const boundaries = new Set<number>([0, total])
   const boundaryPoints = new Map<number, Vec2>([
@@ -146,8 +169,7 @@ export function classifyPassThreat(
     const classification = classifyPoint(
       compiled.pointAtDistance(midpoint),
       midpoint,
-      passerTeam,
-      frame,
+      opponents,
       rules,
     )
     const start = boundaryPoints.get(startDistance) ?? compiled.pointAtDistance(startDistance)

@@ -60,7 +60,9 @@ export function evaluateShotPressure(
       const role = rules.roles[defender.role]
       const gap = distance(defender.position, shooter.position)
       const annulus = radialDistanceToAttackAnnulus(gap, role.attackInnerRadius ?? 0, role.attackRadius)
-      const timing = evaluateReachTiming(frame, defender, annulus.distance, rules)
+      const timing = evaluateReachTiming(frame, defender, annulus.distance, rules, {
+        gap, innerRadius: annulus.innerRadius, outerRadius: annulus.outerRadius, center: shooter.position,
+      })
       return {
         ...timing,
         defender,
@@ -97,7 +99,7 @@ export function evaluateShotActionPressure(
 }
 
 export function shotPressureModeLabel(mode: ShotPressureMode): string {
-  return mode === 'q' ? 'Q逼近' : '直跑逼近'
+  return { direct: '直跑逼近', q: 'Q逼近', e: '雷 E 逼近', qE: 'Q + 雷 E 逼近' }[mode]
 }
 
 function compactSeconds(value: number): string {

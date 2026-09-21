@@ -8,15 +8,15 @@ import { analyzeDocumentIceQHits, documentFreezeWindows, documentSlowWindows, ef
 import { receiveMoveBoosts, waterQMoveBoost } from './movementEffects'
 
 describe('timeline defaults', () => {
-  it('uses 1 grid/s movement and a new 8-grid, 2-second decelerating pass', () => {
+  it('uses 1 grid/s movement and a new 10-grid, 3-second decelerating pass', () => {
     const document = createDefaultDocument()
-    const passPath = [{ x: 0, y: 0 }, { x: 8, y: 0 }]
+    const passPath = [{ x: 0, y: 0 }, { x: 10, y: 0 }]
     expect(movementDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBe(4)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBeCloseTo(2 * (1 - Math.sqrt(0.5)))
-    expect(passDuration(passPath, document.rulesSnapshot)).toBe(2)
-    expect(passDuration([{ x: 0, y: 0 }, { x: 12, y: 0 }], document.rulesSnapshot)).toBe(2)
-    expect(passArrivalTimeAtDistance(passPath, 6, document.rulesSnapshot)).toBeCloseTo(1)
-    expect(passArrivalTimeAtDistance(passPath, 8, document.rulesSnapshot)).toBeCloseTo(2)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 4, y: 0 }], document.rulesSnapshot)).toBeCloseTo(3 * (1 - Math.sqrt(0.6)))
+    expect(passDuration(passPath, document.rulesSnapshot)).toBe(3)
+    expect(passDuration([{ x: 0, y: 0 }, { x: 12, y: 0 }], document.rulesSnapshot)).toBe(3)
+    expect(passArrivalTimeAtDistance(passPath, 7.5, document.rulesSnapshot)).toBeCloseTo(1.5)
+    expect(passArrivalTimeAtDistance(passPath, 10, document.rulesSnapshot)).toBeCloseTo(3)
   })
 
   it('uses inner and outer shooting charge times', () => {
@@ -102,6 +102,7 @@ describe('projectFrame', () => {
 
   it('projects a pass with linearly decreasing speed', () => {
     const document = createDefaultDocument()
+    document.rulesSnapshot.passing.maxDistance = 8
     const action: PassAction = {
       id: 'decelerating-pass', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1,
       path: [{ x: 5.5, y: 5 }, { x: 13.5, y: 5 }],
@@ -112,6 +113,7 @@ describe('projectFrame', () => {
     expect(projectFrame(document, 1).ball.position.x).toBeCloseTo(13.5)
 
     const short = createDefaultDocument()
+    short.rulesSnapshot.passing.maxDistance = 8
     const shortPath = [{ x: 5.5, y: 5 }, { x: 9.5, y: 5 }]
     const shortDuration = passDuration(shortPath, short.rulesSnapshot)
     short.actions.push({
@@ -615,6 +617,7 @@ describe('projectFrame', () => {
     const document = createDefaultDocument()
     // Existing documents retain the previous one-second calibration.
     document.rulesSnapshot.passing.ballSpeed = 8
+    document.rulesSnapshot.passing.maxDistance = 8
     const action: PassAction = {
       id: 'pass-long', type: 'pass', actorId: 'blue-water', startTime: 0,
       duration: passDuration([{ x: 5.5, y: 5 }, { x: 17.5, y: 5 }], document.rulesSnapshot),

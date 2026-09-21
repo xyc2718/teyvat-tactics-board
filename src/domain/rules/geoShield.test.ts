@@ -13,6 +13,8 @@ import { evaluateShotActionPressure } from './shotPressure'
 
 function fixture(position: Vec2 = { x: 6, y: 5 }) {
   const document = createDefaultDocument()
+  // Preserve the calibrated pre-Electro shield-arrival regression geometry.
+  Object.assign(document.rulesSnapshot.passing, { maxDistance: 8, ballSpeed: 4 })
   const actor = document.initialScene.players[0]!
   const defender = document.initialScene.players[4]!
   actor.position = { x: 5, y: 5 }

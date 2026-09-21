@@ -63,6 +63,7 @@ export function RulesDrawer() {
                 <RuleInput label="Q 冷却" value={rule.q.cooldown} suffix="s" onChange={(value) => updateRole(role, 'qCooldown', value)} />
                 <RuleInput label="Q 位移时间" value={rule.q.duration} suffix="s" onChange={(value) => updateRole(role, 'qDuration', value)} />
                 {role === 'geo' && rule.shield && <p className="rule-capability-note">护罩半径 {rule.shield.radius} 格：可挡传球、空传及非红蓄力射门；冻结时仍可原地挡球。仅做风险分析，无需添加护罩动作。</p>}
+                {rule.sprint && <p className="rule-capability-note">雷 E：满能量冲刺 {rule.sprint.maxDistance} 格 / {rule.sprint.maxDuration}s；停止后冷却 {rule.sprint.cooldown}s，非冲刺期间 {rule.sprint.recoveryDuration}s 回满。持球不能冲刺，接球、冻结或 Q 会中断；不受普通跑动加减速影响。</p>}
                 {boost && <>
                   <RuleInput label="加速有效时间" value={boost.duration} suffix="s" onChange={(value) => updateRoleExtra(role, 'boostDuration', value)} />
                   <RuleInput label="累计身位收益" value={boost.netSeparationGain} suffix="格" onChange={(value) => updateRoleExtra(role, 'boostGain', value)} />

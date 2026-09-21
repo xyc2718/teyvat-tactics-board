@@ -107,11 +107,14 @@ describe('App shell', () => {
       expect(screen.queryByText(/范围参数暂未提供/)).not.toBeInTheDocument()
       if (tool === '攻击范围') expect(container.querySelector('.attack-range')).toHaveAttribute('r', '75')
       else expect(container.querySelector('.strike-range')).toHaveAttribute('r', '195')
-      for (const [name, label] of [['蓝方 1', '雷'], ['红方 2', '风']]) {
-        fireEvent.keyDown(screen.getByRole('button', { name: `${name}，${label}，范围参数暂未提供` }), { key: 'Enter' })
-        expect(screen.getByText(`${label}的范围参数暂未提供`)).toBeInTheDocument()
-        expect(container.querySelector('.analysis-ranges')).not.toBeInTheDocument()
-      }
+      fireEvent.keyDown(screen.getByRole('button', { name: `蓝方 1，雷，可查看${tool}` }), { key: 'Enter' })
+      if (tool === '攻击范围') {
+        expect(container.querySelector('.attack-range')).toHaveAttribute('r', '50')
+        expect(container.querySelector('.attack-inner-range')).toHaveAttribute('r', '10')
+      } else expect(container.querySelector('.strike-range')).toHaveAttribute('r', '140')
+      fireEvent.keyDown(screen.getByRole('button', { name: '红方 2，风，范围参数暂未提供' }), { key: 'Enter' })
+      expect(screen.getByText('风的范围参数暂未提供')).toBeInTheDocument()
+      expect(container.querySelector('.analysis-ranges')).not.toBeInTheDocument()
     }
     expect(useTacticStore.getState().document).toBe(beforeInspection.document)
     expect(useTacticStore.getState().past).toBe(beforeInspection.past)
@@ -1045,12 +1048,12 @@ describe('App shell', () => {
     const board = screen.getByRole('application', { name: '战术编辑球场' })
     mockBoardRect(board)
 
-    fireEvent.pointerMove(board, { clientX: 736, clientY: 272, pointerId: 1 })
+    fireEvent.pointerMove(board, { clientX: 836, clientY: 272, pointerId: 1 })
     expect(container.querySelector('.pass-preview-safe')).toBeInTheDocument()
     expect(container.querySelector('.pass-preview-max')).toBeInTheDocument()
     expect(container.querySelectorAll('.pass-preview-segment')).toHaveLength(0)
     const legend = screen.getByLabelText('传球威胁图例')
-    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(8)
+    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(10)
     expect(legend.querySelector('.geo-shield-inPlace')).toBeInTheDocument()
     expect(legend.querySelector('.geo-shield-reachable')).toBeInTheDocument()
     expect(legend.parentElement).toHaveClass('board-shell')
@@ -1059,7 +1062,7 @@ describe('App shell', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭传球威胁图例' }))
     expect(screen.queryByLabelText('传球威胁图例')).not.toBeInTheDocument()
 
-    fireEvent.pointerDown(board, { clientX: 736, clientY: 272, pointerId: 1, button: 0 })
+    fireEvent.pointerDown(board, { clientX: 836, clientY: 272, pointerId: 1, button: 0 })
     expect(useTacticStore.getState().document.actions[0]).toMatchObject({ type: 'pass' })
     expect(screen.getByLabelText('传球威胁图例')).toBeInTheDocument()
     const savedSegments = container.querySelectorAll('.actions-layer .pass-threat-segment')
@@ -1446,7 +1449,7 @@ describe('App shell', () => {
     document.actions.push(
       {
         id: 'frame-pass', type: 'pass', actorId: 'blue-water', startTime: 1, duration: 1.2,
-        path: [{ x: 5.5, y: 5 }, { x: 15, y: 5 }],
+        path: [{ x: 5.5, y: 5 }, { x: 17, y: 5 }],
       },
       {
         id: 'later-move', type: 'move', actorId: 'blue-fire', startTime: 5, duration: 1,

@@ -202,6 +202,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .action-path { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; cursor: pointer; pointer-events: stroke; }
 .action-move { stroke: #f5d58b; marker-end: url(#arrow-move); }
 .action-move-follow { stroke: #f2be69; stroke-dasharray: 9 5; }
+.action-move.action-sprint { stroke: #b99cff; stroke-width: 5; stroke-dasharray: 16 4 3 4; marker-end: url(#arrow-sprint); }
+.roster-avatar.role-electro { background: #b99cff; }
+.legend-line.sprint { border-color: #b99cff; border-top-style: dashed; }
+.player-track-action.type-sprint, .action-dot.type-sprint { background: #b99cff; }
+.tool-preview-range.sprint-preview-range { stroke: #b99cff; stroke-dasharray: 10 5; fill: rgba(185,156,255,.07); }
+.sprint-energy-card { border: 1px solid #b99cff66; border-radius: 10px; padding: 12px; margin-top: 12px; }
+.sprint-energy-card meter { width: 100%; accent-color: #b99cff; }
 .action-qMove { stroke: #7de2f2; stroke-width: 5; stroke-dasharray: 12 6; }
 .action-pass { stroke: #f7f4df; stroke-width: 3; stroke-dasharray: 3 6; }
 .action-loosePass { stroke:#ffd09a; stroke-width:3; stroke-dasharray:12 4 2 4; }
@@ -241,6 +248,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .pass-threat-segment.threat-baseRisk { --threat-color: #e7c867; stroke-dasharray: 5 6; }
 .pass-threat-segment.threat-qSingle { --threat-color: #f0a44f; stroke-dasharray: 12 5; }
 .pass-threat-segment.threat-qMultiple { --threat-color: #ee755d; stroke-width: 5; stroke-dasharray: 3 4; }
+.pass-threat-segment.threat-eSingle { --threat-color: #bb8aff; stroke-dasharray: 14 4 3 4; }
+.pass-threat-segment.threat-eMultiple { --threat-color: #e0a2ff; stroke-width: 5; stroke-dasharray: 3 3 9 3; }
 .pass-threat-segment.threat-direct { --threat-color: #ff4f72; stroke-width: 6; stroke-dasharray: none; filter: drop-shadow(0 0 4px rgba(255, 79, 114, .65)); }
 .pass-threat-segment.threat-drop { --threat-color: #a99bb6; stroke-width: 3; stroke-dasharray: 13 6; opacity: .68; }
 .action-shoot { stroke: #ffba4a; stroke-width: 5; }
@@ -323,6 +332,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .pass-threat-legend i.threat-baseRisk { --threat-color: #e7c867; border-top-style: dashed; }
 .pass-threat-legend i.threat-qSingle { --threat-color: #f0a44f; border-top-width: 4px; border-top-style: dashed; }
 .pass-threat-legend i.threat-qMultiple { --threat-color: #ee755d; height: 5px; border-top-width: 2px; border-top-style: dotted; border-bottom: 2px dotted var(--threat-color); }
+.pass-threat-legend i.threat-eSingle { --threat-color: #bb8aff; border-top-width: 4px; border-top-style: dashed; }
+.pass-threat-legend i.threat-eMultiple { --threat-color: #e0a2ff; height: 5px; border-top: 2px dashed var(--threat-color); border-bottom: 2px dotted var(--threat-color); }
 .pass-threat-legend i.threat-direct { --threat-color: #ff4f72; border-top-width: 5px; border-top-style: solid; box-shadow: 0 0 3px rgba(255, 79, 114, .55); }
 .pass-threat-legend i.threat-drop { --threat-color: #a99bb6; border-top-style: dashed; opacity: .7; }
 .pass-threat-legend button { flex:0 0 auto; display:grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:5px; color:#829a91; background:transparent; cursor:pointer; font-size:15px; line-height:1; }

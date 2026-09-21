@@ -1,11 +1,12 @@
 import { create } from 'zustand'
-import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolveQPath, resolvedMovePath } from '../domain/geometry/geometry'
+import { clampPoint, distance, goalCenter, normalizeAngle, pathLength, resolveQPath, resolvedMovePath, truncatePath } from '../domain/geometry/geometry'
 import { createDefaultDocument } from '../domain/model/createDocument'
 import { effectiveBasicRole, isBasicRoleId } from '../domain/model/basicRoles'
 import type {
   BasicRoleId,
   BoardMode,
   MatchupRating,
+  MoveAction,
   MoveKeyframeReference,
   TimingTargetReference,
   RoleId,
@@ -17,6 +18,7 @@ import type {
   Vec2,
 } from '../domain/model/types'
 import { cloneDefaultRules } from '../domain/rules/defaultRules'
+import { electroSprintState, normalizeSprintActions, syncSprintPath } from '../domain/timeline/electroSprint'
 import { qCooldownConflictNotice, validateQStart } from '../domain/rules/qCooldown'
 import { actionEndTime, documentDuration, movementDuration, passDuration, qDuration, shotDuration } from '../domain/timeline/durations'
 import { nearestTimelineJoint, timelineDuration } from '../domain/timeline/keyframes'
@@ -30,7 +32,7 @@ import { projectFrame, projectFrameAtKeyframe } from '../domain/timeline/project
 import { formatStepActionRange, getStepActionOwnership } from '../domain/timeline/stepActionOwnership'
 import { FIRST_ACTION_STEP_TIME, isOpeningStep, openingStep, sortedStepMarkers } from '../domain/timeline/steps'
 import { loadDraft, saveDraft } from '../persistence/tacticFile'
-import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleWait, reflowSimpleLocomotion, syncConstrainedMovePath, syncFollowMoveTimings } from './locomotionScheduling'
+import { latestActorSequenceJoint, planFollowLocomotion, planSimpleLocomotion, planSimpleQ, planSimpleSprint, planSimpleWait, reflowSimpleLocomotion, runDuration, syncConstrainedMovePath, syncFollowMoveTimings } from './locomotionScheduling'
 import { isBallReleaseTool, isRangeInspectionTool, isToolActorEligible, isToolTargetPlayerEligible, toolNeedsActor } from './toolWorkflow'
 import { LOOSE_PASS_POSSESSION_NOTICE, planLoosePassActor } from './loosePassPlanning'
 
@@ -87,6 +89,7 @@ interface TacticStore extends HistoryState {
   createWait: (actorId: string) => void
   createShot: (actorId: string) => void
   createEZone: (actorId: string) => void
+  stopSprint: (actionId: string, time: number) => void
   createSlowStatus: (targetId: string, startTime: number) => void
   createAction: (actorId: string | null, target: Vec2, targetPlayerId?: string) => void
   createBallPickup: (actorId: string) => void
@@ -150,6 +153,7 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
   'move',
   'wait',
   'qMove',
+  'sprint',
   'pass',
   'loosePass',
   'shoot',
@@ -160,6 +164,14 @@ const TIMELINE_WRITING_TOOLS = new Set<ToolId>([
 
 const MIN_AUTHORED_PATH_LENGTH = 0.05
 const MIN_FIXED_MOVE_DURATION = 0.05
+
+function sprintDurationNotice(document: TacticDocumentV1, action: MoveAction, duration: number): string | null {
+  if (!action.sprint) return null
+  const budget = electroSprintState(document, action.actorId, action.startTime, action.id)
+  return duration > budget.maxDuration + 1e-6
+    ? `雷 E 能量最多支持 ${budget.maxDuration.toFixed(2)} 秒（${budget.maxDistance.toFixed(2)} 格），请缩短时间。`
+    : null
+}
 
 function appendStepMarker(document: TacticDocumentV1, time: number): string {
   const id = uid('step')
@@ -224,7 +236,8 @@ function actionContinuationTime(document: TacticDocumentV1): number {
 }
 
 function actorToolPreviewTime(document: TacticDocumentV1, actorId: string, tool: ToolId): number {
-  const continuationTime = latestActorSequenceJoint(document, actorId)
+  const continuationTime = latestActorSequenceJoint(document, actorId, tool !== 'sprint')
+  if (tool === 'sprint') return planSimpleSprint(document, actorId, continuationTime)?.startTime ?? continuationTime
   if (tool !== 'qMove') return continuationTime
   return planSimpleQ(document, actorId, continuationTime)?.startTime ?? continuationTime
 }
@@ -313,7 +326,7 @@ function firstQCooldownViolation(document: TacticDocumentV1, actorIds: string[])
 function recalculateRuleDrivenActions(document: TacticDocumentV1) {
   for (const action of document.actions) {
     if (action.type === 'move' && !action.targetPlayerId && !action.ballTarget && !action.timingConstraint) {
-      action.duration = movementDuration(resolvedMovePath(action), document.rulesSnapshot)
+      action.duration = runDuration(document, action)
     }
     if (action.type === 'qMove') {
       const player = document.initialScene.players.find((candidate) => candidate.id === action.actorId)
@@ -352,7 +365,7 @@ const qCooldownNormalizationNotices = new WeakMap<TacticDocumentV1, string>()
 /** A complete edit transaction settles timings, movement and catch-derived events.
  * Playback never enters this bounded normalization path. */
 function finalizeTimingBindings(state: Pick<TacticStore, 'document' | 'showAdvancedTimeline'>, document: TacticDocumentV1, force = false): boolean {
-  const isTimed = (action: TacticAction) => (action.type === 'move' || action.type === 'wait') && action.timingConstraint
+  const isTimed = (action: TacticAction) => (action.type === 'move' && action.sprint) || ((action.type === 'move' || action.type === 'wait') && action.timingConstraint)
   if (!document.actions.some(isTimed) && !state.document.actions.some(isTimed)) return true
   if (!force && JSON.stringify([document.rulesSnapshot, document.initialScene, document.actions])
     === JSON.stringify([state.document.rulesSnapshot, state.document.initialScene, state.document.actions])) return true
@@ -378,9 +391,20 @@ function finalizeTimingBindings(state: Pick<TacticStore, 'document' | 'showAdvan
         const target = resolveMoveQCooldownTarget(document, action)
         if (!target || moveTimingWouldCycle(document, action.id, target.sourceActionId)) invalid = 'Q 冷却来源已失效'
       }
+      const sprintBudget = action.type === 'move' && action.sprint
+        ? electroSprintState(document, action.actorId, action.startTime, action.id) : null
+      if (!invalid && sprintBudget && action.type === 'move') {
+        const targetTime = action.timingConstraint?.kind === 'keyframe'
+          ? resolveTimingKeyframe(document, action.timingConstraint.reference)?.time
+          : action.timingConstraint?.kind === 'qCooldown' ? resolveMoveQCooldownTarget(document, action)?.readyTime : undefined
+        if (targetTime !== undefined && targetTime - action.startTime > sprintBudget.maxDuration + 1e-6) {
+          invalid = `雷 E 能量不足，无法到达所选关键帧（最多 ${sprintBudget.maxDuration.toFixed(2)} 秒）`
+        }
+      }
       if (invalid) {
         const previous = previousById.get(action.id)
         action.duration = previous && previous.duration > 0 ? previous.duration : Math.max(MIN_FIXED_MOVE_DURATION, action.duration)
+        if (sprintBudget) action.duration = Math.min(action.duration, sprintBudget.maxDuration)
         if (action.type === 'move') action.timingConstraint = { kind: 'fixed' }
         else delete action.timingConstraint
         notices.push(`${action.type === 'wait' ? '等待' : '跑动'}“${action.label ?? action.id}”的${invalid}，已改为手动时间并保留 ${action.duration.toFixed(2)} 秒。`)
@@ -410,9 +434,13 @@ function finalizeTimingBindings(state: Pick<TacticStore, 'document' | 'showAdvan
 
 function syncPassEndpoints(document: TacticDocumentV1) {
   const result = normalizeBallActions(document)
+  const sprint = normalizeSprintActions(document)
+  for (const actorId of sprint.splitActorIds) reflowSimpleLocomotion(document, actorId)
+  if (sprint.changed) normalizeBallActions(document)
   if (result.invalidPickups.length) {
     ballNormalizationNotices.set(document, result.invalidPickups.map((item) => item.message).join('；'))
-  } else ballNormalizationNotices.delete(document)
+  } else if (sprint.notices.length) ballNormalizationNotices.set(document, sprint.notices.join('；'))
+  else ballNormalizationNotices.delete(document)
   return result
 }
 
@@ -665,7 +693,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     if (
       current.boardMode === 'simulation'
-      && (tool === 'move' || tool === 'qMove' || tool === 'wait' || tool === 'shoot' || tool === 'eZone')
+      && (tool === 'move' || tool === 'qMove' || tool === 'sprint' || tool === 'wait' || tool === 'shoot' || tool === 'eZone')
       && current.selection?.kind === 'player'
     ) {
       set({ tool, isPlaying: false })
@@ -755,10 +783,14 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     }
     set((state) => {
       const actorSequenceTime = state.boardMode === 'simulation'
-        && (state.tool === 'move' || state.tool === 'qMove')
+        && (state.tool === 'move' || state.tool === 'qMove' || state.tool === 'sprint')
         ? actorToolPreviewTime(state.document, playerId, state.tool)
         : state.currentTime
-      const currentTime = actorSequenceTime
+      const activeSprint = state.tool === 'qMove' && state.document.actions.some((action) => action.type === 'move'
+        && action.sprint && action.actorId === playerId && action.startTime <= state.currentTime && actionEndTime(action) > state.currentTime)
+      const currentTime = activeSprint
+        ? planSimpleQ(state.document, playerId, state.currentTime)?.startTime ?? actorSequenceTime
+        : actorSequenceTime
       const frame = projectFrame(state.document, currentTime)
       const player = frame.players.find((candidate) => candidate.id === playerId)
       if (!player) return {}
@@ -773,7 +805,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       return {
         currentTime,
-        currentKeyframe: state.tool === 'move' || state.tool === 'qMove' ? null : state.currentKeyframe,
+        currentKeyframe: state.tool === 'move' || state.tool === 'qMove' || state.tool === 'sprint' ? null : state.currentKeyframe,
         selection: { kind: 'player' as const, id: player.id },
         isPlaying: false,
         notice: null,
@@ -783,7 +815,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
   reselectToolActor: () => set((state) => {
     if (
       state.boardMode !== 'simulation'
-      || (state.tool !== 'move' && state.tool !== 'qMove')
+      || (state.tool !== 'move' && state.tool !== 'qMove' && state.tool !== 'sprint')
     ) return {}
     return {
       selection: null,
@@ -1384,6 +1416,17 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
             duration: plan.duration,
           }
         }
+      } else if (state.tool === 'sprint') {
+        const plan = planSimpleSprint(document, actor.id, state.currentTime, clampedTarget)
+        if (!plan) return { notice: '无法安排雷 E，请检查角色、冻结和冷却。' }
+        if (projectFrame(document, plan.startTime).ball.carrierId === actor.id) return { notice: '持球时不能使用雷 E。' }
+        const budget = electroSprintState(document, actor.id, plan.startTime)
+        if (budget.maxDistance < MIN_AUTHORED_PATH_LENGTH) return { notice: '雷 E 能量不足，请先等待能量回复。' }
+        const move: MoveAction = { id: uid('sprint'), type: 'move', sprint: true, actorId: actor.id,
+          startTime: plan.startTime, duration: plan.duration, path: [{ ...plan.origin }, clampedTarget] }
+        syncSprintPath(document, move)
+        if (pathLength(resolvedMovePath(move)) < MIN_AUTHORED_PATH_LENGTH) return { notice: '冲刺终点与起点重合。' }
+        action = move
       } else if (state.tool === 'qMove') {
         const plan = planSimpleQ(document, actor.id, state.currentTime)
         if (!plan) return { notice: '无法为该球员找到满足冷却的 Q 时间。' }
@@ -1504,6 +1547,27 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
     }),
 
+  stopSprint: (actionId, time) => set((state) => {
+    const action = state.document.actions.find((item) => item.id === actionId)
+    if (action?.type !== 'move' || !action.sprint || !Number.isFinite(time)
+      || time <= action.startTime || time >= actionEndTime(action)) return { notice: '请选择冲刺开始和结束之间的停止时刻。' }
+    const next = cloneDocument(state.document)
+    const sprint = next.actions.find((item) => item.id === actionId) as MoveAction
+    const route = resolvedMovePath(sprint)
+    sprint.path = truncatePath(route, pathLength(route) * (time - sprint.startTime) / sprint.duration)
+    delete sprint.curveControl
+    delete sprint.timingRouteBasis
+    sprint.duration = time - sprint.startTime
+    sprint.timingConstraint = { kind: 'fixed' }
+    syncSprintPath(next, sprint)
+    syncPassEndpoints(next)
+    refreshStepSnapshots(next)
+    const patch = applyDocument(state, next)
+    if (patch.document === state.document) return patch
+    return { ...patch, isPlaying: false, currentTime: actionEndTime(sprint), currentKeyframe: null,
+      notice: patch.notice ?? '雷 E 已停止，开始计算冷却。' }
+  }),
+
   createBallPickup: (actorId) => set((state) => {
     if (state.boardMode !== 'simulation' || (state.tool !== 'move' && state.tool !== 'qMove')) return {}
     const kind = state.tool
@@ -1578,7 +1642,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       }
       if (action.type === 'move') {
         if (action.timingConstraint) syncConstrainedMovePath(draft, action)
-        else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+        else if (action.sprint) syncSprintPath(draft, action)
+        else action.duration = runDuration(draft, action)
       }
       if (!state.showAdvancedTimeline && (action.type === 'move' || action.type === 'qMove')) {
         reflowSimpleLocomotion(draft, action.actorId)
@@ -1620,7 +1685,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
         }, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
       }
       if (action.timingConstraint) syncConstrainedMovePath(draft, action)
-      else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      else if (action.sprint) syncSprintPath(draft, action)
+      else action.duration = runDuration(draft, action)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft)
@@ -1637,7 +1703,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       if (!action || action.type !== 'move' || action.targetPlayerId || !action.curveControl) return
       action.curveControl = clampPoint(rawPoint, draft.rulesSnapshot.field.width, draft.rulesSnapshot.field.height)
       if (action.timingConstraint) syncConstrainedMovePath(draft, action)
-      else action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+      else if (action.sprint) syncSprintPath(draft, action)
+      else action.duration = runDuration(draft, action)
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
       syncPassEndpoints(draft)
@@ -1659,7 +1726,7 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
       } else {
         delete action.timingConstraint
         delete action.timingRouteBasis
-        action.duration = movementDuration(resolvedMovePath(action), draft.rulesSnapshot)
+        action.duration = runDuration(draft, action)
       }
       if (!state.showAdvancedTimeline) reflowSimpleLocomotion(draft, action.actorId)
       syncFollowMoveTimings(draft)
@@ -1684,7 +1751,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     const reason = timingTargetUnavailableReason(state.document, before, reference)
     if (reason) return { notice: reason }
     const referenceTime = resolveTimingKeyframe(state.document, reference)!.time
-
+    const budgetNotice = sprintDurationNotice(state.document, before, referenceTime - before.startTime)
+    if (budgetNotice) return { notice: budgetNotice }
     const patch = mutateDocument(state, (draft) => {
       const action = draft.actions.find((candidate) => candidate.id === actionId)
       if (!action || action.type !== 'move' || action.targetPlayerId) return
@@ -1743,6 +1811,8 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (!before || before.type !== 'move' || before.targetPlayerId || before.ballTarget) return {}
     const target = findMoveQCooldownTarget(state.document, before)
     if (!target) return { notice: '这段跑动开始时没有尚未结束的 Q 冷却。' }
+    const budgetNotice = sprintDurationNotice(state.document, before, target.readyTime - before.startTime)
+    if (budgetNotice) return { notice: budgetNotice }
     if (moveTimingWouldCycle(state.document, actionId, target.sourceActionId)) {
       return { notice: '该 Q 来源会形成循环时间依赖，无法绑定。' }
     }
@@ -1769,6 +1839,16 @@ export const useTacticStore = create<TacticStore>((set, get) => ({
     if (!Number.isFinite(value)) return { notice: '请输入有效的动作时间。' }
     const action = state.document.actions.find((candidate) => candidate.id === actionId)
     const safeValue = Math.max(0, value)
+    if (action?.type === 'move' && action.sprint) {
+      const proposed = field === 'startTime' ? { ...action, startTime: safeValue } : action
+      const budgetNotice = sprintDurationNotice(state.document, proposed, field === 'duration' ? safeValue : action.duration)
+      if (budgetNotice) return { notice: budgetNotice }
+      if (field === 'startTime') {
+        const stateAt = electroSprintState(state.document, action.actorId, safeValue, action.id)
+        if (stateAt.cooldown > 1e-6) return { notice: `雷 E 仍在冷却，还需 ${stateAt.cooldown.toFixed(2)} 秒。` }
+        if (projectFrame(state.document, safeValue).ball.carrierId === action.actorId) return { notice: '持球时不能使用雷 E。' }
+      }
+    }
     if (action?.type === 'receive' && (action.sourceActionId || action.pickupActionId)) {
       return { notice: '该接球节点由对应传球自动解算，不能单独修改时间。' }
     }

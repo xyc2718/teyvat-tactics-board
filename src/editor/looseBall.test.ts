@@ -58,6 +58,7 @@ describe('loose ball editor commands', () => {
   it('preserves old and customized passing parameters on import and new passes in that tactic', () => {
     for (const oldSpeed of [8, 5.7]) {
       const old = createDefaultDocument()
+      old.rulesSnapshot.passing.maxDistance = 8
       old.rulesSnapshot.passing.ballSpeed = oldSpeed
       delete old.rulesSnapshot.loosePassing
       const snapshot = structuredClone(old.rulesSnapshot.passing)
@@ -72,7 +73,7 @@ describe('loose ball editor commands', () => {
       expect(pass.duration).toBeCloseTo(passDuration([{ x: 5.5, y: 4.7 }, { x: 9.5, y: 4.7 }], old.rulesSnapshot))
     }
     useTacticStore.getState().newDocument()
-    expect(useTacticStore.getState().document.rulesSnapshot.passing.ballSpeed).toBe(4)
+    expect(useTacticStore.getState().document.rulesSnapshot.passing).toMatchObject({ maxDistance: 10, ballSpeed: 10 / 3 })
   })
 
   it('runs to a free ball, creates one exact receipt and allows immediate onward passing', () => {
