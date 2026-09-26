@@ -48,7 +48,23 @@ describe('pass threat classification', () => {
     )
 
     expect(segments[0]).toMatchObject({ level: 'safe', startDistance: 0, endDistance: 4 })
+    expect(segments.some((segment) => segment.level === 'baseRisk' && segment.startDistance === 4 && segment.endDistance === 8)).toBe(true)
+    expect(segments.some((segment) => segment.level === 'farRisk' && segment.startDistance === 8 && segment.endDistance === 10)).toBe(true)
     expect(segments.at(-1)).toMatchObject({ level: 'drop', startDistance: 10, endDistance: 12 })
+  })
+
+  it('keeps an older eight-grid passing snapshot at two in-range threat bands', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.passing.maxDistance = 8
+    const segments = classifyPassThreat(
+      [{ x: 0, y: 1 }, { x: 9, y: 1 }],
+      'blue', projectFrame(document, 0), document.rulesSnapshot,
+    )
+    expect(segments.map(({ level, startDistance, endDistance }) => ({ level, startDistance, endDistance }))).toEqual([
+      { level: 'safe', startDistance: 0, endDistance: 4 },
+      { level: 'baseRisk', startDistance: 4, endDistance: 8 },
+      { level: 'drop', startDistance: 8, endDistance: 9 },
+    ])
   })
 
   it('distinguishes one Q-reachable opponent, multiple Q opponents, and a direct corridor', () => {

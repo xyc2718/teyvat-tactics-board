@@ -767,7 +767,7 @@ describe('App shell', () => {
 
     expect(useTacticStore.getState().selection).toEqual({ kind: 'player', id: 'blue-water' })
     expect(container.querySelectorAll('.player-token.tool-target-eligible')).toHaveLength(2)
-    expect(screen.getByRole('status')).toHaveTextContent('参考安全/最远距离圈')
+    expect(screen.getByRole('status')).toHaveTextContent('参考安全/远距警示/最远距离圈')
 
     fireEvent.pointerDown(screen.getByRole('button', { name: /红方 1，水灵/ }), { pointerId: 1, button: 0 })
     expect(useTacticStore.getState().document.actions).toHaveLength(0)
@@ -1050,10 +1050,12 @@ describe('App shell', () => {
 
     fireEvent.pointerMove(board, { clientX: 836, clientY: 272, pointerId: 1 })
     expect(container.querySelector('.pass-preview-safe')).toBeInTheDocument()
+    expect(container.querySelector('.pass-preview-far')).toHaveAttribute('r', '400')
     expect(container.querySelector('.pass-preview-max')).toBeInTheDocument()
     expect(container.querySelectorAll('.pass-preview-segment')).toHaveLength(0)
     const legend = screen.getByLabelText('传球威胁图例')
-    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(10)
+    expect(legend.querySelectorAll('.pass-threat-legend-item')).toHaveLength(11)
+    expect(legend).toHaveTextContent('远距高风险区')
     expect(legend.querySelector('.geo-shield-inPlace')).toBeInTheDocument()
     expect(legend.querySelector('.geo-shield-reachable')).toBeInTheDocument()
     expect(legend.parentElement).toHaveClass('board-shell')
@@ -1074,6 +1076,17 @@ describe('App shell', () => {
 
     fireEvent.pointerDown(savedSegments[0]!, { pointerId: 1, button: 0 })
     expect(screen.getByLabelText('传球威胁图例')).toBeInTheDocument()
+  })
+
+  it('does not draw an extra eight-grid warning ring for an older eight-grid rule snapshot', () => {
+    const document = createDefaultDocument()
+    document.rulesSnapshot.passing.maxDistance = 8
+    useTacticStore.setState({ document })
+    const { container } = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '传球' }))
+    expect(container.querySelector('.pass-preview-safe')).toHaveAttribute('r', '200')
+    expect(container.querySelector('.pass-preview-far')).not.toBeInTheDocument()
+    expect(container.querySelector('.pass-preview-max')).toHaveAttribute('r', '400')
   })
 
   it('previews an attached pass path with the dragged player and commits the new endpoint once', () => {

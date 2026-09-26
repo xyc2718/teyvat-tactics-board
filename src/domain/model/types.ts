@@ -384,7 +384,7 @@ export interface ElectroSprintState {
   maxDistance: number
 }
 
-export type WarningSeverity = 'info' | 'warning' | 'hard'
+export type WarningSeverity = 'info' | 'warning' | 'highRisk' | 'hard'
 
 export interface RuleWarning {
   id: string

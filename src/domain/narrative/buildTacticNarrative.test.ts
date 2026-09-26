@@ -49,6 +49,15 @@ describe('tactic narrative', () => {
     expect(narrative.entries[0]?.kind).toBe('step')
   })
 
+  it('does not present an in-range far pass as a hard rule violation', () => {
+    const document = createDefaultDocument()
+    document.actions.push({
+      id: 'far-pass', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1,
+      path: [{ x: 0, y: 1 }, { x: 9, y: 1 }],
+    })
+    expect(buildTacticNarrative(document).hardWarnings.some((warning) => warning.actionId === 'far-pass')).toBe(false)
+  })
+
   it('updates ice knockback narration from the target facing', () => {
     const document = createDefaultDocument()
     const target = document.initialScene.players.find((player) => player.id === 'red-water')!

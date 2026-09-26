@@ -19,7 +19,7 @@ import type {
 import { actionEndTime } from '../timeline/durations'
 import { passIsDropped, passIsReceived } from '../model/passFlight'
 import { analyzeDocumentIceQHits, doesEZoneSlowMove, evaluateQDistanceEffect, projectFrame } from '../timeline/projectFrame'
-import { classifyPassThreat, highestPassThreat, PASS_THREAT_LABELS } from './passThreat'
+import { classifyPassThreat, highestPassThreat, PASS_FAR_RISK_DISTANCE, PASS_THREAT_LABELS } from './passThreat'
 import { cooldownRemainingText, qCooldownSequenceConflicts } from './qCooldown'
 import { evaluateShotActionPressure, shotPressureComparison, shotPressureModeLabel, shotPressureSummary } from './shotPressure'
 import { analyzeActionGeoShield, geoShieldPassSummary, geoShieldShotSummary } from './geoShield'
@@ -180,11 +180,15 @@ function passWarnings(document: TacticDocumentV1, action: PassAction, hasShieldR
   const interceptorIds = [...new Set(segments.flatMap((segment) => segment.opponentIds))]
   const interceptors = startFrame.players.filter((player) => interceptorIds.includes(player.id))
   const highestLabel = PASS_THREAT_LABELS[highest]
+  const farRisk = length > PASS_FAR_RISK_DISTANCE && rules.passing.maxDistance > PASS_FAR_RISK_DISTANCE
+  const riskBand = farRisk
+    ? `${Math.max(rules.passing.safeDistance, PASS_FAR_RISK_DISTANCE)}–${rules.passing.maxDistance} 格远距离高风险区`
+    : `${rules.passing.safeDistance}–${Math.min(rules.passing.maxDistance, PASS_FAR_RISK_DISTANCE)} 格普通截断区`
 
   return [
     {
       id: `pass-risk-${action.id}`,
-      severity: 'warning',
+      severity: farRisk ? 'highRisk' : 'warning',
       title: direct
         ? '对手位于传球截断走廊'
         : eReachable
@@ -193,10 +197,10 @@ function passWarnings(document: TacticDocumentV1, action: PassAction, hasShieldR
             ? '多名对手可用 Q 触达传球线路'
             : qReachable
               ? '一名对手可用 Q 触达传球线路'
-              : '传球进入截断区',
+              : farRisk ? '远距离传球进入高风险区' : '传球进入普通截断区',
       detail: interceptors.length > 0
-        ? `${length.toFixed(2)} 格传球，最高威胁为“${highestLabel}”；涉及 ${interceptors.map((player) => player.name).join('、')}。`
-        : `${length.toFixed(2)} 格位于 ${rules.passing.safeDistance}–${rules.passing.maxDistance} 格普通截断区。`,
+        ? `${length.toFixed(2)} 格传球位于 ${riskBand}，最高威胁为“${highestLabel}”；涉及 ${interceptors.map((player) => player.name).join('、')}。`
+        : `${length.toFixed(2)} 格位于 ${riskBand}。`,
       actionId: action.id,
       playerIds: interceptors.map((player) => player.id),
     },
@@ -502,7 +506,7 @@ export function evaluateWarnings(document: TacticDocumentV1): RuleWarning[] {
   }
 
   return warnings.sort((a, b) => {
-    const order = { hard: 0, warning: 1, info: 2 }
+    const order = { hard: 0, highRisk: 1, warning: 2, info: 3 }
     return order[a.severity] - order[b.severity]
   })
 }

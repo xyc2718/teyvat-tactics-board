@@ -11,6 +11,7 @@ import {
   classifyPassThreat,
   PASS_THREAT_LABELS,
   PASS_THREAT_ORDER,
+  PASS_FAR_RISK_DISTANCE,
   type PassThreatSegment,
 } from '../domain/rules/passThreat'
 import {
@@ -696,6 +697,8 @@ export function TacticsBoard({ initialZoom = 1, touchOptimized = false }: { init
               />
               {selectedPlayer.hasBall && <>
                 <circle cx={toSvg(selectedPlayer.position).x} cy={toSvg(selectedPlayer.position).y} r={rules.passing.safeDistance * SCALE} className="range-circle pass-safe-range" />
+                {rules.passing.safeDistance < PASS_FAR_RISK_DISTANCE && rules.passing.maxDistance > PASS_FAR_RISK_DISTANCE &&
+                  <circle cx={toSvg(selectedPlayer.position).x} cy={toSvg(selectedPlayer.position).y} r={PASS_FAR_RISK_DISTANCE * SCALE} className="range-circle pass-far-range" />}
                 <circle cx={toSvg(selectedPlayer.position).x} cy={toSvg(selectedPlayer.position).y} r={rules.passing.maxDistance * SCALE} className="range-circle pass-max-range" />
               </>}
             </>}
@@ -1018,6 +1021,8 @@ function ToolPointerPreview({
   if (tool === 'pass') {
     return <g className="tool-preview-layer" pointerEvents="none">
       <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.safeDistance * SCALE} className="tool-preview-range pass-preview-safe" />
+      {rules.passing.safeDistance < PASS_FAR_RISK_DISTANCE && rules.passing.maxDistance > PASS_FAR_RISK_DISTANCE &&
+        <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={PASS_FAR_RISK_DISTANCE * SCALE} className="tool-preview-range pass-preview-far" />}
       <circle cx={origin.x * SCALE} cy={origin.y * SCALE} r={rules.passing.maxDistance * SCALE} className="tool-preview-range pass-preview-max" />
     </g>
   }

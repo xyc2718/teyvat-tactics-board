@@ -7,10 +7,12 @@ import { createReachTimingEvaluator } from './reachTime'
 const SAMPLE_SPACING = 0.2
 const MAX_UNIFORM_SAMPLES = 512
 const EPSILON = 1e-6
+export const PASS_FAR_RISK_DISTANCE = 8
 
 export const PASS_THREAT_ORDER = [
   'safe',
   'baseRisk',
+  'farRisk',
   'qSingle',
   'eSingle',
   'qMultiple',
@@ -24,6 +26,7 @@ export type PassThreatLevel = (typeof PASS_THREAT_ORDER)[number]
 export const PASS_THREAT_LABELS: Record<PassThreatLevel, string> = {
   safe: '安全段',
   baseRisk: '普通截断区',
+  farRisk: '远距高风险区',
   qSingle: '单人 Q 可达',
   eSingle: '雷 E 可达',
   qMultiple: '多人 Q 可达',
@@ -111,7 +114,7 @@ function classifyPoint(
   if (qReachable.length === 1) {
     return { level: 'qSingle', opponentIds: qReachable }
   }
-  return { level: 'baseRisk', opponentIds: [] }
+  return { level: distanceFromStart > PASS_FAR_RISK_DISTANCE + EPSILON ? 'farRisk' : 'baseRisk', opponentIds: [] }
 }
 
 export function classifyPassThreat(
@@ -150,6 +153,11 @@ export function classifyPassThreat(
   }
   if (rules.passing.safeDistance > 0 && rules.passing.safeDistance < total) {
     boundaries.add(rules.passing.safeDistance)
+  }
+  if (PASS_FAR_RISK_DISTANCE > rules.passing.safeDistance
+    && PASS_FAR_RISK_DISTANCE < rules.passing.maxDistance
+    && PASS_FAR_RISK_DISTANCE < total) {
+    boundaries.add(PASS_FAR_RISK_DISTANCE)
   }
   if (rules.passing.maxDistance > 0 && rules.passing.maxDistance < total) {
     boundaries.add(rules.passing.maxDistance)

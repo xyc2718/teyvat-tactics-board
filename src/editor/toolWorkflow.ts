@@ -89,7 +89,7 @@ export function actorPrompt(tool: ToolId): string {
 export function targetPrompt(tool: ToolId): string {
   if (tool === 'sprint') return '点击终点绘制雷 E；范围由当前能量决定，可在右侧调整曲线和持续时间'
   if (tool === 'qMove') return '第 2/2 步：点击落点，或点击自由球用 Q 捡球；可返回第 1 步'
-  if (tool === 'pass') return '第 2/2 步：参考安全/最远距离圈；点击队友后系统按其移动轨迹解算接球点，也可点击空地'
+  if (tool === 'pass') return '第 2/2 步：参考安全/远距警示/最远距离圈；点击队友后系统按其移动轨迹解算接球点，也可点击空地'
   if (tool === 'loosePass') return '第 2/2 步：点击空地指定空传方向；球会沿直线飞行，遇墙反弹'
   if (tool === 'eZone') return '冰圈始终以霜役为圆心并随其移动'
   if (tool === 'attack') return '点击其他球员可连续切换攻击范围查看对象'

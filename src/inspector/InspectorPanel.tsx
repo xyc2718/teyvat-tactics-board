@@ -241,7 +241,7 @@ export function InspectorPanel() {
           <div className="warning-list">
             {contextualWarnings.slice(0, 5).map((warning) => (
               <button key={warning.id} className={`warning-item severity-${warning.severity}`} onClick={() => warning.actionId && select({ kind: 'action', id: warning.actionId })}>
-                <span className="warning-icon">{warning.severity === 'hard' ? '!' : warning.severity === 'warning' ? '△' : 'i'}</span>
+                <span className="warning-icon">{warning.severity === 'hard' || warning.severity === 'highRisk' ? '!' : warning.severity === 'warning' ? '△' : 'i'}</span>
                 <span><strong>{warning.title}</strong><small>{warning.detail}</small></span>
               </button>
             ))}

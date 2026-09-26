@@ -34,6 +34,7 @@ describe('rule assistance', () => {
   it.each([
     [3, 'info'],
     [6, 'warning'],
+    [9, 'highRisk'],
     [11, 'hard'],
   ] as const)('classifies a %s-grid pass as %s', (length, severity) => {
     const document = createDefaultDocument()
@@ -43,6 +44,24 @@ describe('rule assistance', () => {
     }
     document.actions.push(pass)
     expect(evaluateWarnings(document).find((warning) => warning.actionId === pass.id)?.severity).toBe(severity)
+  })
+
+  it('distinguishes ordinary and far-distance pass warnings without calling the latter out of range', () => {
+    const document = createDefaultDocument()
+    const pass: PassAction = {
+      id: 'pass-risk-band', type: 'pass', actorId: 'blue-water', startTime: 0, duration: 1,
+      path: [{ x: 0, y: 1 }, { x: 7, y: 1 }],
+    }
+    document.actions.push(pass)
+    let warning = evaluateWarnings(document).find((candidate) => candidate.actionId === pass.id)
+    expect(warning).toMatchObject({ severity: 'warning', title: '传球进入普通截断区' })
+    expect(warning?.detail).toContain('4–8 格')
+
+    pass.path = [{ x: 0, y: 1 }, { x: 9, y: 1 }]
+    warning = evaluateWarnings(document).find((candidate) => candidate.actionId === pass.id)
+    expect(warning).toMatchObject({ severity: 'highRisk', title: '远距离传球进入高风险区' })
+    expect(warning?.detail).toContain('8–10 格')
+    expect(warning?.detail).not.toContain('超出有效距离')
   })
 
   it('reports a repeated Q inside the configured cooldown window', () => {
